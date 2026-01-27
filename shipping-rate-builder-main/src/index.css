@@ -1,0 +1,163 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
+
+@layer base {
+  :root {
+    --background: 220 20% 97%;
+    --foreground: 220 20% 10%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 220 20% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 220 20% 10%;
+
+    --primary: 217 91% 50%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 14% 96%;
+    --secondary-foreground: 220 20% 20%;
+
+    --muted: 220 14% 96%;
+    --muted-foreground: 220 10% 46%;
+
+    --accent: 217 91% 95%;
+    --accent-foreground: 217 91% 40%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 142 76% 36%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 0 0% 100%;
+
+    --border: 220 13% 91%;
+    --input: 220 13% 91%;
+    --ring: 217 91% 50%;
+
+    --radius: 0.75rem;
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 240 5.9% 10%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 240 4.8% 95.9%;
+    --sidebar-accent-foreground: 240 5.9% 10%;
+    --sidebar-border: 220 13% 91%;
+    --sidebar-ring: 217.2 91.2% 59.8%;
+
+    /* Zone colors */
+    --zone-a: 217 91% 50%;
+    --zone-b: 262 83% 58%;
+    --zone-c: 142 76% 36%;
+    --zone-d: 38 92% 50%;
+    --zone-e: 0 84% 60%;
+    --zone-f: 340 82% 52%;
+    --zone-g: 25 95% 53%;
+    --zone-h: 180 70% 40%;
+  }
+
+  .dark {
+    --background: 220 20% 10%;
+    --foreground: 220 14% 96%;
+
+    --card: 220 20% 14%;
+    --card-foreground: 220 14% 96%;
+
+    --popover: 220 20% 14%;
+    --popover-foreground: 220 14% 96%;
+
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 20% 20%;
+    --secondary-foreground: 220 14% 96%;
+
+    --muted: 220 20% 20%;
+    --muted-foreground: 220 10% 60%;
+
+    --accent: 217 91% 20%;
+    --accent-foreground: 217 91% 80%;
+
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 220 20% 20%;
+    --input: 220 20% 20%;
+    --ring: 217 91% 60%;
+
+    --sidebar-background: 220 20% 10%;
+    --sidebar-foreground: 220 14% 96%;
+    --sidebar-primary: 217 91% 60%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 220 20% 20%;
+    --sidebar-accent-foreground: 220 14% 96%;
+    --sidebar-border: 220 20% 20%;
+    --sidebar-ring: 217 91% 60%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground font-sans antialiased;
+    font-family: 'Inter', sans-serif;
+  }
+}
+
+@layer utilities {
+  .zone-badge-a {
+    @apply bg-primary/10 text-primary border-primary/20;
+  }
+  .zone-badge-b {
+    background-color: hsl(var(--zone-b) / 0.1);
+    color: hsl(var(--zone-b));
+    border-color: hsl(var(--zone-b) / 0.2);
+  }
+  .zone-badge-c {
+    background-color: hsl(var(--zone-c) / 0.1);
+    color: hsl(var(--zone-c));
+    border-color: hsl(var(--zone-c) / 0.2);
+  }
+  .zone-badge-d {
+    background-color: hsl(var(--zone-d) / 0.1);
+    color: hsl(var(--zone-d));
+    border-color: hsl(var(--zone-d) / 0.2);
+  }
+  .zone-badge-e {
+    background-color: hsl(var(--zone-e) / 0.1);
+    color: hsl(var(--zone-e));
+    border-color: hsl(var(--zone-e) / 0.2);
+  }
+  .zone-badge-f {
+    background-color: hsl(var(--zone-f) / 0.1);
+    color: hsl(var(--zone-f));
+    border-color: hsl(var(--zone-f) / 0.2);
+  }
+  .zone-badge-g {
+    background-color: hsl(var(--zone-g) / 0.1);
+    color: hsl(var(--zone-g));
+    border-color: hsl(var(--zone-g) / 0.2);
+  }
+  .zone-badge-h {
+    background-color: hsl(var(--zone-h) / 0.1);
+    color: hsl(var(--zone-h));
+    border-color: hsl(var(--zone-h) / 0.2);
+  }
+
+  .editable-cell {
+    @apply transition-all duration-150 cursor-pointer hover:bg-accent/50 focus-within:bg-accent focus-within:ring-2 focus-within:ring-primary/30;
+  }
+
+  .na-cell {
+    @apply bg-muted/50 text-muted-foreground italic;
+  }
+}

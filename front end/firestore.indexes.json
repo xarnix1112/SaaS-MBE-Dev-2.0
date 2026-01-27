@@ -1,0 +1,70 @@
+{
+  "indexes": [
+    {
+      "collectionGroup": "shippingZones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "saasAccountId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "name",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "shippingServices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "saasAccountId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "order",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "weightBrackets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "saasAccountId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "order",
+          "order": "ASCENDING"
+        }
+      ]
+    },
+    {
+      "collectionGroup": "shippingRates",
+      "queryScope": "COLLECTION",
+      "fields": [
+        {
+          "fieldPath": "saasAccountId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "zoneId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "serviceId",
+          "order": "ASCENDING"
+        },
+        {
+          "fieldPath": "weightBracketId",
+          "order": "ASCENDING"
+        }
+      ]
+    }
+  ],
+  "fieldOverrides": []
+}
+
