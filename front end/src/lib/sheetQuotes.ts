@@ -627,6 +627,7 @@ export async function loadQuotes(): Promise<Quote[]> {
     return quotes.map((q: any) => ({
       ...q,
       status: q.status || 'new',
+      paymentStatus: q.paymentStatus || 'pending',
       createdAt: q.createdAt ? new Date(q.createdAt) : new Date(),
       updatedAt: q.updatedAt ? new Date(q.updatedAt) : new Date(),
       timeline: q.timeline?.map((event: any) => ({
@@ -637,10 +638,23 @@ export async function loadQuotes(): Promise<Quote[]> {
       client: q.client || { name: '', email: '', phone: '', address: '' },
       delivery: q.delivery || { mode: 'client', contact: {}, address: {} },
       items: q.items || [],
-      paymentLinks: q.paymentLinks || [],
+      paymentLinks: q.paymentLinks?.map((link: any) => ({
+        ...link,
+        createdAt: link.createdAt ? new Date(link.createdAt) : new Date()
+      })) || [],
       messages: q.messages || [],
       internalNotes: q.internalNotes || [],
-      auctionHouseComments: q.auctionHouseComments || []
+      auctionHouseComments: q.auctionHouseComments || [],
+      // S'assurer que les options avec les prix sont bien copiées
+      // Fallback: si options.xxxPrice n'existe pas, utiliser la valeur à la racine (ancien format)
+      options: {
+        insurance: q.options?.insurance || false,
+        express: q.options?.express || false,
+        insuranceAmount: q.options?.insuranceAmount || q.insuranceAmount || 0,
+        expressAmount: q.options?.expressAmount || q.expressAmount || 0,
+        packagingPrice: q.options?.packagingPrice || q.packagingPrice || 0,
+        shippingPrice: q.options?.shippingPrice || q.shippingPrice || 0,
+      }
     })) as Quote[];
   } catch (error) {
     console.error("[quotes] Erreur lors du chargement des devis depuis l'API:", error);

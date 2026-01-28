@@ -380,12 +380,14 @@ export default function QuoteDetail() {
               },
             }));
             
-            // Sauvegarder dans Firestore
+            // Sauvegarder dans Firestore dans options.packagingPrice
             try {
               await setDoc(
                 doc(db, "quotes", quote.id),
                 {
-                  packagingPrice: packagingPrice,
+                  options: {
+                    packagingPrice: packagingPrice,
+                  },
                   updatedAt: Timestamp.now(),
                 },
                 { merge: true }
@@ -550,12 +552,14 @@ export default function QuoteDetail() {
                   },
                 }));
                 
-                // Sauvegarder dans Firestore
+                // Sauvegarder dans Firestore dans options.shippingPrice
                 try {
                   await setDoc(
                     doc(db, "quotes", quote.id),
                     {
-                      shippingPrice: newShippingPrice,
+                      options: {
+                        shippingPrice: newShippingPrice,
+                      },
                       updatedAt: Timestamp.now(),
                     },
                     { merge: true }
@@ -627,7 +631,9 @@ export default function QuoteDetail() {
         doc(db, "quotes", quote.id),
         {
           totalAmount: newTotal,
-          insuranceAmount,
+          options: {
+            insuranceAmount,
+          },
           updatedAt: Timestamp.now(),
         },
         { merge: true }

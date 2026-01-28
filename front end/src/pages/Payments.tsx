@@ -67,9 +67,10 @@ export default function Payments() {
     }
   }, [quotes]);
 
+  // Afficher tous les devis qui ont au moins un lien de paiement créé
+  // (peu importe leur statut actuel - ils peuvent être paid, awaiting_collection, collected, etc.)
   const quotesWithPayment = quotes.filter(q => 
-    ['payment_link_sent', 'awaiting_payment', 'paid'].includes(q.status) ||
-    q.paymentLinks.length > 0
+    q.paymentLinks && q.paymentLinks.length > 0
   );
 
   const filteredQuotes = quotesWithPayment.filter(quote => {
@@ -94,6 +95,21 @@ export default function Payments() {
       .filter(q => q.paymentStatus === 'paid')
       .reduce((sum, q) => sum + q.totalAmount, 0),
   };
+
+  // Debug: Afficher les devis avec paymentLinks
+  useEffect(() => {
+    console.log('[Payments] 📊 Tous les devis chargés:', quotes.length);
+    console.log('[Payments] 💳 Devis avec paymentLinks:', quotesWithPayment.length);
+    console.log('[Payments] 📋 Détail:', quotesWithPayment.map(q => ({
+      reference: q.reference,
+      status: q.status,
+      paymentStatus: q.paymentStatus,
+      paymentLinksCount: q.paymentLinks?.length || 0,
+    })));
+    console.log('[Payments] ✅ Devis affichés après filtrage:', filteredQuotes.length);
+    console.log('[Payments] 🔍 Filtre actuel:', filter);
+    console.log('[Payments] 🔍 Recherche actuelle:', search || '(vide)');
+  }, [quotes, quotesWithPayment, filteredQuotes, filter, search]);
 
   return (
     <div className="flex flex-col h-full">
@@ -245,29 +261,16 @@ export default function Payments() {
                     </TableCell>
                     <TableCell>
                       {(() => {
-                        // Récupérer le lien de paiement actif le plus récent
-                        const activeLink = quote.paymentLinks
-                          .filter(link => link && link.status === 'active')
-                          .sort((a, b) => {
-                            const dateA = a.createdAt instanceof Date ? a.createdAt.getTime() : new Date(a.createdAt).getTime();
-                            const dateB = b.createdAt instanceof Date ? b.createdAt.getTime() : new Date(b.createdAt).getTime();
-                            return dateB - dateA;
-                          })[0];
-                        
-                        // Si un lien actif existe, utiliser son montant
-                        if (activeLink) {
-                          return <span className="font-semibold">{activeLink.amount.toFixed(2)}€</span>;
-                        }
-                        
-                        // Sinon, calculer le total comme dans QuoteDetail
+                        // Toujours calculer le total réel depuis les options du devis
+                        // Ne pas utiliser le montant du lien de paiement qui peut être obsolète
                         const total = (
-                          (quote.options.packagingPrice || 0) +
-                          (quote.options.shippingPrice || 0) +
-                          (quote.options.insuranceAmount || 0)
+                          (quote.options?.packagingPrice || 0) +
+                          (quote.options?.shippingPrice || 0) +
+                          (quote.options?.insuranceAmount || 0)
                         );
                         
                         // Si le total calculé est > 0, l'utiliser, sinon utiliser totalAmount
-                        const displayAmount = total > 0 ? total : quote.totalAmount;
+                        const displayAmount = total > 0 ? total : (quote.totalAmount || 0);
                         return <span className="font-semibold">{displayAmount.toFixed(2)}€</span>;
                       })()}
                     </TableCell>

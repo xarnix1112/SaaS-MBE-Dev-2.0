@@ -8162,12 +8162,40 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
       };
     }
 
-    const quotes = quotesSnapshot.docs.map(doc => {
+    const quotes = await Promise.all(quotesSnapshot.docs.map(async (doc) => {
       const data = doc.data();
+      
+      // Charger les paiements depuis la collection paiements
+      let paymentLinksFromPaiements = [];
+      try {
+        const paiementsSnapshot = await firestore
+          .collection('paiements')
+          .where('devisId', '==', doc.id)
+          .get();
+        
+        paymentLinksFromPaiements = paiementsSnapshot.docs.map(paiementDoc => {
+          const p = paiementDoc.data();
+          return {
+            id: paiementDoc.id,
+            url: p.url || '',
+            amount: p.amount || 0,
+            createdAt: p.createdAt?.toDate ? p.createdAt.toDate().toISOString() : p.createdAt,
+            status: p.status === 'PAID' ? 'paid' : (p.status === 'CANCELLED' ? 'expired' : 'active')
+          };
+        });
+      } catch (paiementError) {
+        console.warn(`[API] ⚠️  Erreur chargement paiements pour devis ${doc.id}:`, paiementError.message);
+      }
+      
+      // Fusionner avec les paymentLinks existants (ancien système)
+      const existingPaymentLinks = data.paymentLinks || [];
+      const allPaymentLinks = [...existingPaymentLinks, ...paymentLinksFromPaiements];
+      
       // Convertir les Timestamps en Dates pour le frontend
       return {
         id: doc.id,
         ...data,
+        paymentLinks: allPaymentLinks,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
         // Convertir timeline si présent
@@ -8176,7 +8204,7 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
           date: event.date?.toDate ? event.date.toDate().toISOString() : event.date
         })) || []
       };
-    });
+    }));
 
     console.log(`[API] ✅ ${quotes.length} devis récupéré(s) pour saasAccountId: ${req.saasAccountId}`);
     res.json(quotes);
