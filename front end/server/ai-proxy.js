@@ -5054,6 +5054,25 @@ async function syncGmailAccount(saasAccountId, gmailIntegration) {
         'integrations.gmail.connected': false
       });
       console.log('[Gmail Sync] ⚠️  Gmail déconnecté (token expiré) pour saasAccountId:', saasAccountId);
+      
+      // Créer une notification pour informer l'utilisateur
+      try {
+        await createNotification(firestore, {
+          clientSaasId: saasAccountId,
+          devisId: null,
+          type: NOTIFICATION_TYPES.SYSTEM,
+          title: '⚠️ Connexion Gmail expirée',
+          message: 'Votre connexion Gmail a expiré et doit être renouvelée.\n\n' +
+                   '📋 Pour reconnecter Gmail :\n' +
+                   '1. Allez dans Paramètres > Intégrations\n' +
+                   '2. Cliquez sur "Se reconnecter à Gmail"\n' +
+                   '3. Autorisez l\'accès à votre compte Gmail\n\n' +
+                   '✅ Une fois reconnecté, la synchronisation automatique des emails reprendra.'
+        });
+        console.log('[Gmail Sync] 🔔 Notification de déconnexion créée pour saasAccountId:', saasAccountId);
+      } catch (notifError) {
+        console.error('[Gmail Sync] Erreur création notification:', notifError);
+      }
     }
   }
 }
@@ -6590,6 +6609,25 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         'integrations.googleSheets.connected': false
       });
       console.log('[Google Sheets Sync] ⚠️  Google Sheets déconnecté (token expiré) pour saasAccountId:', saasAccountId);
+      
+      // Créer une notification pour informer l'utilisateur
+      try {
+        await createNotification(firestore, {
+          clientSaasId: saasAccountId,
+          devisId: null,
+          type: NOTIFICATION_TYPES.SYSTEM,
+          title: '⚠️ Connexion Google Sheets expirée',
+          message: 'Votre connexion Google Sheets a expiré et doit être renouvelée.\n\n' +
+                   '📋 Pour reconnecter Google Sheets :\n' +
+                   '1. Allez dans Paramètres > Intégrations\n' +
+                   '2. Cliquez sur "Resynchroniser" ou "Se reconnecter à Google Sheets"\n' +
+                   '3. Autorisez l\'accès à vos Google Sheets\n\n' +
+                   '✅ Une fois reconnecté, la synchronisation automatique des nouveaux devis reprendra.'
+        });
+        console.log('[Google Sheets Sync] 🔔 Notification de déconnexion créée pour saasAccountId:', saasAccountId);
+      } catch (notifError) {
+        console.error('[Google Sheets Sync] Erreur création notification:', notifError);
+      }
     }
   }
 }

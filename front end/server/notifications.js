@@ -16,6 +16,7 @@ export const NOTIFICATION_TYPES = {
   DEVIS_PAID: 'DEVIS_PAID',
   DEVIS_PARTIALLY_PAID: 'DEVIS_PARTIALLY_PAID',
   SURCOUT_CREATED: 'SURCOUT_CREATED',
+  SYSTEM: 'SYSTEM', // Notifications système (expiration tokens OAuth, erreurs, etc.)
 };
 
 /**
@@ -33,22 +34,30 @@ export const NOTIFICATION_TYPES = {
 export async function createNotification(firestore, notificationData) {
   const { clientSaasId, devisId, type, title, message } = notificationData;
 
-  if (!clientSaasId || !devisId || !type || !title || !message) {
-    throw new Error('Tous les champs sont requis pour créer une notification');
+  // Validation: clientSaasId, type, title et message sont obligatoires
+  // devisId est optionnel (null pour les notifications système)
+  if (!clientSaasId || !type || !title || !message) {
+    throw new Error('clientSaasId, type, title et message sont requis pour créer une notification');
   }
 
   if (!Object.values(NOTIFICATION_TYPES).includes(type)) {
     throw new Error(`Type de notification invalide: ${type}`);
   }
 
-  const docRef = await firestore.collection('notifications').add({
+  const notificationDoc = {
     clientSaasId,
-    devisId,
     type,
     title,
     message,
     createdAt: Timestamp.now(),
-  });
+  };
+
+  // Ajouter devisId seulement s'il est fourni
+  if (devisId) {
+    notificationDoc.devisId = devisId;
+  }
+
+  const docRef = await firestore.collection('notifications').add(notificationDoc);
 
   console.log(`[notifications] ✅ Notification créée: ${docRef.id}`, {
     type,
