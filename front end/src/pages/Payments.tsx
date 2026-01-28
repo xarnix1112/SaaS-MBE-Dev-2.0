@@ -9,7 +9,7 @@ import { useQuotes } from "@/hooks/use-quotes";
 import { useToast } from "@/components/ui/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
 import { createStripeLink } from "@/lib/stripe";
-import { setDoc, doc, Timestamp } from "firebase/firestore";
+import { setDoc, doc, Timestamp, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { createTimelineEvent, timelineEventToFirestore } from "@/lib/quoteTimeline";
 import {
@@ -73,9 +73,11 @@ export default function Payments() {
   );
 
   const filteredQuotes = quotesWithPayment.filter(quote => {
+    const searchLower = search.toLowerCase();
     const matchesSearch = 
-      quote.reference.toLowerCase().includes(search.toLowerCase()) ||
-      quote.client.name.toLowerCase().includes(search.toLowerCase());
+      (quote.reference?.toLowerCase() || '').includes(searchLower) ||
+      (quote.client?.name?.toLowerCase() || '').includes(searchLower) ||
+      (quote.client?.email?.toLowerCase() || '').includes(searchLower);
     
     const matchesFilter = filter === 'all' || quote.paymentStatus === filter;
     

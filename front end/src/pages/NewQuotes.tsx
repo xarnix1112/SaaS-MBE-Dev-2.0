@@ -37,10 +37,13 @@ export default function NewQuotes() {
   const filteredQuotes = useMemo(
     () =>
       newQuotes.filter((quote) => {
+        const searchLower = search.toLowerCase();
         const matchesSearch =
-          quote.reference.toLowerCase().includes(search.toLowerCase()) ||
-          quote.client.name.toLowerCase().includes(search.toLowerCase()) ||
-          quote.lot.number.toLowerCase().includes(search.toLowerCase());
+          (quote.reference?.toLowerCase() || '').includes(searchLower) ||
+          (quote.client?.name?.toLowerCase() || '').includes(searchLower) ||
+          (quote.lot?.number?.toLowerCase() || '').includes(searchLower) ||
+          (quote.lot?.description?.toLowerCase() || '').includes(searchLower) ||
+          (quote.delivery?.contact?.name?.toLowerCase() || '').includes(searchLower);
 
         const matchesStatus =
           filterStatus === "all" || quote.status === filterStatus;
