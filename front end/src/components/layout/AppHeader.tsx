@@ -5,6 +5,7 @@ import { NotificationBell } from '@/components/notifications/NotificationBell';
 import { NotificationDrawer } from '@/components/notifications/NotificationDrawer';
 import { AccountMenu } from '@/components/auth/AccountMenu';
 import { useQuotes } from '@/hooks/use-quotes';
+import { useAuth } from '@/hooks/useAuth';
 import { Quote } from '@/types/quote';
 import { useNavigate } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -12,10 +13,13 @@ import { cn } from '@/lib/utils';
 interface AppHeaderProps {
   title: string;
   subtitle?: string;
-  clientId?: string; // ID du client SaaS
+  clientId?: string; // ID du client SaaS (optionnel, sera récupéré depuis useAuth si non fourni)
 }
 
-export function AppHeader({ title, subtitle, clientId = 'dxHUjMCaJ0A7vFBiGNFR' }: AppHeaderProps) {
+export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
+  const { saasAccount } = useAuth();
+  // Utiliser le clientId fourni en prop, sinon récupérer depuis useAuth
+  const effectiveClientId = clientId || saasAccount?.id;
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [showResults, setShowResults] = useState(false);
@@ -161,27 +165,29 @@ export function AppHeader({ title, subtitle, clientId = 'dxHUjMCaJ0A7vFBiGNFR' }
             )}
           </div>
 
-          {/* Notifications */}
-          <NotificationBell
-            clientId={clientId}
-            onClick={() => setIsDrawerOpen(true)}
-          />
+          {/* Notifications - Affiché uniquement si clientId disponible */}
+          {effectiveClientId && (
+            <>
+              <NotificationBell
+                clientId={effectiveClientId}
+                onClick={() => setIsDrawerOpen(true)}
+              />
+              <NotificationDrawer
+                clientId={effectiveClientId}
+                open={isDrawerOpen}
+                onOpenChange={setIsDrawerOpen}
+                onNotificationRead={() => {
+                  // Force le rechargement du compteur en fermant et rouvrant
+                  // Le NotificationBell se mettra à jour automatiquement via polling
+                }}
+              />
+            </>
+          )}
 
           {/* Account Menu */}
           <AccountMenu />
         </div>
       </header>
-
-      {/* Notification Drawer */}
-      <NotificationDrawer
-        clientId={clientId}
-        open={isDrawerOpen}
-        onOpenChange={setIsDrawerOpen}
-        onNotificationRead={() => {
-          // Force le rechargement du compteur en fermant et rouvrant
-          // Le NotificationBell se mettra à jour automatiquement via polling
-        }}
-      />
     </>
   );
 }

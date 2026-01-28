@@ -11,7 +11,7 @@ import { Button } from '@/components/ui/button';
 import { getNotificationsCount } from '@/lib/notifications';
 
 interface NotificationBellProps {
-  clientId: string;
+  clientId?: string; // Optionnel : sera récupéré depuis le token si non fourni
   onClick: () => void;
 }
 
@@ -20,24 +20,31 @@ export function NotificationBell({ clientId, onClick }: NotificationBellProps) {
   const [isLoading, setIsLoading] = useState(true);
 
   const loadCount = useCallback(async () => {
-    if (!clientId) return;
-
+    // Si clientId n'est pas fourni, le backend le récupérera depuis le token
+    // On peut quand même appeler l'API
     try {
       const notifCount = await getNotificationsCount(clientId);
       setCount(notifCount);
     } catch (error) {
-      console.error('[NotificationBell] Erreur chargement compteur:', error);
+      // Si erreur 400 (clientId manquant), on ignore silencieusement
+      // car cela signifie que l'utilisateur n'est peut-être pas encore authentifié
+      if (error instanceof Error && error.message.includes('clientId requis')) {
+        console.log('[NotificationBell] ClientId non disponible, attente authentification...');
+        setCount(0);
+      } else {
+        console.error('[NotificationBell] Erreur chargement compteur:', error);
+      }
     } finally {
       setIsLoading(false);
     }
   }, [clientId]);
 
   useEffect(() => {
+    // Charger immédiatement au montage
     loadCount();
 
-    // OPTIMISATION: Augmenter l'intervalle de polling pour réduire les requêtes API
-    // Passer de 30 secondes à 2 minutes (120 secondes)
-    const interval = setInterval(loadCount, 120000);
+    // Polling toutes les 30 secondes pour une meilleure réactivité
+    const interval = setInterval(loadCount, 30000);
 
     return () => clearInterval(interval);
   }, [loadCount]);

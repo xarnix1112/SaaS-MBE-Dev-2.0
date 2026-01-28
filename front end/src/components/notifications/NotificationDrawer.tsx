@@ -25,7 +25,7 @@ import { formatDistanceToNow } from 'date-fns';
 import { fr } from 'date-fns/locale';
 
 interface NotificationDrawerProps {
-  clientId: string;
+  clientId?: string; // Optionnel : sera récupéré depuis le token si non fourni
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onNotificationRead?: () => void;
@@ -79,15 +79,22 @@ export function NotificationDrawer({
   const navigate = useNavigate();
 
   const loadNotifications = async () => {
-    if (!clientId || !open) return;
+    if (!open) return;
 
     setIsLoading(true);
     try {
+      // Si clientId n'est pas fourni, le backend le récupérera depuis le token
       const data = await getNotifications(clientId);
       setNotifications(data);
     } catch (error) {
-      console.error('[NotificationDrawer] Erreur chargement:', error);
-      toast.error('Erreur lors du chargement des notifications');
+      // Si erreur 400 (clientId manquant), on ignore silencieusement
+      if (error instanceof Error && error.message.includes('clientId requis')) {
+        console.log('[NotificationDrawer] ClientId non disponible, attente authentification...');
+        setNotifications([]);
+      } else {
+        console.error('[NotificationDrawer] Erreur chargement:', error);
+        toast.error('Erreur lors du chargement des notifications');
+      }
     } finally {
       setIsLoading(false);
     }
@@ -102,6 +109,7 @@ export function NotificationDrawer({
   const handleNotificationClick = async (notification: Notification) => {
     try {
       // Supprimer la notification (marquer comme lue)
+      // Si clientId n'est pas fourni, le backend le récupérera depuis le token
       await deleteNotification(notification.id, clientId);
 
       // Recharger les notifications

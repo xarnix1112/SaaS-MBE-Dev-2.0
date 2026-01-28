@@ -1,16 +1,25 @@
 /**
  * API Client pour les notifications
+ * Utilise authenticatedFetch pour passer automatiquement le token d'authentification
  */
 
 import type { Notification, NotificationResponse } from '@/types/notification';
+import { authenticatedFetch } from './api';
 
 const API_BASE = '';
 
 /**
  * Récupère toutes les notifications d'un client
+ * Le clientId est maintenant récupéré automatiquement depuis req.saasAccountId côté backend
  */
-export async function getNotifications(clientId: string): Promise<Notification[]> {
-  const response = await fetch(`${API_BASE}/api/notifications?clientId=${clientId}`);
+export async function getNotifications(clientId?: string): Promise<Notification[]> {
+  // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
+  // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
+  const url = clientId 
+    ? `${API_BASE}/api/notifications?clientId=${clientId}`
+    : `${API_BASE}/api/notifications`;
+  
+  const response = await authenticatedFetch(url);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
@@ -28,9 +37,16 @@ export async function getNotifications(clientId: string): Promise<Notification[]
 
 /**
  * Compte le nombre de notifications d'un client
+ * Le clientId est maintenant récupéré automatiquement depuis req.saasAccountId côté backend
  */
-export async function getNotificationsCount(clientId: string): Promise<number> {
-  const response = await fetch(`${API_BASE}/api/notifications/count?clientId=${clientId}`);
+export async function getNotificationsCount(clientId?: string): Promise<number> {
+  // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
+  // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
+  const url = clientId
+    ? `${API_BASE}/api/notifications/count?clientId=${clientId}`
+    : `${API_BASE}/api/notifications/count`;
+  
+  const response = await authenticatedFetch(url);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
@@ -43,17 +59,21 @@ export async function getNotificationsCount(clientId: string): Promise<number> {
 
 /**
  * Supprime une notification (marque comme lue)
+ * Le clientId est maintenant récupéré automatiquement depuis req.saasAccountId côté backend
  */
 export async function deleteNotification(
   notificationId: string,
-  clientId: string
+  clientId?: string
 ): Promise<void> {
-  const response = await fetch(
-    `${API_BASE}/api/notifications/${notificationId}?clientId=${clientId}`,
-    {
-      method: 'DELETE',
-    }
-  );
+  // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
+  // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
+  const url = clientId
+    ? `${API_BASE}/api/notifications/${notificationId}?clientId=${clientId}`
+    : `${API_BASE}/api/notifications/${notificationId}`;
+  
+  const response = await authenticatedFetch(url, {
+    method: 'DELETE',
+  });
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));

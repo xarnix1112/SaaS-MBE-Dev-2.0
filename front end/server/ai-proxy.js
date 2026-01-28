@@ -7846,20 +7846,20 @@ app.post("/api/paiement/:id/cancel", (req, res) => {
 
 // ===== ROUTES NOTIFICATIONS =====
 
-// Récupérer les notifications d'un client
-app.get("/api/notifications", (req, res) => {
+// Récupérer les notifications d'un client (authentification requise)
+app.get("/api/notifications", requireAuth, (req, res) => {
   console.log('[AI Proxy] 📥 GET /api/notifications appelé');
   handleGetNotifications(req, res, firestore);
 });
 
-// Compter les notifications d'un client
-app.get("/api/notifications/count", (req, res) => {
+// Compter les notifications d'un client (authentification requise)
+app.get("/api/notifications/count", requireAuth, (req, res) => {
   console.log('[AI Proxy] 📥 GET /api/notifications/count appelé');
   handleGetNotificationsCount(req, res, firestore);
 });
 
-// Supprimer une notification (marquer comme lue)
-app.delete("/api/notifications/:id", (req, res) => {
+// Supprimer une notification (marquer comme lue) (authentification requise)
+app.delete("/api/notifications/:id", requireAuth, (req, res) => {
   console.log('[AI Proxy] 📥 DELETE /api/notifications/:id appelé');
   handleDeleteNotification(req, res, firestore);
 });

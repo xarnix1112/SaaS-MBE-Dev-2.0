@@ -71,6 +71,7 @@ export async function createNotification(firestore, notificationData) {
 /**
  * GET /api/notifications
  * Récupère toutes les notifications non lues d'un client
+ * Utilise req.saasAccountId depuis requireAuth (sécurisé) ou req.query.clientId en fallback
  */
 export async function handleGetNotifications(req, res, firestore) {
   try {
@@ -78,13 +79,15 @@ export async function handleGetNotifications(req, res, firestore) {
       return res.status(500).json({ error: 'Firestore non initialisé' });
     }
 
-    const clientId = req.query.clientId;
+    // Préférer req.saasAccountId depuis requireAuth (plus sécurisé)
+    // Fallback vers req.query.clientId pour compatibilité
+    const clientId = req.saasAccountId || req.query.clientId;
 
     if (!clientId) {
-      return res.status(400).json({ error: 'clientId requis' });
+      return res.status(400).json({ error: 'clientId requis (saasAccountId non trouvé dans le token)' });
     }
 
-    console.log('[notifications] 📥 Récupération des notifications pour:', clientId);
+    console.log('[notifications] 📥 Récupération des notifications pour:', clientId, req.saasAccountId ? '(depuis token)' : '(depuis query)');
 
     // Récupérer les notifications du client, triées par date décroissante
     const snapshot = await firestore
@@ -123,6 +126,7 @@ export async function handleGetNotifications(req, res, firestore) {
 /**
  * GET /api/notifications/count
  * Compte le nombre de notifications non lues d'un client
+ * Utilise req.saasAccountId depuis requireAuth (sécurisé) ou req.query.clientId en fallback
  */
 export async function handleGetNotificationsCount(req, res, firestore) {
   try {
@@ -130,13 +134,15 @@ export async function handleGetNotificationsCount(req, res, firestore) {
       return res.status(500).json({ error: 'Firestore non initialisé' });
     }
 
-    const clientId = req.query.clientId;
+    // Préférer req.saasAccountId depuis requireAuth (plus sécurisé)
+    // Fallback vers req.query.clientId pour compatibilité
+    const clientId = req.saasAccountId || req.query.clientId;
 
     if (!clientId) {
-      return res.status(400).json({ error: 'clientId requis' });
+      return res.status(400).json({ error: 'clientId requis (saasAccountId non trouvé dans le token)' });
     }
 
-    console.log('[notifications] 📊 Comptage des notifications pour:', clientId);
+    console.log('[notifications] 📊 Comptage des notifications pour:', clientId, req.saasAccountId ? '(depuis token)' : '(depuis query)');
 
     const snapshot = await firestore
       .collection('notifications')
@@ -160,6 +166,7 @@ export async function handleGetNotificationsCount(req, res, firestore) {
 /**
  * DELETE /api/notifications/:id
  * Supprime une notification (marque comme lue)
+ * Utilise req.saasAccountId depuis requireAuth (sécurisé) ou req.query.clientId en fallback
  */
 export async function handleDeleteNotification(req, res, firestore) {
   try {
@@ -168,13 +175,15 @@ export async function handleDeleteNotification(req, res, firestore) {
     }
 
     const { id } = req.params;
-    const clientId = req.query.clientId;
+    // Préférer req.saasAccountId depuis requireAuth (plus sécurisé)
+    // Fallback vers req.query.clientId pour compatibilité
+    const clientId = req.saasAccountId || req.query.clientId;
 
     if (!clientId) {
-      return res.status(400).json({ error: 'clientId requis' });
+      return res.status(400).json({ error: 'clientId requis (saasAccountId non trouvé dans le token)' });
     }
 
-    console.log('[notifications] 🗑️  Suppression notification:', id);
+    console.log('[notifications] 🗑️  Suppression notification:', id, 'pour client:', clientId, req.saasAccountId ? '(depuis token)' : '(depuis query)');
 
     // Vérifier que la notification appartient au client
     const doc = await firestore.collection('notifications').doc(id).get();
