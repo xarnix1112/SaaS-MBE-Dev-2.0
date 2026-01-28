@@ -12,6 +12,9 @@ Système de notifications centralisé, sécurisé et évolutif permettant à cha
 - ✅ Chaque client ne voit QUE ses propres notifications
 - ✅ Compatible avec messages clients, paiements Stripe, changements d'état
 - ✅ Prêt pour résumé quotidien par email
+- ✅ **Visible sur toutes les pages** (28 janvier 2026)
+- ✅ **Chargement automatique au démarrage** (28 janvier 2026)
+- ✅ **Authentification sécurisée via token** (28 janvier 2026)
 
 ---
 
@@ -117,8 +120,12 @@ await createNotification(firestore, {
 
 Récupère toutes les notifications actives d'un client.
 
-**Query params :**
-- `clientId` (string) - ID du client SaaS
+**Authentification :** Requise (middleware `requireAuth`)
+
+**Query params (optionnel, pour compatibilité) :**
+- `clientId` (string) - ID du client SaaS (fallback si `req.saasAccountId` non disponible)
+
+**Note (28 janvier 2026) :** Le backend utilise maintenant `req.saasAccountId` depuis le token d'authentification (plus sécurisé). Le paramètre `clientId` est conservé pour compatibilité mais n'est plus nécessaire.
 
 **Response :**
 ```json
@@ -137,17 +144,26 @@ Récupère toutes les notifications actives d'un client.
 
 **Firestore query :**
 ```javascript
-.where("clientSaasId", "==", clientId)
+.where("clientSaasId", "==", req.saasAccountId || req.query.clientId)
 .orderBy("createdAt", "desc")
 .limit(20)
 ```
+
+**Sécurité (28 janvier 2026) :**
+- Route protégée par `requireAuth` middleware
+- `req.saasAccountId` extrait automatiquement du token Firebase
+- Isolation garantie : impossible d'accéder aux notifications d'autres comptes
 
 ### GET /api/notifications/count
 
 Compte le nombre de notifications non lues.
 
-**Query params :**
-- `clientId` (string) - ID du client SaaS
+**Authentification :** Requise (middleware `requireAuth`)
+
+**Query params (optionnel, pour compatibilité) :**
+- `clientId` (string) - ID du client SaaS (fallback si `req.saasAccountId` non disponible)
+
+**Note (28 janvier 2026) :** Le backend utilise maintenant `req.saasAccountId` depuis le token d'authentification (plus sécurisé).
 
 **Response :**
 ```json
@@ -160,11 +176,17 @@ Compte le nombre de notifications non lues.
 
 Supprime une notification (marque comme lue).
 
+**Authentification :** Requise (middleware `requireAuth`)
+
 **Params :**
 - `id` (string) - ID de la notification
 
-**Query params :**
-- `clientId` (string) - ID du client SaaS (sécurité)
+**Query params (optionnel, pour compatibilité) :**
+- `clientId` (string) - ID du client SaaS (fallback si `req.saasAccountId` non disponible)
+
+**Sécurité (28 janvier 2026) :**
+- Vérification que la notification appartient au `saasAccountId` de l'utilisateur
+- Impossible de supprimer les notifications d'autres comptes
 
 **Response :**
 ```json
@@ -189,11 +211,18 @@ Supprime une notification (marque comme lue).
 
 **Usage :**
 ```tsx
+// clientId optionnel - récupéré automatiquement depuis useAuth() dans AppHeader
 <NotificationBell
-  clientId="client_123"
+  clientId={saasAccount?.id} // Optionnel depuis 28/01/2026
   onClick={() => setIsDrawerOpen(true)}
 />
 ```
+
+**Améliorations (28 janvier 2026) :**
+- ✅ `clientId` optionnel (récupéré depuis token si non fourni)
+- ✅ Chargement immédiat au montage du composant
+- ✅ Polling toutes les 30 secondes (au lieu de 2 minutes)
+- ✅ Utilise `authenticatedFetch()` avec token automatique
 
 ### Composant NotificationDrawer
 
@@ -223,18 +252,33 @@ Supprime une notification (marque comme lue).
 
 **Fichier :** `src/components/layout/AppHeader.tsx`
 
+**Améliorations (28 janvier 2026) :**
+- ✅ Récupération automatique de `saasAccount.id` via `useAuth()`
+- ✅ `clientId` optionnel dans les props (fallback automatique)
+- ✅ Notifications visibles sur **toutes les pages** (pas seulement "Mon Compte")
+- ✅ Affichage conditionnel si `saasAccount` disponible
+
 ```tsx
-const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+import { useAuth } from '@/hooks/useAuth';
 
-<NotificationBell
-  clientId={clientId}
-  onClick={() => setIsDrawerOpen(true)}
-/>
+export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
+  const { saasAccount } = useAuth();
+  const effectiveClientId = clientId || saasAccount?.id;
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
 
-<NotificationDrawer
-  clientId={clientId}
-  open={isDrawerOpen}
-  onOpenChange={setIsDrawerOpen}
+  return (
+    <>
+      {/* Notifications - Affiché uniquement si clientId disponible */}
+      {effectiveClientId && (
+        <>
+          <NotificationBell
+            clientId={effectiveClientId}
+            onClick={() => setIsDrawerOpen(true)}
+          />
+          <NotificationDrawer
+            clientId={effectiveClientId}
+            open={isDrawerOpen}
+            onOpenChange={setIsDrawerOpen}
 />
 ```
 
@@ -271,6 +315,50 @@ match /notifications/{notificationId} {
 
 ---
 
+## 🌍 Système Global (28 janvier 2026)
+
+### Visibilité sur toutes les pages
+
+**Avant :** Les notifications n'étaient visibles que sur la page "Mon Compte"
+
+**Après :** Les notifications sont maintenant visibles sur **toutes les pages** de l'application
+
+**Implémentation :**
+- `AppHeader` récupère automatiquement `saasAccount.id` via `useAuth()`
+- Plus besoin de passer `clientId` manuellement à chaque page
+- Le badge de notifications apparaît dans le header global
+
+### Authentification sécurisée
+
+**Avant :** `clientId` passé en paramètre URL (moins sécurisé)
+
+**Après :** Authentification via token Firebase dans le header
+
+**Avantages :**
+- ✅ `req.saasAccountId` extrait automatiquement du token
+- ✅ Impossible de manipuler le `clientId` dans l'URL
+- ✅ Isolation garantie par compte SaaS
+- ✅ Routes protégées par `requireAuth` middleware
+
+### Chargement automatique
+
+**Fonctionnement :**
+1. Au démarrage de l'application, `AppHeader` se monte
+2. `useAuth()` récupère `saasAccount`
+3. `NotificationBell` se monte et charge immédiatement le compteur
+4. Polling automatique toutes les 30 secondes
+5. Badge visible sur toutes les pages
+
+**Code :**
+```typescript
+// NotificationBell.tsx
+useEffect(() => {
+  loadCount(); // Chargement immédiat
+  const interval = setInterval(loadCount, 30000); // 30 secondes
+  return () => clearInterval(interval);
+}, [loadCount]);
+```
+
 ## 📊 Flux complet
 
 ### 1. Paiement reçu
@@ -290,15 +378,15 @@ Notification sauvegardée dans Firestore
   ↓
 Frontend (polling 30s) détecte la nouvelle notification
   ↓
-Badge cloche : 0 → 1
+Badge cloche : 0 → 1 (visible sur TOUTES les pages)
   ↓
-Client clique sur la cloche
+Client clique sur la cloche (depuis n'importe quelle page)
   ↓
 Drawer s'ouvre avec la notification
   ↓
 Client clique sur la notification
   ↓
-DELETE /api/notifications/:id
+DELETE /api/notifications/:id (avec token d'authentification)
   ↓
 Redirection vers /devis/gs_xxx?tab=paiements
   ↓

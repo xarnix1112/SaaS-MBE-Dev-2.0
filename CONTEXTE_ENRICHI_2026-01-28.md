@@ -447,26 +447,74 @@ pause
 
 #### NotificationBell
 ```typescript
-// Fonctionnalités
+// Fonctionnalités (mises à jour 28/01/2026)
 - Compteur de notifications non lues
-- Polling toutes les 10 secondes
+- Polling toutes les 30 secondes (réduit de 2 minutes)
+- Chargement immédiat au montage du composant
 - Badge rouge si nouvelles notifications
 - Clic ouvre le tiroir
+- clientId optionnel (récupéré depuis token si non fourni)
+- Utilise authenticatedFetch() avec token automatique
 ```
 
 #### NotificationDrawer
 ```typescript
-// Fonctionnalités
+// Fonctionnalités (mises à jour 28/01/2026)
 - Liste des notifications
 - Filtre par type (QUOTE, EMAIL, PAYMENT, SYSTEM)
 - Marquage comme lu
 - Suppression
 - Navigation vers le devis associé
+- clientId optionnel (récupéré depuis token si non fourni)
+- Gestion d'erreur améliorée
+```
+
+#### AppHeader - Notifications Globales (28/01/2026) ⭐ NOUVEAU
+```typescript
+// Améliorations majeures
+- Récupération automatique de saasAccount.id via useAuth()
+- clientId optionnel dans les props (fallback automatique)
+- Notifications visibles sur TOUTES les pages (pas seulement "Mon Compte")
+- Affichage conditionnel si saasAccount disponible
+- Intégration NotificationBell + NotificationDrawer
 ```
 
 ## 🚀 Fonctionnalités récentes
 
-### 1. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
+### 1. Notifications Globales (28 janvier 2026) ⭐ NOUVEAU
+
+**Problème résolu :**
+- Les notifications n'étaient visibles que sur la page "Mon Compte"
+- Le badge de notifications n'apparaissait pas sur les autres pages
+- Le compteur ne se chargeait pas automatiquement au démarrage
+
+**Solutions implémentées :**
+- ✅ `AppHeader` récupère automatiquement `saasAccount.id` via `useAuth()`
+- ✅ `clientId` optionnel partout (récupéré depuis token si non fourni)
+- ✅ Badge visible sur **toutes les pages** de l'application
+- ✅ Chargement immédiat au démarrage de l'application
+- ✅ Polling réduit de 2 minutes à 30 secondes (meilleure réactivité)
+- ✅ Authentification sécurisée via token (plus de clientId dans URL)
+- ✅ Backend utilise `req.saasAccountId` depuis `requireAuth` middleware
+
+**Fichiers modifiés :**
+- `front end/src/components/layout/AppHeader.tsx` - Récupération automatique saasAccount.id
+- `front end/src/lib/notifications.ts` - Utilisation authenticatedFetch()
+- `front end/src/components/notifications/NotificationBell.tsx` - Polling 30s + chargement immédiat
+- `front end/src/components/notifications/NotificationDrawer.tsx` - clientId optionnel
+- `front end/server/ai-proxy.js` - Routes protégées par requireAuth
+- `front end/server/notifications.js` - Utilisation req.saasAccountId depuis token
+
+**Sécurité :**
+- Routes API protégées par `requireAuth` middleware
+- `req.saasAccountId` extrait automatiquement du token Firebase
+- Isolation garantie : impossible d'accéder aux notifications d'autres comptes
+- Fallback vers `req.query.clientId` pour compatibilité uniquement
+
+**Documentation :**
+- `CHANGELOG_NOTIFICATIONS_GLOBAL_2026-01-28.md` - Documentation complète
+
+### 2. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
 
 **Composants modifiés :**
 - `AppHeader.tsx` - Ajout de la recherche globale

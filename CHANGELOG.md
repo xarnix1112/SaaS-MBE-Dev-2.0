@@ -1,5 +1,45 @@
 # 📝 Changelog
 
+## [2.0.1] - 2026-01-28 - Notifications Globales
+
+### 🔔 Notifications visibles sur toutes les pages
+
+**Problème résolu :**
+- Les notifications n'étaient visibles que sur la page "Mon Compte"
+- Le badge de notifications n'apparaissait pas sur les autres pages (Dashboard, Paiements, etc.)
+- Le compteur ne se chargeait pas automatiquement au démarrage
+
+**Solutions implémentées :**
+
+#### Frontend
+- ✅ `AppHeader` récupère automatiquement `saasAccount.id` via `useAuth()`
+- ✅ `clientId` optionnel dans tous les composants (récupéré depuis token si non fourni)
+- ✅ Badge visible sur **toutes les pages** de l'application
+- ✅ Chargement immédiat au démarrage de l'application
+- ✅ Polling réduit de 2 minutes à 30 secondes (meilleure réactivité)
+- ✅ Utilisation de `authenticatedFetch()` avec token automatique
+
+#### Backend
+- ✅ Routes protégées par `requireAuth` middleware
+- ✅ Utilisation de `req.saasAccountId` depuis le token (plus sécurisé)
+- ✅ Fallback vers `req.query.clientId` pour compatibilité
+- ✅ Isolation garantie : impossible d'accéder aux notifications d'autres comptes
+
+**Fichiers modifiés :**
+- `front end/src/components/layout/AppHeader.tsx`
+- `front end/src/lib/notifications.ts`
+- `front end/src/components/notifications/NotificationBell.tsx`
+- `front end/src/components/notifications/NotificationDrawer.tsx`
+- `front end/server/ai-proxy.js`
+- `front end/server/notifications.js`
+
+**Documentation :**
+- ✅ `CHANGELOG_NOTIFICATIONS_GLOBAL_2026-01-28.md` - Documentation complète
+- ✅ `NOTIFICATIONS_SYSTEM.md` - Mise à jour avec système global
+- ✅ `CONTEXTE_ENRICHI_2026-01-28.md` - Contexte enrichi
+
+---
+
 ## [2.0.0] - 2026-01-21 - Grille Tarifaire d'Expédition Configurable
 
 ### ✨ Nouvelles Fonctionnalités Majeures
