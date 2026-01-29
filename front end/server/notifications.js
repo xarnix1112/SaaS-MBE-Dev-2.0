@@ -10,6 +10,7 @@ import { Timestamp } from 'firebase-admin/firestore';
  * Types de notifications disponibles
  */
 export const NOTIFICATION_TYPES = {
+  NEW_QUOTE: 'NEW_QUOTE', // Nouveau devis reçu
   NEW_MESSAGE: 'NEW_MESSAGE',
   PAYMENT_RECEIVED: 'PAYMENT_RECEIVED',
   DEVIS_SENT: 'DEVIS_SENT',

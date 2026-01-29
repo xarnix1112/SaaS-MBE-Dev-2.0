@@ -6699,6 +6699,25 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       newDevisCount++;
       console.log(`[Google Sheets Sync] ✅ Devis créé pour la ligne ${sheetRowIndex} (${clientName || clientEmail})`);
 
+      // 🔔 CRÉER UNE NOTIFICATION pour le nouveau devis
+      try {
+        const notificationClientName = clientName || 'Client non renseigné';
+        const notificationCountry = receiverCountry || 'Pays non renseigné';
+        
+        await createNotification(firestore, {
+          clientSaasId: saasAccountId,
+          devisId: devisId,
+          type: NOTIFICATION_TYPES.NEW_QUOTE,
+          title: 'Nouveau devis reçu',
+          message: `Nouveau devis de ${notificationClientName} - Destination: ${notificationCountry}`
+        });
+        
+        console.log(`[Google Sheets Sync] 🔔 Notification créée pour nouveau devis ${devisId}`);
+      } catch (notifError) {
+        console.error(`[Google Sheets Sync] ⚠️  Erreur lors de la création de notification:`, notifError);
+        // Ne pas bloquer la création du devis si la notification échoue
+      }
+
       // Si un dossier Drive est configuré, rechercher automatiquement le bordereau
       // Note: On lance la recherche même si bordereauLink existe (lien Typeform)
       // car le fichier doit être trouvé dans Google Drive pour l'OCR
