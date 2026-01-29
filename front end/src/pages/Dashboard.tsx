@@ -11,7 +11,6 @@ import {
   Package, 
   Send, 
   CheckCircle2, 
-  AlertTriangle,
   Plus,
   ArrowRight,
 } from "lucide-react";
@@ -44,7 +43,6 @@ export default function Dashboard() {
       inPreparation: safeQuotes.filter((q) => q.status === "preparation").length,
       shipped: safeQuotes.filter((q) => q.status === "shipped").length,
       completed: safeQuotes.filter((q) => q.status === "completed").length,
-      urgentAlerts: safeQuotes.filter((q) => (q.verificationIssues?.length || 0) > 0).length,
     }),
     [safeQuotes]
   );
@@ -87,12 +85,6 @@ export default function Dashboard() {
             value={stats.awaitingCollection}
             icon={Truck}
             variant="default"
-          />
-          <StatCard
-            title="Alertes urgentes"
-            value={stats.urgentAlerts}
-            icon={AlertTriangle}
-            variant="error"
           />
         </div>
 
