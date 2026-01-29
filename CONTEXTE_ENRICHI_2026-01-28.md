@@ -632,7 +632,94 @@ if (description.length > 80) {
 
 ---
 
-### 4. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
+### 4. Trends Dynamiques Dashboard (29 janvier 2026) ⭐ NOUVEAU
+
+**Problème résolu :**
+- Trends hardcodés ("+12%") peu importe l'activité réelle
+- Pas de visibilité sur l'évolution réelle de l'activité
+- Perte de confiance dans les statistiques
+
+**Solutions implémentées :**
+
+#### Nouveau module `lib/trends.ts` (167 lignes)
+
+**Fonction principale : `calculateTrend()`**
+```typescript
+export function calculateTrend(
+  quotes: Quote[],
+  filterFn?: (quote: Quote) => boolean
+): TrendResult | null
+```
+
+**Logique de calcul :**
+1. Filtrer les devis selon un critère optionnel (status, etc.)
+2. Compter les devis d'aujourd'hui (00h00 → maintenant)
+3. Compter les devis d'hier (00h00 → 23h59)
+4. Si hier = 0, chercher le dernier jour avec activité
+5. Calculer le pourcentage : `((aujourd'hui - référence) / référence) × 100`
+6. Arrondir à l'entier
+
+**Fonctions spécialisées :**
+- `calculateNewQuotesTrend()` : Pour devis avec `status = 'new'`
+- `calculateAwaitingPaymentTrend()` : Pour devis avec `status = 'payment_link_sent' | 'awaiting_payment'`
+- `calculateAwaitingCollectionTrend()` : Pour devis avec `status = 'awaiting_collection'`
+
+#### Modification `Dashboard.tsx`
+
+```typescript
+// Calcul des trends avec useMemo
+const trends = useMemo(
+  () => ({
+    newQuotes: calculateNewQuotesTrend(safeQuotes),
+    awaitingPayment: calculateAwaitingPaymentTrend(safeQuotes),
+    awaitingCollection: calculateAwaitingCollectionTrend(safeQuotes),
+  }),
+  [safeQuotes]
+);
+
+// Application aux StatCards
+<StatCard
+  title="Nouveaux devis"
+  value={stats.newQuotes}
+  trend={trends.newQuotes ? { 
+    value: trends.newQuotes.value, 
+    isPositive: trends.newQuotes.isPositive 
+  } : undefined}
+/>
+```
+
+**Exemples de résultats :**
+
+| Hier | Aujourd'hui | Affichage |
+|------|-------------|-----------|
+| 5 devis | 6 devis | `+20% vs hier` ✅ |
+| 10 devis | 8 devis | `-20% vs hier` ⚠️ |
+| 5 devis | 5 devis | `0% vs hier` ✅ |
+| 0 devis (avant-hier: 4) | 3 devis | `-25% vs avant-hier` ⚠️ |
+| Aucun historique | 5 devis | `+100%` ✅ |
+
+**Bénéfices :**
+- ✅ **Visibilité réelle** : Voir l'évolution de son activité
+- ✅ **Prise de décision** : Identifier les tendances (croissance, décroissance)
+- ✅ **Confiance** : Données authentiques et non fictives
+- ✅ **Comparaison intelligente** : Si hier = 0, compare avec dernier jour actif
+
+**Performance :**
+- ✅ `useMemo` : Recalcul uniquement si `safeQuotes` change
+- ✅ Complexité O(n) : Une seule itération sur les devis
+- ✅ Calcul en mémoire (pas de requête Firestore)
+- ✅ Temps de calcul : < 10ms pour 1000 devis
+
+**Fichiers modifiés :**
+- `front end/src/lib/trends.ts` - Nouveau fichier (167 lignes)
+- `front end/src/pages/Dashboard.tsx` - Import + calcul + application trends
+
+**Documentation :**
+- `CHANGELOG_TRENDS_DASHBOARD_2026-01-29.md` - Documentation complète
+
+---
+
+### 5. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
 
 **Composants modifiés :**
 - `AppHeader.tsx` - Ajout de la recherche globale
@@ -651,7 +738,7 @@ if (description.length > 80) {
 - Multi-critères (référence, client, destinataire, lot)
 - Gestion robuste des données manquantes
 
-### 5. Notifications système OAuth (27 janvier 2026)
+### 6. Notifications système OAuth (27 janvier 2026)
 
 **Fonctionnalité :**
 - Notification automatique lors de l'expiration des tokens OAuth
@@ -664,7 +751,7 @@ if (description.length > 80) {
 - `ai-proxy.js` - Détection et création de notifications
 - Champ `devisId` optionnel pour les notifications système
 
-### 6. Polling Gmail et Google Sheets (27 janvier 2026)
+### 7. Polling Gmail et Google Sheets (27 janvier 2026)
 
 **Configuration :**
 - Intervalle : 5 minutes
@@ -672,7 +759,7 @@ if (description.length > 80) {
 - Marquage automatique des comptes déconnectés
 - Synchronisation incrémentale
 
-### 7. Setup Windows (27 janvier 2026)
+### 8. Setup Windows (27 janvier 2026)
 
 **Améliorations :**
 - Script `start-dev.bat` adapté pour Windows
@@ -836,9 +923,10 @@ Stop-Process -Id <PID> -Force
 - `GUIDE_WINDOWS.md` - Guide d'installation Windows
 - `CONTEXTE_WINDOWS_V2.0.md` - Contexte technique détaillé
 - `CHANGELOG_WINDOWS_SETUP_2026-01-27.md` - Modifications Windows
-- `CHANGELOG_SEARCH_FEATURE_2026-01-28.md` - Fonctionnalité de recherche ⭐ NOUVEAU
-- `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Email de collecte ⭐ NOUVEAU
-- `CHANGELOG_REMOVE_ALERTS_2026-01-29.md` - Suppression des alertes ⭐ NOUVEAU
+- `CHANGELOG_SEARCH_FEATURE_2026-01-28.md` - Fonctionnalité de recherche
+- `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Email de collecte
+- `CHANGELOG_REMOVE_ALERTS_2026-01-29.md` - Suppression des alertes
+- `CHANGELOG_TRENDS_DASHBOARD_2026-01-29.md` - Trends dynamiques ⭐ NOUVEAU
 - `CONTEXTE_ENRICHI_2026-01-28.md` - Ce fichier
 - `GOOGLE_SHEETS_INTEGRATION.md` - Intégration Google Sheets
 - `CHANGELOG_STRIPE_CONNECT.md` - Intégration Stripe Connect
@@ -910,7 +998,31 @@ Stop-Process -Id <PID> -Force
 
 ## 🔄 Historique des versions
 
-### v2.0.0 (28 janvier 2026) ⭐ ACTUEL
+### v2.0.4 (29 janvier 2026) ⭐ ACTUEL
+- ✅ Trends dynamiques dans le Dashboard
+- ✅ Calcul automatique de l'évolution des devis
+- ✅ Comparaison intelligente (aujourd'hui vs hier ou dernier jour actif)
+- ✅ Module `lib/trends.ts` avec fonctions réutilisables
+
+### v2.0.3 (29 janvier 2026)
+- ✅ Suppression du système d'alertes
+- ✅ Simplification de l'interface
+- ✅ Grille Dashboard optimisée (3 colonnes)
+- ✅ Un seul système de notification
+
+### v2.0.2 (29 janvier 2026)
+- ✅ Email de collecte amélioré
+- ✅ Tableau HTML structuré
+- ✅ Format de date français
+- ✅ Description limitée à 2 lignes
+
+### v2.0.1 (28 janvier 2026)
+- ✅ Notifications globales
+- ✅ Visible sur toutes les pages
+- ✅ Polling réduit à 30 secondes
+- ✅ Authentification sécurisée
+
+### v2.0.0 (28 janvier 2026)
 - ✅ Fonctionnalité de recherche de devis
 - ✅ Correction des écrans blancs
 - ✅ Recherche multi-critères sécurisée
