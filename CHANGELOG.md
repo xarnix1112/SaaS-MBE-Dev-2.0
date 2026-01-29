@@ -1,5 +1,55 @@
 # 📝 Changelog
 
+## [2.0.3] - 2026-01-29 - Suppression du Système d'Alertes
+
+### 🗑️ Simplification de l'interface
+
+**Raison :**
+- Le système d'alertes faisait doublon avec le système de notifications déjà en place
+- Préférence utilisateur pour le système de notifications
+- Simplification de l'interface et réduction de la complexité
+
+**Éléments supprimés :**
+
+#### Fichiers
+- ✅ `pages/Alerts.tsx` - Page de gestion des alertes
+- ✅ `components/dashboard/AlertBanner.tsx` - Composant d'affichage d'alerte
+
+#### Code
+- ✅ Route `/alerts` dans `App.tsx`
+- ✅ Lien "Alertes" dans le menu sidebar
+- ✅ Types `Alert` et `AlertType` dans `quote.ts`
+- ✅ `mockAlerts` dans `mockData.ts`
+- ✅ Section d'affichage des alertes dans `Dashboard.tsx`
+- ✅ Carte "Alertes urgentes" dans `Dashboard.tsx`
+- ✅ Statistique `urgentAlerts`
+
+#### Ajustements UI
+- ✅ Grille du Dashboard ajustée : 3 colonnes au lieu de 4
+- ✅ Meilleure utilisation de l'espace disponible
+
+**Impact :**
+- **7 fichiers modifiés**
+- **2 fichiers supprimés**
+- **~270 lignes supprimées**
+
+**Ce qui reste :**
+- ✅ Système de notifications (intact et fonctionnel)
+- ✅ Composants UI génériques (`alert.tsx`, `alert-dialog.tsx`)
+- ✅ `verificationIssues` dans les devis (utilisé ailleurs)
+
+**Commits :**
+- `ae77eb0` - Suppression principale (fichiers, routes, types)
+- `a756dcb` - Suppression carte "Alertes urgentes"
+- `6460c30` - Ajustement grille 3 colonnes
+
+**Documentation :**
+- ✅ `CHANGELOG_REMOVE_ALERTS_2026-01-29.md` - Documentation complète
+- ✅ `CHANGELOG.md` - Mise à jour (v2.0.3)
+- ✅ `CONTEXTE_ENRICHI_2026-01-28.md` - Section ajoutée
+
+---
+
 ## [2.0.2] - 2026-01-29 - Email de Collecte Amélioré
 
 ### 📧 Optimisation du contenu de l'email de demande de collecte

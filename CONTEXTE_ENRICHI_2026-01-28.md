@@ -580,7 +580,59 @@ if (description.length > 80) {
 
 ---
 
-### 3. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
+### 3. Suppression du Système d'Alertes (29 janvier 2026) ⭐ NOUVEAU
+
+**Raison :**
+- Système de notifications déjà en place et fonctionnel
+- Doublon fonctionnel créant de la confusion
+- Préférence utilisateur pour les notifications
+- Simplification de l'interface
+
+**Éléments supprimés :**
+
+#### Fichiers (2)
+- `front end/src/pages/Alerts.tsx` - Page de gestion des alertes (4.8 KB)
+- `front end/src/components/dashboard/AlertBanner.tsx` - Composant bannière (1.6 KB)
+
+#### Code
+- **Navigation** : Lien "Alertes" dans `AppSidebar.tsx` + import `AlertTriangle`
+- **Routing** : Route `/alerts` dans `App.tsx` + import `Alerts`
+- **Types** : `Alert` et `AlertType` dans `quote.ts`
+- **Mock data** : `mockAlerts` (5 alertes d'exemple) dans `mockData.ts`
+- **Dashboard** :
+  - Section d'affichage des alertes actives (lignes 72-87)
+  - Lien "Voir les X autres alertes"
+  - Carte "Alertes urgentes" (StatCard)
+  - Statistique `urgentAlerts`
+  - Import de `AlertBanner` et `mockAlerts`
+
+#### Ajustements UI
+- **Grille Dashboard** : `lg:grid-cols-4` → `lg:grid-cols-3`
+- **Impact** : Les 3 cartes restantes utilisent tout l'espace disponible
+
+**Statistiques :**
+- 7 fichiers modifiés
+- 2 fichiers supprimés
+- ~270 lignes supprimées
+- 3 commits (ae77eb0, a756dcb, 6460c30)
+
+**Ce qui reste en place :**
+- ✅ Système de notifications (intact)
+- ✅ Composants UI génériques (`alert.tsx`, `alert-dialog.tsx` de shadcn/ui)
+- ✅ `verificationIssues` dans les devis (utilisé pour d'autres fonctionnalités)
+
+**Bénéfices :**
+- Interface simplifiée et moins confuse
+- Moins de code à maintenir
+- Meilleure utilisation de l'espace (Dashboard)
+- Un seul système de notification unifié
+
+**Documentation :**
+- `CHANGELOG_REMOVE_ALERTS_2026-01-29.md` - Documentation complète
+
+---
+
+### 4. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
 
 **Composants modifiés :**
 - `AppHeader.tsx` - Ajout de la recherche globale
@@ -599,7 +651,7 @@ if (description.length > 80) {
 - Multi-critères (référence, client, destinataire, lot)
 - Gestion robuste des données manquantes
 
-### 4. Notifications système OAuth (27 janvier 2026)
+### 5. Notifications système OAuth (27 janvier 2026)
 
 **Fonctionnalité :**
 - Notification automatique lors de l'expiration des tokens OAuth
@@ -612,7 +664,7 @@ if (description.length > 80) {
 - `ai-proxy.js` - Détection et création de notifications
 - Champ `devisId` optionnel pour les notifications système
 
-### 5. Polling Gmail et Google Sheets (27 janvier 2026)
+### 6. Polling Gmail et Google Sheets (27 janvier 2026)
 
 **Configuration :**
 - Intervalle : 5 minutes
@@ -620,7 +672,7 @@ if (description.length > 80) {
 - Marquage automatique des comptes déconnectés
 - Synchronisation incrémentale
 
-### 6. Setup Windows (27 janvier 2026)
+### 7. Setup Windows (27 janvier 2026)
 
 **Améliorations :**
 - Script `start-dev.bat` adapté pour Windows
@@ -786,6 +838,7 @@ Stop-Process -Id <PID> -Force
 - `CHANGELOG_WINDOWS_SETUP_2026-01-27.md` - Modifications Windows
 - `CHANGELOG_SEARCH_FEATURE_2026-01-28.md` - Fonctionnalité de recherche ⭐ NOUVEAU
 - `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Email de collecte ⭐ NOUVEAU
+- `CHANGELOG_REMOVE_ALERTS_2026-01-29.md` - Suppression des alertes ⭐ NOUVEAU
 - `CONTEXTE_ENRICHI_2026-01-28.md` - Ce fichier
 - `GOOGLE_SHEETS_INTEGRATION.md` - Intégration Google Sheets
 - `CHANGELOG_STRIPE_CONNECT.md` - Intégration Stripe Connect
