@@ -4333,26 +4333,156 @@ L'équipe MBE
 /**
  * Route: Envoyer un email à la salle des ventes pour planifier une collecte
  * POST /api/send-collection-email
- * Body: { to, subject, text, auctionHouse, quotes }
+ * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }
  */
 app.post('/api/send-collection-email', async (req, res) => {
   console.log('[AI Proxy] 📥 POST /api/send-collection-email appelé');
   try {
-    const { to, subject, text, auctionHouse, quotes } = req.body;
+    const { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note } = req.body;
 
-    if (!to || !subject || !text) {
+    if (!to || !subject) {
       return res.status(400).json({ 
         success: false, 
-        error: 'to, subject et text sont requis' 
+        error: 'to et subject sont requis' 
       });
     }
+
+    console.log('[AI Proxy] Envoi email collecte à:', to, 'avec', quotes?.length || 0, 'devis');
+
+    // Fonction helper pour formater la date en français (DD/MM/YYYY)
+    function formatDateFrench(dateString) {
+      if (!dateString) return '';
+      try {
+        const date = new Date(dateString);
+        const day = String(date.getDate()).padStart(2, '0');
+        const month = String(date.getMonth() + 1).padStart(2, '0');
+        const year = date.getFullYear();
+        return `${day}/${month}/${year}`;
+      } catch (e) {
+        console.warn('[formatDateFrench] Erreur:', e);
+        return dateString;
+      }
+    }
+
+    // Générer un tableau HTML pour les lots
+    let lotsTableHtml = '';
+    if (quotes && quotes.length > 0) {
+      const lotsRows = quotes.map((quote, index) => {
+        const lotNumber = quote.lotNumber || quote.lotId || 'Non spécifié';
+        
+        // Tronquer la description à environ 80 caractères (2 lignes de ~40 caractères)
+        let description = quote.description || 'Description non disponible';
+        const maxLength = 80;
+        if (description.length > maxLength) {
+          description = description.substring(0, maxLength).trim() + '...';
+        }
+        
+        const value = quote.value ? `${quote.value.toFixed(2)}€` : 'Non renseignée';
+        const dimensions = quote.dimensions 
+          ? `${quote.dimensions.length}×${quote.dimensions.width}×${quote.dimensions.height} cm` 
+          : 'Non renseignées';
+        const weight = quote.dimensions?.weight ? `${quote.dimensions.weight} kg` : 'Non renseigné';
+        const reference = quote.reference || 'N/A';
+        const clientName = quote.clientName || 'Client non renseigné';
+        
+        // Log pour débug
+        console.log(`[send-collection-email] Quote ${index + 1}:`, {
+          lotNumber: quote.lotNumber,
+          lotId: quote.lotId,
+          clientName: quote.clientName,
+          reference: quote.reference,
+          descriptionLength: description.length
+        });
+        
+        return `
+          <tr style="border-bottom: 1px solid #e5e7eb;">
+            <td style="padding: 12px 8px; text-align: center; font-weight: 600;">${lotNumber}</td>
+            <td style="padding: 12px 8px;">${clientName}</td>
+            <td style="padding: 12px 8px; max-width: 300px;">${description}</td>
+            <td style="padding: 12px 8px; text-align: right;">${value}</td>
+            <td style="padding: 12px 8px; text-align: center;">${dimensions}</td>
+            <td style="padding: 12px 8px; text-align: center;">${weight}</td>
+            <td style="padding: 12px 8px; text-align: center; font-size: 0.875rem; color: #6b7280;">${reference}</td>
+          </tr>
+        `;
+      }).join('');
+
+      lotsTableHtml = `
+        <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
+          <thead>
+            <tr style="background-color: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">N° Lot</th>
+              <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Client</th>
+              <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Description</th>
+              <th style="padding: 12px 8px; text-align: right; font-weight: 600; color: #374151;">Valeur</th>
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Dimensions</th>
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Poids</th>
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Référence</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${lotsRows}
+          </tbody>
+        </table>
+      `;
+    }
+
+    // Construire l'email HTML complet
+    const htmlBody = `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        </head>
+        <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
+          <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
+            <h1 style="color: white; margin: 0; font-size: 24px;">Demande de collecte</h1>
+            ${auctionHouse ? `<p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">Salle des ventes : <strong>${auctionHouse}</strong></p>` : ''}
+          </div>
+          
+          <div style="background: #f9fafb; padding: 30px; border-radius: 0 0 8px 8px;">
+            <p style="margin: 0 0 20px 0; font-size: 16px;">Bonjour,</p>
+            
+            <p style="margin: 0 0 20px 0;">Nous souhaiterions planifier une collecte pour les lots suivants :</p>
+            
+            ${lotsTableHtml}
+            
+            ${plannedDate ? `
+              <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #667eea; margin: 20px 0;">
+                <p style="margin: 0; font-weight: 600; color: #374151;">📅 Date souhaitée</p>
+                <p style="margin: 8px 0 0 0; font-size: 18px; color: #667eea;">${formatDateFrench(plannedDate)}${plannedTime ? ` à ${plannedTime}` : ''}</p>
+              </div>
+            ` : ''}
+            
+            ${note ? `
+              <div style="background: white; padding: 20px; border-radius: 8px; border-left: 4px solid #f59e0b; margin: 20px 0;">
+                <p style="margin: 0; font-weight: 600; color: #374151;">📝 Note</p>
+                <p style="margin: 8px 0 0 0; color: #6b7280;">${note}</p>
+              </div>
+            ` : ''}
+            
+            <p style="margin: 20px 0;">Pourriez-vous nous confirmer si cette collecte est possible et nous indiquer les disponibilités ?</p>
+            
+            <p style="margin: 20px 0 0 0;">Cordialement,<br><strong>MBE-SDV</strong></p>
+          </div>
+          
+          <div style="text-align: center; padding: 20px; color: #6b7280; font-size: 12px;">
+            <p style="margin: 0;">Cet email a été envoyé automatiquement via la plateforme MBE-SDV</p>
+          </div>
+        </body>
+      </html>
+    `;
+
+    // Générer la version texte (fallback)
+    const textBody = text || `Demande de collecte pour ${quotes?.length || 0} lot(s)`;
 
     console.log('[AI Proxy] Envoi email collecte à:', to);
     const result = await sendEmail({
       to,
       subject,
-      text,
-      html: text.replace(/\n/g, '<br>'), // Convertir les retours à la ligne en HTML
+      text: textBody,
+      html: htmlBody,
     });
 
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);

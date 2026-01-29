@@ -35,8 +35,11 @@ import { useState, useMemo } from 'react';
 
 export default function Collections() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
-  const { data: auctionHouses = [] } = useAuctionHouses();
+  const { houses: auctionHouses = [], isLoading: isLoadingHouses } = useAuctionHouses();
   const queryClient = useQueryClient();
+  
+  // Log pour diagnostiquer le problème
+  console.log("[Collections] 🏛️ Auction houses chargées:", auctionHouses.length, auctionHouses.map(h => ({ name: h.name, email: h.email })));
   const [selectedQuotes, setSelectedQuotes] = useState<string[]>([]);
   const [isPlanningDialogOpen, setIsPlanningDialogOpen] = useState(false);
   const [plannedDate, setPlannedDate] = useState('');
@@ -78,16 +81,35 @@ export default function Collections() {
 
   // Trouver l'email de contact de la salle des ventes
   const getAuctionHouseEmail = (auctionHouseName: string): string | null => {
-    const house = auctionHouses.find(h => h.name === auctionHouseName);
+    console.log(`[Collections] 🔍 Recherche email pour: "${auctionHouseName}"`);
+    console.log(`[Collections] 📚 Salles disponibles au moment de l'appel:`, auctionHouses.length, auctionHouses.map(h => ({ name: h.name, email: h.email })));
+    
+    // Normaliser le nom pour la comparaison (trim + lowercase)
+    const normalizedSearchName = auctionHouseName.trim().toLowerCase();
+    
+    const house = auctionHouses.find(h => {
+      const normalized = h.name.trim().toLowerCase();
+      console.log(`[Collections] 🔎 Comparaison: "${normalized}" === "${normalizedSearchName}"`, normalized === normalizedSearchName);
+      return normalized === normalizedSearchName;
+    });
+    
+    console.log(`[Collections] 🏛️ Salle trouvée:`, house ? { name: house.name, email: house.email, contact: house.contact } : 'null');
+    
     // Priorité 1: Champ email dédié
     if (house?.email) {
+      console.log(`[Collections] ✅ Email trouvé pour "${auctionHouseName}": ${house.email}`);
       return house.email;
     }
     // Priorité 2: Extraire l'email depuis le contact si c'est un email
     if (house?.contact) {
       const emailMatch = house.contact.match(/[\w.-]+@[\w.-]+\.\w+/);
-      if (emailMatch) return emailMatch[0];
+      if (emailMatch) {
+        console.log(`[Collections] ✅ Email extrait du contact pour "${auctionHouseName}": ${emailMatch[0]}`);
+        return emailMatch[0];
+      }
     }
+    
+    console.warn(`[Collections] ⚠️ Aucun email trouvé pour la salle des ventes "${auctionHouseName}"`);
     return null;
   };
 
@@ -136,37 +158,66 @@ export default function Collections() {
         return;
       }
 
-      // Construire le contenu de l'email avec les informations des lots
-      const lotsInfo = houseQuotes.map(quote => {
-        const lotValue = quote.lot.value || 0;
-        const bordereauInfo = quote.auctionSheet?.bordereauNumber 
-          ? `Bordereau: ${quote.auctionSheet.bordereauNumber}`
-          : '';
+      // Préparer les données des lots pour l'email
+      const quotesData = houseQuotes.map(quote => {
+        // Extraire les données du lot depuis auctionSheet si disponible (depuis bordereau PDF)
+        // Sinon, utiliser les données du lot principal
+        let lotNumber = 'Non spécifié';
+        let lotDescription = 'Description non disponible';
         
-        return `
-          - Lot ${quote.lot.number}: ${quote.lot.description}
-            Valeur: ${lotValue.toFixed(2)}€
-            Dimensions: ${quote.lot.dimensions.length}×${quote.lot.dimensions.width}×${quote.lot.dimensions.height} cm
-            Poids: ${quote.lot.dimensions.weight} kg
-            ${bordereauInfo}
-            Référence devis: ${quote.reference}
-        `;
-      }).join('\n');
+        // Priorité 1: Données depuis le bordereau PDF (auctionSheet.lots)
+        if (quote.auctionSheet?.lots && quote.auctionSheet.lots.length > 0) {
+          const firstLot = quote.auctionSheet.lots[0];
+          lotNumber = firstLot.lotNumber || lotNumber;
+          lotDescription = firstLot.description || lotDescription;
+        }
+        
+        // Priorité 2: Données du lot principal
+        if (quote.lot?.number) {
+          lotNumber = quote.lot.number;
+        }
+        if (quote.lot?.description) {
+          lotDescription = quote.lot.description;
+        }
+        
+        // Priorité 3 (fallback): Extraire depuis la référence Google Sheets
+        if (lotNumber === 'Non spécifié' && quote.reference && quote.reference.startsWith('GS-')) {
+          const parts = quote.reference.split('-');
+          if (parts.length >= 3) {
+            lotNumber = parts[2];
+          }
+        }
+        
+        console.log('[Collections] 📦 Préparation données pour email:', {
+          reference: quote.reference,
+          lotNumber: lotNumber,
+          lotDescription: lotDescription,
+          'lot.number': quote.lot?.number,
+          'lot.description': quote.lot?.description,
+          'auctionSheet.lots': quote.auctionSheet?.lots?.length || 0,
+          'client.name': quote.client?.name,
+        });
+        
+        return {
+          reference: quote.reference,
+          lotNumber: lotNumber,
+          lotId: quote.lot?.id,
+          description: lotDescription,
+          value: quote.lot?.value || quote.auctionSheet?.lots?.[0]?.value || 0,
+          dimensions: {
+            length: quote.lot?.dimensions?.length || quote.auctionSheet?.lots?.[0]?.estimatedDimensions?.length || 0,
+            width: quote.lot?.dimensions?.width || quote.auctionSheet?.lots?.[0]?.estimatedDimensions?.width || 0,
+            height: quote.lot?.dimensions?.height || quote.auctionSheet?.lots?.[0]?.estimatedDimensions?.height || 0,
+            weight: quote.lot?.dimensions?.weight || quote.auctionSheet?.lots?.[0]?.estimatedDimensions?.weight || 0,
+          },
+          bordereauNumber: quote.auctionSheet?.bordereauNumber || null,
+          clientName: quote.client?.name || 'Client non renseigné',
+        };
+      });
 
+      // Email subject et body (fallback texte)
       const emailSubject = `Demande de collecte - ${houseQuotes.length} lot(s)`;
-      const emailBody = `Bonjour,
-
-Nous souhaiterions planifier une collecte pour les lots suivants :
-
-${lotsInfo}
-
-${plannedDate ? `Date souhaitée: ${plannedDate}${plannedTime ? ` à ${plannedTime}` : ''}` : ''}
-${collectionNote ? `\nNote: ${collectionNote}` : ''}
-
-Pourriez-vous nous confirmer si cette collecte est possible et nous indiquer les disponibilités ?
-
-Cordialement,
-MBE-SDV`;
+      const emailBody = `Demande de collecte pour ${houseQuotes.length} lot(s) de ${houseName}`;
 
       try {
         const response = await fetch('/api/send-collection-email', {
@@ -177,12 +228,10 @@ MBE-SDV`;
             subject: emailSubject,
             text: emailBody,
             auctionHouse: houseName,
-            quotes: houseQuotes.map(q => ({
-              reference: q.reference,
-              lotNumber: q.lot.number,
-              description: q.lot.description,
-              value: q.lot.value,
-            })),
+            quotes: quotesData,
+            plannedDate: plannedDate || null,
+            plannedTime: plannedTime || null,
+            note: collectionNote || null,
           }),
         });
 
@@ -421,7 +470,8 @@ MBE-SDV`;
                     
                     return Object.entries(byHouse).map(([houseName, houseQuotes]) => {
                       const defaultEmail = getAuctionHouseEmail(houseName) || '';
-                      const currentEmail = manualEmails[houseName] || defaultEmail;
+                      // Utiliser l'email manuel s'il existe ET qu'il n'est pas vide, sinon utiliser l'email par défaut
+                      const currentEmail = (manualEmails[houseName] && manualEmails[houseName].trim()) ? manualEmails[houseName] : defaultEmail;
                       
                       return (
                         <div key={houseName} className="space-y-2 p-3 border rounded-lg">
@@ -431,7 +481,7 @@ MBE-SDV`;
                           </div>
                           <div>
                             <Label htmlFor={`email-${houseName}`}>
-                              Email {defaultEmail ? '(déjà configuré)' : '(requis)'}
+                              Email {defaultEmail ? '(requis)' : '(requis)'}
                             </Label>
                             <Input
                               id={`email-${houseName}`}
@@ -443,12 +493,18 @@ MBE-SDV`;
                                   [houseName]: e.target.value,
                                 });
                               }}
-                              placeholder="email@salle-des-ventes.fr"
-                              required={!defaultEmail}
+                              placeholder={defaultEmail ? defaultEmail : "email@salle-des-ventes.fr"}
+                              required
                             />
                             {defaultEmail && (
-                              <p className="text-xs text-muted-foreground mt-1">
-                                Email par défaut: {defaultEmail}
+                              <p className="text-xs text-success mt-1 flex items-center gap-1">
+                                <Mail className="w-3 h-3" />
+                                Pré-rempli avec l'email de la salle des ventes
+                              </p>
+                            )}
+                            {!defaultEmail && (
+                              <p className="text-xs text-warning mt-1">
+                                ⚠️ Email non trouvé dans la base. Veuillez le saisir manuellement.
                               </p>
                             )}
                           </div>

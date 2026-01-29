@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { collection, getDocs, doc, setDoc, deleteDoc, Timestamp, query, orderBy, writeBatch, where } from "firebase/firestore";
+import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, Timestamp, query, orderBy, writeBatch, where } from "firebase/firestore";
 import { db, authReady, auth, firebaseEnabled } from "@/lib/firebase";
 import type { AuctionHouse } from "@/types/quote";
 
@@ -12,38 +12,68 @@ export function useAuctionHouses() {
   const { data: houses = [], isLoading, isError } = useQuery<AuctionHouse[]>({
     queryKey: ["auctionHouses"],
     queryFn: async () => {
+      console.log("[useAuctionHouses] 🔍 Début du chargement...");
+      
       if (!firebaseEnabled) {
-        console.warn("[useAuctionHouses] Firebase non configuré");
+        console.warn("[useAuctionHouses] ⚠️ Firebase non configuré");
         return [];
       }
 
       await authReady;
       if (!auth.currentUser) {
-        console.warn("[useAuctionHouses] Utilisateur non authentifié");
+        console.warn("[useAuctionHouses] ⚠️ Utilisateur non authentifié");
         return [];
       }
 
-      try {
-        const q = query(collection(db, AUCTION_HOUSES_COLLECTION), orderBy("name"));
-        const snapshot = await getDocs(q);
-        const housesList: AuctionHouse[] = [];
+      console.log("[useAuctionHouses] ✅ Utilisateur authentifié:", auth.currentUser.uid);
 
-        snapshot.forEach((docSnap) => {
+      try {
+        // Récupérer le saasAccountId de l'utilisateur
+        const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+        const saasAccountId = userDoc.exists() ? userDoc.data()?.saasAccountId : null;
+        
+        console.log("[useAuctionHouses] 📊 saasAccountId:", saasAccountId);
+
+        // Charger TOUTES les salles pour diagnostiquer
+        const allHousesQuery = query(collection(db, AUCTION_HOUSES_COLLECTION), orderBy("name"));
+        const allSnapshot = await getDocs(allHousesQuery);
+        
+        console.log("[useAuctionHouses] 📦 Nombre total de salles dans Firestore:", allSnapshot.size);
+        
+        const housesList: AuctionHouse[] = [];
+        const allHousesList: any[] = [];
+
+        allSnapshot.forEach((docSnap) => {
           // Ignorer le document _meta
           if (docSnap.id === "_meta") return;
 
           const data = docSnap.data();
-          housesList.push({
+          allHousesList.push({
             id: docSnap.id,
-            name: data.name || "",
-            address: data.address || "",
-            contact: data.contact || "",
-            email: data.email || undefined,
-            website: data.website || undefined,
+            name: data.name,
+            saasAccountId: data.saasAccountId,
+            email: data.email
           });
+          
+          // Filtrer par saasAccountId SI le champ existe
+          // Sinon, inclure toutes les salles (pour compatibilité avec anciennes données)
+          const shouldInclude = !data.saasAccountId || (saasAccountId && data.saasAccountId === saasAccountId);
+          
+          if (shouldInclude) {
+            housesList.push({
+              id: docSnap.id,
+              name: data.name || "",
+              address: data.address || "",
+              contact: data.contact || "",
+              email: data.email || undefined,
+              website: data.website || undefined,
+            });
+          }
         });
 
-        console.log("[useAuctionHouses] ✅ Salles de ventes chargées:", housesList.length);
+        console.log("[useAuctionHouses] 📋 Toutes les salles:", allHousesList);
+        console.log("[useAuctionHouses] ✅ Salles filtrées pour ce compte:", housesList.length, housesList.map(h => ({ name: h.name, email: h.email })));
+        
         return housesList;
       } catch (error) {
         console.error("[useAuctionHouses] ❌ Erreur lors du chargement:", error);
@@ -51,6 +81,14 @@ export function useAuctionHouses() {
       }
     },
     staleTime: 1000 * 60 * 5, // 5 minutes
+  });
+
+  // Log pour voir ce que React Query retourne réellement
+  console.log("[useAuctionHouses] 📊 React Query returned data:", {
+    housesLength: houses.length,
+    isLoading,
+    isError,
+    housesData: houses.map(h => ({ name: h.name, email: h.email }))
   });
 
   // Ajouter une salle de ventes
@@ -65,15 +103,20 @@ export function useAuctionHouses() {
         throw new Error("Utilisateur non authentifié");
       }
 
+      // Récupérer le saasAccountId de l'utilisateur
+      const userDoc = await getDoc(doc(db, 'users', auth.currentUser.uid));
+      const saasAccountId = userDoc.exists() ? userDoc.data()?.saasAccountId : null;
+
       const newHouseRef = doc(collection(db, AUCTION_HOUSES_COLLECTION));
       const houseData = {
         ...house,
+        saasAccountId, // Ajouter le saasAccountId pour l'isolation
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       };
 
       await setDoc(newHouseRef, houseData);
-      console.log("[useAuctionHouses] ✅ Salle de ventes ajoutée:", newHouseRef.id);
+      console.log("[useAuctionHouses] ✅ Salle de ventes ajoutée:", newHouseRef.id, "pour saasAccountId:", saasAccountId);
 
       // Associer automatiquement les devis correspondants à cette salle de ventes
       let associatedCount = 0;

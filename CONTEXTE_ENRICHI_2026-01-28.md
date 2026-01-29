@@ -514,7 +514,73 @@ pause
 **Documentation :**
 - `CHANGELOG_NOTIFICATIONS_GLOBAL_2026-01-28.md` - Documentation complète
 
-### 2. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
+---
+
+### 2. Email de Demande de Collecte (29 janvier 2026) ⭐ NOUVEAU
+
+**Problèmes résolus :**
+- ❌ Numéro de lot incorrect ou "Non spécifié"
+- ❌ Description trop longue et non formatée
+- ❌ Date au format américain (YYYY-MM-DD)
+- ❌ Nom du client absent dans le tableau
+
+**Solutions implémentées :**
+
+#### Extraction robuste des données du lot
+```typescript
+// Priorité 1: Bordereau PDF (auctionSheet.lots)
+if (quote.auctionSheet?.lots && quote.auctionSheet.lots.length > 0) {
+  lotNumber = quote.auctionSheet.lots[0].lotNumber;
+  lotDescription = quote.auctionSheet.lots[0].description;
+}
+
+// Priorité 2: Données du lot principal
+if (quote.lot?.number) lotNumber = quote.lot.number;
+if (quote.lot?.description) lotDescription = quote.lot.description;
+
+// Priorité 3: Extraction depuis référence GS-TIMESTAMP-LOTNUMBER
+if (lotNumber === 'Non spécifié' && quote.reference.startsWith('GS-')) {
+  lotNumber = quote.reference.split('-')[2];
+}
+```
+
+#### Tableau HTML structuré
+Colonnes : **N° Lot** | **Client** | **Description** | **Valeur** | **Dimensions** | **Poids** | **Référence**
+
+#### Format de date français
+```javascript
+function formatDateFrench(dateString) {
+  const [year, month, day] = dateString.split('-');
+  return `${day}/${month}/${year}`; // "30/01/2026"
+}
+```
+
+#### Troncature de la description
+```javascript
+let description = quote.description || 'Description non disponible';
+if (description.length > 80) {
+  description = description.substring(0, 80).trim() + '...';
+}
+```
+
+**Résultats :**
+- ✅ Lot : "38" (au lieu de "Non spécifié")
+- ✅ Description : "Maison Boin-Taburet - Corbeille en argent Petite corbeille en argent (950..." (80 caractères max)
+- ✅ Client : "Jade Brault"
+- ✅ Date : "30/01/2026" (format français DD/MM/YYYY)
+- ✅ Email professionnel et structuré
+
+**Fichiers modifiés :**
+- `front end/src/pages/Collections.tsx` - Extraction données depuis auctionSheet + ajout clientName
+- `front end/server/ai-proxy.js` - Tableau HTML + format date français + troncature description
+- `front end/src/hooks/use-auction-houses.ts` - Logs de diagnostic améliorés
+
+**Documentation :**
+- `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Documentation complète
+
+---
+
+### 3. Recherche de devis (28 janvier 2026) ⭐ NOUVEAU
 
 **Composants modifiés :**
 - `AppHeader.tsx` - Ajout de la recherche globale
@@ -533,7 +599,7 @@ pause
 - Multi-critères (référence, client, destinataire, lot)
 - Gestion robuste des données manquantes
 
-### 2. Notifications système OAuth (27 janvier 2026)
+### 4. Notifications système OAuth (27 janvier 2026)
 
 **Fonctionnalité :**
 - Notification automatique lors de l'expiration des tokens OAuth
@@ -546,7 +612,7 @@ pause
 - `ai-proxy.js` - Détection et création de notifications
 - Champ `devisId` optionnel pour les notifications système
 
-### 3. Polling Gmail et Google Sheets (27 janvier 2026)
+### 5. Polling Gmail et Google Sheets (27 janvier 2026)
 
 **Configuration :**
 - Intervalle : 5 minutes
@@ -554,7 +620,7 @@ pause
 - Marquage automatique des comptes déconnectés
 - Synchronisation incrémentale
 
-### 4. Setup Windows (27 janvier 2026)
+### 6. Setup Windows (27 janvier 2026)
 
 **Améliorations :**
 - Script `start-dev.bat` adapté pour Windows
@@ -719,6 +785,7 @@ Stop-Process -Id <PID> -Force
 - `CONTEXTE_WINDOWS_V2.0.md` - Contexte technique détaillé
 - `CHANGELOG_WINDOWS_SETUP_2026-01-27.md` - Modifications Windows
 - `CHANGELOG_SEARCH_FEATURE_2026-01-28.md` - Fonctionnalité de recherche ⭐ NOUVEAU
+- `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Email de collecte ⭐ NOUVEAU
 - `CONTEXTE_ENRICHI_2026-01-28.md` - Ce fichier
 - `GOOGLE_SHEETS_INTEGRATION.md` - Intégration Google Sheets
 - `CHANGELOG_STRIPE_CONNECT.md` - Intégration Stripe Connect

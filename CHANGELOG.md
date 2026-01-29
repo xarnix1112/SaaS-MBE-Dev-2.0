@@ -1,5 +1,63 @@
 # 📝 Changelog
 
+## [2.0.2] - 2026-01-29 - Email de Collecte Amélioré
+
+### 📧 Optimisation du contenu de l'email de demande de collecte
+
+**Problèmes résolus :**
+- ❌ Numéro de lot affiché comme "Non spécifié" alors qu'il est présent dans le bordereau
+- ❌ Description trop longue rendant l'email illisible
+- ❌ Date au format américain (YYYY-MM-DD) au lieu du format français (DD/MM/YYYY)
+- ❌ Nom du client absent du tableau de l'email
+
+**Solutions implémentées :**
+
+#### 1. Extraction robuste des données du lot
+- ✅ **Priorité 1** : Extraction depuis le bordereau PDF analysé (`auctionSheet.lots[0]`)
+- ✅ **Priorité 2** : Fallback vers les données du lot principal (`lot.number`, `lot.description`)
+- ✅ **Priorité 3** : Extraction depuis la référence Google Sheets (format `GS-TIMESTAMP-LOTNUMBER`)
+- ✅ Gestion des dimensions et valeurs depuis le bordereau
+
+#### 2. Tableau HTML structuré et professionnel
+```
+N° Lot | Client | Description | Valeur | Dimensions | Poids | Référence
+   38  | Jade B. | Maison Boin-Taburet... | 553.56€ | 8×8×3 cm | 0.1 kg | GS-1768...
+```
+
+#### 3. Format de date français
+- ✅ Conversion automatique : `2026-01-30` → `30/01/2026`
+- ✅ Fonction `formatDateFrench()` côté serveur
+
+#### 4. Troncature intelligente de la description
+- ✅ Limitation à 80 caractères (environ 2 lignes)
+- ✅ Ajout automatique de "..." si texte trop long
+- ✅ Troncature côté serveur pour compatibilité tous clients email
+
+**Exemple de résultat :**
+
+**Avant :**
+- Lot : "Non spécifié"
+- Description : "Maison Boin-Taburet - Corbeille en argent Petite corbeille en argent (950 millièmes) à décor de motifs rocaille, frises de peignées, résilles ajourées et d'entrelacs..."
+- Client : (absent)
+- Date : "2026-01-30"
+
+**Après :**
+- Lot : "38"
+- Description : "Maison Boin-Taburet - Corbeille en argent Petite corbeille en argent (950..."
+- Client : "Jade Brault"
+- Date : "30/01/2026"
+
+**Fichiers modifiés :**
+- `front end/src/pages/Collections.tsx` - Extraction depuis `auctionSheet.lots` + ajout `clientName`
+- `front end/server/ai-proxy.js` - Tableau HTML + date française + troncature description
+- `front end/src/hooks/use-auction-houses.ts` - Logs de diagnostic améliorés
+
+**Documentation :**
+- ✅ `CHANGELOG_COLLECTIONS_EMAIL_2026-01-29.md` - Documentation technique complète
+- ✅ `CONTEXTE_ENRICHI_2026-01-28.md` - Mise à jour du contexte enrichi
+
+---
+
 ## [2.0.1] - 2026-01-28 - Notifications Globales
 
 ### 🔔 Notifications visibles sur toutes les pages
