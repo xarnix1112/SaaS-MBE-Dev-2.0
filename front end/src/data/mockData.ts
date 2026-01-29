@@ -1,4 +1,4 @@
-import { Quote, Alert, AuctionHouse, DashboardStats } from '@/types/quote';
+import { Quote, AuctionHouse, DashboardStats } from '@/types/quote';
 
 export const mockAuctionHouses: AuctionHouse[] = [
   { id: '1', name: 'Hôtel des Ventes de Nice', address: '18 Rue Delmas, 06000 Nice', contact: 'contact@hdv-nice.fr' },
@@ -291,55 +291,6 @@ export const mockQuotes: Quote[] = [
     auctionHouseComments: ['Lot fragile, manipulation délicate requise'],
     createdAt: new Date('2024-01-08T10:00:00'),
     updatedAt: new Date('2024-01-12T10:00:00'),
-  },
-];
-
-export const mockAlerts: Alert[] = [
-  {
-    id: 'a1',
-    quoteId: '4',
-    quoteReference: 'DEV-2024-004',
-    type: 'urgent',
-    title: 'Dimensions différentes détectées',
-    description: 'Les dimensions réelles du lot LOT-654 diffèrent des estimations. Surcoût de 35€ à facturer.',
-    createdAt: new Date('2024-01-12T09:30:00'),
-  },
-  {
-    id: 'a2',
-    quoteId: '6',
-    quoteReference: 'DEV-2024-006',
-    type: 'urgent',
-    title: 'Adresse manquante',
-    description: 'Le client Emma Petit n\'a pas fourni d\'adresse de livraison.',
-    createdAt: new Date('2024-01-15T14:05:00'),
-  },
-  {
-    id: 'a3',
-    quoteId: '1',
-    quoteReference: 'DEV-2024-001',
-    type: 'warning',
-    title: 'Téléphone à vérifier',
-    description: 'Le format du numéro de téléphone de Jean Dupont semble non standard.',
-    createdAt: new Date('2024-01-15T11:00:00'),
-  },
-  {
-    id: 'a4',
-    quoteId: '2',
-    quoteReference: 'DEV-2024-002',
-    type: 'warning',
-    title: 'Paiement en attente depuis 48h',
-    description: 'Le lien de paiement pour Marie Lambert a été envoyé il y a plus de 48 heures.',
-    createdAt: new Date('2024-01-16T14:00:00'),
-  },
-  {
-    id: 'a5',
-    quoteId: '5',
-    quoteReference: 'DEV-2024-005',
-    type: 'resolved',
-    title: 'Colis livré',
-    description: 'Le colis de Lucas Moreau a été livré avec succès.',
-    createdAt: new Date('2024-01-10T15:00:00'),
-    resolvedAt: new Date('2024-01-10T15:00:00'),
   },
 ];
 

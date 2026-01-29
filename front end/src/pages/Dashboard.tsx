@@ -1,9 +1,7 @@
 import { useMemo } from "react";
 import { AppHeader } from "@/components/layout/AppHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
-import { AlertBanner } from "@/components/dashboard/AlertBanner";
 import { QuoteCard } from "@/components/quotes/QuoteCard";
-import { mockAlerts } from "@/data/mockData";
 import { useQuotes } from "@/hooks/use-quotes";
 import {
   FileText, 
@@ -51,7 +49,6 @@ export default function Dashboard() {
     [safeQuotes]
   );
   const recentQuotes = safeQuotes.slice(0, 3);
-  const activeAlerts = mockAlerts.filter(a => a.type !== 'resolved');
 
   return (
     <div className="flex flex-col h-full">
@@ -67,22 +64,6 @@ export default function Dashboard() {
         {isError && (
           <div className="text-center text-destructive">
             Impossible de charger les devis Google Sheets
-          </div>
-        )}
-        {/* Alerts */}
-        {activeAlerts.length > 0 && (
-          <div className="space-y-3">
-            {activeAlerts.slice(0, 2).map(alert => (
-              <AlertBanner key={alert.id} alert={alert} />
-            ))}
-            {activeAlerts.length > 2 && (
-              <Link to="/alerts">
-                <Button variant="ghost" size="sm" className="gap-1">
-                  Voir les {activeAlerts.length - 2} autres alertes
-                  <ArrowRight className="w-4 h-4" />
-                </Button>
-              </Link>
-            )}
           </div>
         )}
 

@@ -8,7 +8,6 @@ import {
   Package,
   Send,
   Kanban,
-  AlertTriangle,
   Building2,
   Settings,
   HelpCircle,
@@ -26,7 +25,6 @@ const navigation = [
   { name: 'Préparation', href: '/preparation', icon: Package },
   { name: 'Expéditions', href: '/shipments', icon: Send },
   { name: 'Pipeline', href: '/pipeline', icon: Kanban },
-  { name: 'Alertes', href: '/alerts', icon: AlertTriangle },
 ];
 
 const secondaryNavigation = [

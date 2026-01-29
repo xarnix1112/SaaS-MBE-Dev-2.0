@@ -30,12 +30,6 @@ export type AuctionHouseStatus =
   | 'accepted'
   | 'refused';
 
-export type AlertType = 
-  | 'urgent'
-  | 'warning'
-  | 'info'
-  | 'resolved';
-
 export type DeliveryMode = 'client' | 'receiver' | 'pickup';
 
 export interface Client {
@@ -213,17 +207,6 @@ export interface TimelineEvent {
   status: QuoteStatus;
   description: string;
   user?: string;
-}
-
-export interface Alert {
-  id: string;
-  quoteId: string;
-  quoteReference: string;
-  type: AlertType;
-  title: string;
-  description: string;
-  createdAt: Date;
-  resolvedAt?: Date;
 }
 
 export interface AuctionHouse {

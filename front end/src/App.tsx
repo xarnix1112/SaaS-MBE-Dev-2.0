@@ -15,7 +15,6 @@ import Collections from "./pages/Collections";
 import Preparation from "./pages/Preparation";
 import Shipments from "./pages/Shipments";
 import Pipeline from "./pages/Pipeline";
-import Alerts from "./pages/Alerts";
 import QuoteDetail from "./pages/QuoteDetail";
 import NotFound from "./pages/NotFound";
 import Login from "./pages/auth/Login";
@@ -102,7 +101,6 @@ const App = () => {
               <Route path="/preparation" element={<Preparation />} />
               <Route path="/shipments" element={<Shipments />} />
               <Route path="/pipeline" element={<Pipeline />} />
-              <Route path="/alerts" element={<Alerts />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/settings/emails" element={<Settings />} />
               <Route path="/account" element={<Account />} />
