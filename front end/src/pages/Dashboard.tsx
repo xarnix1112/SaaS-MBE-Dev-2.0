@@ -3,6 +3,11 @@ import { AppHeader } from "@/components/layout/AppHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { QuoteCard } from "@/components/quotes/QuoteCard";
 import { useQuotes } from "@/hooks/use-quotes";
+import { 
+  calculateNewQuotesTrend, 
+  calculateAwaitingPaymentTrend, 
+  calculateAwaitingCollectionTrend 
+} from "@/lib/trends";
 import {
   FileText, 
   Clock, 
@@ -46,6 +51,16 @@ export default function Dashboard() {
     }),
     [safeQuotes]
   );
+
+  // Calculer les trends (évolution par rapport à hier)
+  const trends = useMemo(
+    () => ({
+      newQuotes: calculateNewQuotesTrend(safeQuotes),
+      awaitingPayment: calculateAwaitingPaymentTrend(safeQuotes),
+      awaitingCollection: calculateAwaitingCollectionTrend(safeQuotes),
+    }),
+    [safeQuotes]
+  );
   const recentQuotes = safeQuotes.slice(0, 3);
 
   return (
@@ -72,19 +87,21 @@ export default function Dashboard() {
             value={stats.newQuotes}
             icon={FileText}
             variant="primary"
-            trend={{ value: 12, isPositive: true }}
+            trend={trends.newQuotes ? { value: trends.newQuotes.value, isPositive: trends.newQuotes.isPositive } : undefined}
           />
           <StatCard
             title="En attente paiement"
             value={stats.awaitingPayment}
             icon={CreditCard}
             variant="warning"
+            trend={trends.awaitingPayment ? { value: trends.awaitingPayment.value, isPositive: trends.awaitingPayment.isPositive } : undefined}
           />
           <StatCard
             title="Attente collecte"
             value={stats.awaitingCollection}
             icon={Truck}
             variant="default"
+            trend={trends.awaitingCollection ? { value: trends.awaitingCollection.value, isPositive: trends.awaitingCollection.isPositive } : undefined}
           />
         </div>
 
