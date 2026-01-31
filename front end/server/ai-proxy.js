@@ -624,16 +624,42 @@ try {
     projectId: process.env.FIREBASE_PROJECT_ID || "sdv-automation-mbe",
   };
   
-  // Si on a un fichier de credentials, l'utiliser
+  // 1) Fichier de credentials (dev / CI)
   const credentialsPath = path.join(__dirname, "..", "firebase-credentials.json");
   console.log("[ai-proxy] 🔍 Recherche du fichier Firebase credentials:", credentialsPath);
   console.log("[ai-proxy] Fichier existe:", fs.existsSync(credentialsPath));
-  
+
+  let serviceAccount = null;
   if (fs.existsSync(credentialsPath)) {
     console.log("[ai-proxy] 📄 Lecture du fichier Firebase credentials...");
-    const serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+    serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
     console.log("[ai-proxy] ✅ Fichier Firebase credentials chargé, project_id:", serviceAccount.project_id);
-    
+  } else if (
+    process.env.FIREBASE_PROJECT_ID &&
+    process.env.FIREBASE_CLIENT_EMAIL &&
+    process.env.FIREBASE_PRIVATE_KEY
+  ) {
+    // 2) Variables d'environnement (production Railway, etc.)
+    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n");
+    serviceAccount = {
+      project_id: process.env.FIREBASE_PROJECT_ID,
+      client_email: process.env.FIREBASE_CLIENT_EMAIL,
+      private_key: privateKey,
+    };
+    console.log("[ai-proxy] ✅ Firebase credentials depuis variables d'environnement, project_id:", serviceAccount.project_id);
+    // Pour que Firestore/gRPC utilisent ces credentials (getApplicationDefault), on écrit un fichier temporaire
+    const tmpDir = process.env.TMPDIR || process.env.TEMP || "/tmp";
+    const tmpCredPath = path.join(tmpDir, "firebase-credentials-railway.json");
+    try {
+      fs.writeFileSync(tmpCredPath, JSON.stringify(serviceAccount), "utf8");
+      process.env.GOOGLE_APPLICATION_CREDENTIALS = tmpCredPath;
+      console.log("[ai-proxy] ✅ GOOGLE_APPLICATION_CREDENTIALS défini pour Firestore/gRPC");
+    } catch (e) {
+      console.warn("[ai-proxy] ⚠️  Impossible d'écrire le fichier credentials temporaire:", e.message);
+    }
+  }
+
+  if (serviceAccount) {
     console.log("[ai-proxy] 🔧 Initialisation de Firebase Admin avec credentials...");
     initializeApp({
       credential: cert(serviceAccount),
@@ -641,13 +667,12 @@ try {
     });
     console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials");
   } else {
-    console.warn("[ai-proxy] ⚠️  Fichier Firebase credentials non trouvé, utilisation des Application Default Credentials");
-    // Sinon, utiliser Application Default Credentials (pour production)
+    console.warn("[ai-proxy] ⚠️  Aucun fichier ni variables FIREBASE_* trouvés, utilisation des Application Default Credentials");
     initializeApp({
       projectId: firebaseConfig.projectId,
     });
   }
-  
+
   console.log("[ai-proxy] 🔧 Initialisation de Firestore...");
   firestore = getFirestore();
   console.log("[ai-proxy] ✅ Firebase Admin initialisé avec succès");
