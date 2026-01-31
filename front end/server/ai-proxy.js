@@ -640,10 +640,15 @@ try {
     process.env.FIREBASE_PRIVATE_KEY
   ) {
     // 2) Variables d'environnement (production Railway, etc.)
-    const privateKey = process.env.FIREBASE_PRIVATE_KEY.replace(/\\n/g, "\n");
+    // Normaliser la clé : retirer guillemets, espaces, et convertir \n en vrais retours à la ligne
+    let rawKey = process.env.FIREBASE_PRIVATE_KEY.trim();
+    if (rawKey.startsWith('"') && rawKey.endsWith('"')) {
+      rawKey = rawKey.slice(1, -1);
+    }
+    const privateKey = rawKey.replace(/\\n/g, "\n");
     serviceAccount = {
-      project_id: process.env.FIREBASE_PROJECT_ID,
-      client_email: process.env.FIREBASE_CLIENT_EMAIL,
+      project_id: process.env.FIREBASE_PROJECT_ID.trim(),
+      client_email: process.env.FIREBASE_CLIENT_EMAIL.trim(),
       private_key: privateKey,
     };
     console.log("[ai-proxy] ✅ Firebase credentials depuis variables d'environnement, project_id:", serviceAccount.project_id);
