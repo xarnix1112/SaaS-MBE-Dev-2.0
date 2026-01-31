@@ -634,25 +634,44 @@ try {
     console.log("[ai-proxy] 📄 Lecture du fichier Firebase credentials...");
     serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
     console.log("[ai-proxy] ✅ Fichier Firebase credentials chargé, project_id:", serviceAccount.project_id);
+  } else if (process.env.FIREBASE_CREDENTIALS_BASE64) {
+    // 2a) Credentials en Base64 (recommandé sur Railway : aucun problème d'échappement)
+    try {
+      const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_BASE64.trim(), "base64").toString("utf8");
+      serviceAccount = JSON.parse(decoded);
+      if (!serviceAccount.private_key || !serviceAccount.client_email) {
+        throw new Error("JSON invalide : private_key ou client_email manquant");
+      }
+      console.log("[ai-proxy] ✅ Firebase credentials depuis FIREBASE_CREDENTIALS_BASE64, project_id:", serviceAccount.project_id);
+    } catch (e) {
+      console.error("[ai-proxy] ❌ FIREBASE_CREDENTIALS_BASE64 invalide:", e.message);
+      serviceAccount = null;
+    }
   } else if (
     process.env.FIREBASE_PROJECT_ID &&
     process.env.FIREBASE_CLIENT_EMAIL &&
     process.env.FIREBASE_PRIVATE_KEY
   ) {
-    // 2) Variables d'environnement (production Railway, etc.)
-    // Normaliser la clé : retirer guillemets, espaces, et convertir \n en vrais retours à la ligne
+    // 2b) Variables séparées (clé privée : risque d'échappement sur Railway)
     let rawKey = process.env.FIREBASE_PRIVATE_KEY.trim();
     if (rawKey.startsWith('"') && rawKey.endsWith('"')) {
       rawKey = rawKey.slice(1, -1);
     }
-    const privateKey = rawKey.replace(/\\n/g, "\n");
+    // Convertir \n (et \\n si double-échappé) en vrais retours à la ligne
+    let privateKey = rawKey.replace(/\\\\n/g, "\n").replace(/\\n/g, "\n");
+    if (!privateKey.includes("-----END PRIVATE KEY-----")) {
+      console.warn("[ai-proxy] ⚠️  FIREBASE_PRIVATE_KEY semble tronquée (pas de -----END PRIVATE KEY-----). Collez la clé sur UNE SEULE LIGNE avec \\n pour les retours à la ligne, ou utilisez FIREBASE_CREDENTIALS_BASE64.");
+    }
     serviceAccount = {
       project_id: process.env.FIREBASE_PROJECT_ID.trim(),
       client_email: process.env.FIREBASE_CLIENT_EMAIL.trim(),
       private_key: privateKey,
     };
     console.log("[ai-proxy] ✅ Firebase credentials depuis variables d'environnement, project_id:", serviceAccount.project_id);
-    // Pour que Firestore/gRPC utilisent ces credentials (getApplicationDefault), on écrit un fichier temporaire
+  }
+
+  if (serviceAccount) {
+    // Écrire un fichier temporaire pour GOOGLE_APPLICATION_CREDENTIALS (Firestore/gRPC)
     const tmpDir = process.env.TMPDIR || process.env.TEMP || "/tmp";
     const tmpCredPath = path.join(tmpDir, "firebase-credentials-railway.json");
     try {
