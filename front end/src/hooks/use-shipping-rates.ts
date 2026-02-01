@@ -20,7 +20,8 @@ import {
   ShippingSettingsInput,
 } from "@/types/shipping";
 
-const API_BASE = "/api/shipping";
+const API_BASE_ROOT = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+const API_BASE = `${API_BASE_ROOT}/api/shipping`;
 
 /**
  * Helper pour récupérer le token d'authentification
