@@ -9,7 +9,7 @@
  */
 
 import Stripe from "stripe";
-import { getFirestore, Timestamp } from "firebase-admin/firestore";
+import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from "url";
