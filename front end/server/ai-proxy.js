@@ -599,10 +599,11 @@ const STRIPE_SECRET_KEY =
   process.env.STRIPE_API_KEY ||
   process.env.STRIPE_KEY ||
   process.env.STRIPE_SECRET;
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
 const STRIPE_SUCCESS_URL =
-  process.env.STRIPE_SUCCESS_URL || "http://localhost:8080/payment/success";
+  process.env.STRIPE_SUCCESS_URL || `${FRONTEND_URL}/payment/success`;
 const STRIPE_CANCEL_URL =
-  process.env.STRIPE_CANCEL_URL || "http://localhost:8080/payment/cancel";
+  process.env.STRIPE_CANCEL_URL || `${FRONTEND_URL}/payment/cancel`;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 
 if (!STRIPE_SECRET_KEY) {
@@ -4785,11 +4786,11 @@ app.get('/auth/gmail/callback', async (req, res) => {
 
   const { code, state: saasAccountId } = req.query;
   if (!code) {
-    return res.redirect('http://localhost:8080/settings/emails?error=no_code');
+    return res.redirect(`${FRONTEND_URL}/settings/emails?error=no_code`);
   }
 
   if (!saasAccountId) {
-    return res.redirect('http://localhost:8080/settings/emails?error=no_saas_account_id');
+    return res.redirect(`${FRONTEND_URL}/settings/emails?error=no_saas_account_id`);
   }
 
   try {
@@ -4801,7 +4802,7 @@ app.get('/auth/gmail/callback', async (req, res) => {
 
     const emailAddress = profile.data.emailAddress;
     if (!emailAddress) {
-      return res.redirect('http://localhost:8080/settings/emails?error=no_email');
+      return res.redirect(`${FRONTEND_URL}/settings/emails?error=no_email`);
     }
 
     // Vérifier que le saasAccount existe
@@ -4810,7 +4811,7 @@ app.get('/auth/gmail/callback', async (req, res) => {
     
     if (!saasAccountDoc.exists) {
       console.error('[Gmail OAuth] ❌ Compte SaaS non trouvé:', saasAccountId);
-      return res.redirect('http://localhost:8080/settings/emails?error=saas_account_not_found');
+      return res.redirect(`${FRONTEND_URL}/settings/emails?error=saas_account_not_found`);
     }
 
     // Stocker les tokens Gmail dans saasAccounts/{id}/integrations/gmail
@@ -4828,10 +4829,10 @@ app.get('/auth/gmail/callback', async (req, res) => {
 
     console.log('[Gmail OAuth] ✅ Compte Gmail connecté pour saasAccountId:', saasAccountId, 'email:', emailAddress);
 
-    res.redirect('http://localhost:8080/settings/emails?connected=true');
+    res.redirect(`${FRONTEND_URL}/settings/emails?connected=true`);
   } catch (error) {
     console.error('[Gmail OAuth] ❌ Erreur lors du callback:', error);
-    res.redirect(`http://localhost:8080/settings/emails?error=${encodeURIComponent(error.message)}`);
+    res.redirect(`${FRONTEND_URL}/settings/emails?error=${encodeURIComponent(error.message)}`);
   }
 });
 
@@ -5342,11 +5343,11 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
 
   const { code, state: saasAccountId } = req.query;
   if (!code) {
-    return res.redirect('http://localhost:8080/settings?error=no_code&source=google-sheets');
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_code&source=google-sheets`);
   }
 
   if (!saasAccountId) {
-    return res.redirect('http://localhost:8080/settings?error=no_saas_account_id&source=google-sheets');
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_saas_account_id&source=google-sheets`);
   }
 
   try {
@@ -5359,7 +5360,7 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
     
     if (!saasAccountDoc.exists) {
       console.error('[Google Sheets OAuth] ❌ Compte SaaS non trouvé:', saasAccountId);
-      return res.redirect('http://localhost:8080/settings?error=saas_account_not_found&source=google-sheets');
+      return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=google-sheets`);
     }
 
     // Stocker uniquement les tokens OAuth (sans sélectionner de sheet pour l'instant)
@@ -5380,10 +5381,10 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
     console.log('[Google Sheets OAuth] ⚠️  L\'utilisateur doit maintenant sélectionner un Google Sheet dans l\'interface');
 
     // Rediriger vers Settings avec un paramètre pour afficher la liste des sheets
-    res.redirect('http://localhost:8080/settings?oauth_success=true&source=google-sheets&action=select_sheet');
+    res.redirect(`${FRONTEND_URL}/settings?oauth_success=true&source=google-sheets&action=select_sheet`);
   } catch (error) {
     console.error('[Google Sheets OAuth] ❌ Erreur lors du callback:', error);
-    res.redirect(`http://localhost:8080/settings?error=${encodeURIComponent(error.message)}&source=google-sheets`);
+    res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=google-sheets`);
   }
 });
 
