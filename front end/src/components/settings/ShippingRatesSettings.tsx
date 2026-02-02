@@ -109,7 +109,8 @@ export function ShippingRatesSettings() {
         return;
       }
 
-      const response = await fetch("/api/shipping/force-init", {
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+      const response = await fetch(`${API_BASE}/api/shipping/force-init`, {
         method: "POST",
         headers: {
           Authorization: `Bearer ${token}`,
@@ -211,7 +212,8 @@ export function ShippingRatesSettings() {
       setIsSaving(true);
       const token = await auth.currentUser?.getIdToken();
       
-      const response = await fetch('/api/shipping/force-init', {
+      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+      const response = await fetch(`${API_BASE}/api/shipping/force-init`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

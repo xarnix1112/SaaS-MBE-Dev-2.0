@@ -220,7 +220,8 @@ export default function Collections() {
       const emailBody = `Demande de collecte pour ${houseQuotes.length} lot(s) de ${houseName}`;
 
       try {
-        const response = await fetch('/api/send-collection-email', {
+        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+        const response = await fetch(`${API_BASE}/api/send-collection-email`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({

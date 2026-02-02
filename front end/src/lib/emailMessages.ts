@@ -52,7 +52,8 @@ export async function saveEmailMessage(emailData: {
  */
 export async function getEmailMessagesForQuote(devisId: string): Promise<EmailMessage[]> {
   try {
-    const response = await fetch(`/api/devis/${devisId}/messages`);
+    const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+    const response = await fetch(`${API_BASE}/api/devis/${devisId}/messages`);
     if (!response.ok) {
       throw new Error('Erreur lors de la récupération des messages');
     }

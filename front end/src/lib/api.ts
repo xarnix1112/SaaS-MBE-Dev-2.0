@@ -24,6 +24,7 @@ export async function getAuthToken(): Promise<string | null> {
 
 /**
  * Effectue une requête fetch avec authentification Firebase
+ * Si l'URL est relative (commence par /), elle est préfixée avec VITE_API_BASE_URL
  */
 export async function authenticatedFetch(
   url: string,
@@ -37,7 +38,11 @@ export async function authenticatedFetch(
     ...options.headers,
   };
 
-  return fetch(url, {
+  // Si URL relative (commence par /), préfixer avec VITE_API_BASE_URL
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+  const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
+
+  return fetch(fullUrl, {
     ...options,
     headers,
   });

@@ -45,7 +45,8 @@ export async function createPaytweakLink(
     input.cancelUrl || `${window.location.origin}/payment/cancel`;
 
   // Appel via le proxy backend (protège le secret Paytweak)
-  const res = await fetch("/api/paytweak/link", {
+  const API_BASE_ROOT = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+  const res = await fetch(`${API_BASE_ROOT}/api/paytweak/link`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",

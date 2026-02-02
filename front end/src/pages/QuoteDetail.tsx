@@ -188,7 +188,8 @@ export default function QuoteDetail() {
   useEffect(() => {
     const testBackendConnection = async () => {
       try {
-        const response = await fetch('/api/health');
+        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+        const response = await fetch(`${API_BASE}/api/health`);
         if (response.ok) {
           const data = await response.json();
           console.log('[QuoteDetail] ✅ Backend connecté:', data);

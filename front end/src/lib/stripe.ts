@@ -36,7 +36,8 @@ export async function createStripeLink(
   
   const description = descriptionParts.join(" | ");
 
-  const res = await fetch("/api/stripe/link", {
+  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+  const res = await fetch(`${API_BASE}/api/stripe/link`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
