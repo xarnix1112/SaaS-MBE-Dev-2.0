@@ -8066,6 +8066,40 @@ app.get("/stripe/callback", (req, res) => {
   handleStripeCallback(req, res, firestore);
 });
 
+// Route de redirection après paiement Stripe réussi
+app.get("/payment/success", (req, res) => {
+  console.log('[AI Proxy] 📥 GET /payment/success appelé');
+  const sessionId = req.query.session_id;
+  const ref = req.query.ref;
+  const amount = req.query.amount;
+  
+  // Rediriger vers le frontend avec les paramètres
+  const frontendUrl = FRONTEND_URL || "http://localhost:8080";
+  const params = new URLSearchParams();
+  if (sessionId) params.append('session_id', sessionId);
+  if (ref) params.append('ref', ref);
+  if (amount) params.append('amount', amount);
+  
+  const redirectUrl = `${frontendUrl}/payment/success${params.toString() ? '?' + params.toString() : ''}`;
+  console.log('[AI Proxy] 🔀 Redirection vers:', redirectUrl);
+  res.redirect(redirectUrl);
+});
+
+// Route de redirection après annulation de paiement
+app.get("/payment/cancel", (req, res) => {
+  console.log('[AI Proxy] 📥 GET /payment/cancel appelé');
+  const ref = req.query.ref;
+  
+  // Rediriger vers le frontend
+  const frontendUrl = FRONTEND_URL || "http://localhost:8080";
+  const params = new URLSearchParams();
+  if (ref) params.append('ref', ref);
+  
+  const redirectUrl = `${frontendUrl}/payment/cancel${params.toString() ? '?' + params.toString() : ''}`;
+  console.log('[AI Proxy] 🔀 Redirection vers:', redirectUrl);
+  res.redirect(redirectUrl);
+});
+
 // Vérifier le statut de connexion Stripe
 app.get("/api/stripe/status", requireAuth, (req, res) => {
   console.log('[AI Proxy] 📥 GET /api/stripe/status appelé');

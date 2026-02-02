@@ -880,7 +880,21 @@ export async function handleStripeWebhook(req, res, firestore) {
           stripePaymentIntentId: session.payment_intent,
         });
 
-        console.log(`[stripe-connect] ✅ Paiement ${paiement.id} marqué comme PAID`);
+        console.log(`[stripe-connect] ✅ Paiement ${paiement.id} marqué comme PAID`, {
+          paiementId: paiement.id,
+          devisId: devisId,
+          amount: paiement.amount,
+          type: paiement.type,
+          status: "PAID",
+        });
+        
+        // Vérifier que la mise à jour a bien été effectuée
+        const updatedPaiement = await getPaiementBySessionId(firestore, session.id);
+        if (updatedPaiement && updatedPaiement.status === "PAID") {
+          console.log(`[stripe-connect] ✅ Vérification: Paiement ${paiement.id} bien mis à jour avec status PAID`);
+        } else {
+          console.error(`[stripe-connect] ❌ ERREUR: Paiement ${paiement.id} n'a pas été mis à jour correctement`);
+        }
 
         // Récupérer le devis pour déterminer le bon statut
         const devisRef = firestore.collection("quotes").doc(devisId);
