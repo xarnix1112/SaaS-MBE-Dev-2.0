@@ -79,7 +79,7 @@ const App = () => {
     }).catch(error => {
       console.error("[App] ❌ Erreur lors du chargement préventif:", error);
     });
-  }, []);
+  }, [user, authLoading]);
 
   return (
     <QueryClientProvider client={queryClient}>
