@@ -114,6 +114,7 @@ import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
+import { authenticatedFetch } from "@/lib/api";
 
 export default function QuoteDetail() {
   const { id } = useParams();
@@ -627,13 +628,14 @@ export default function QuoteDetail() {
         },
       }));
       
-      // Sauvegarder dans Firestore
+      // Sauvegarder dans Firestore (inclure insurance pour s'assurer qu'il est bien sauvegardé)
       setDoc(
         doc(db, "quotes", quote.id),
         {
           totalAmount: newTotal,
           options: {
             insuranceAmount,
+            insurance: quote.options?.insurance || false, // S'assurer que insurance est sauvegardé
           },
           updatedAt: Timestamp.now(),
         },
@@ -770,9 +772,9 @@ export default function QuoteDetail() {
       const apiUrl = '/api/send-quote-email';
       console.log('[Email] Appel API:', apiUrl);
       
-      const response = await fetch(apiUrl, {
+      // Utiliser authenticatedFetch pour router correctement vers le backend Railway
+      const response = await authenticatedFetch(apiUrl, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ quote }),
       });
 
