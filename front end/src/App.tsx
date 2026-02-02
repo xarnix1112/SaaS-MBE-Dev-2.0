@@ -29,13 +29,28 @@ import PaymentCancel from "./pages/PaymentCancel";
 import Settings from "./pages/Settings";
 import Account from "./pages/Account";
 import { loadShippingRates, loadCartonPrices } from "./lib/pricing";
+import { useAuth } from "./hooks/useAuth";
 
 const queryClient = new QueryClient();
 
 const App = () => {
+  const { user, isLoading: authLoading } = useAuth();
+
   useEffect(() => {
     // Bootstrap Firestore collections (_meta) pour assurer leur existence
     bootstrapFirestoreCollections();
+  }, []);
+
+  // Charger les tarifs uniquement lorsque l'utilisateur est authentifié
+  useEffect(() => {
+    // Attendre que l'authentification soit vérifiée
+    if (authLoading) return;
+    
+    // Ne charger que si l'utilisateur est connecté (pas anonyme)
+    if (!user || user.isAnonymous) {
+      console.log("[App] ⏸️ Utilisateur non connecté, chargement des tarifs différé");
+      return;
+    }
     
     // Charger préventivement les tarifs d'expédition et les prix des cartons
     // pour garantir leur disponibilité et détecter les erreurs tôt
