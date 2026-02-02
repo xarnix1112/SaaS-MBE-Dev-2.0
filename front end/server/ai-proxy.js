@@ -3991,20 +3991,37 @@ app.post('/api/send-quote-email', async (req, res) => {
       return res.status(400).json({ error: 'Quote ou email client manquant' });
     }
 
-    // Récupérer les paymentLinks depuis Firestore si non présents ou vides
+    // Récupérer les paymentLinks depuis Firestore (toujours vérifier pour avoir les données à jour)
     let paymentLinksToUse = quote.paymentLinks || [];
-    if (paymentLinksToUse.length === 0 && quote.id && firestore) {
+    
+    // Toujours essayer de récupérer depuis Firestore pour avoir les données les plus récentes
+    if (quote.id && firestore) {
       console.log('[Email] 🔍 Récupération des paymentLinks depuis Firestore...');
       try {
         const quoteDoc = await firestore.collection('quotes').doc(quote.id).get();
         if (quoteDoc.exists) {
           const quoteData = quoteDoc.data();
-          paymentLinksToUse = quoteData.paymentLinks || [];
-          console.log('[Email] ✅ PaymentLinks récupérés depuis Firestore:', paymentLinksToUse.length, 'lien(s)');
+          const firestorePaymentLinks = quoteData.paymentLinks || [];
+          
+          // Utiliser les liens de Firestore s'ils existent, sinon utiliser ceux du quote
+          if (firestorePaymentLinks.length > 0) {
+            paymentLinksToUse = firestorePaymentLinks;
+            console.log('[Email] ✅ PaymentLinks récupérés depuis Firestore:', paymentLinksToUse.length, 'lien(s)');
+          } else if (paymentLinksToUse.length === 0) {
+            console.log('[Email] ⚠️ Aucun paymentLink trouvé ni dans le quote ni dans Firestore');
+          } else {
+            console.log('[Email] ℹ️ Utilisation des paymentLinks du quote (Firestore vide):', paymentLinksToUse.length, 'lien(s)');
+          }
+        } else {
+          console.log('[Email] ⚠️ Quote document non trouvé dans Firestore pour ID:', quote.id);
         }
       } catch (error) {
         console.error('[Email] ❌ Erreur lors de la récupération des paymentLinks:', error);
+        // Continuer avec les paymentLinks du quote en cas d'erreur
+        console.log('[Email] ℹ️ Utilisation des paymentLinks du quote en fallback:', paymentLinksToUse.length, 'lien(s)');
       }
+    } else {
+      console.log('[Email] ⚠️ Quote.id ou firestore manquant, utilisation des paymentLinks du quote:', paymentLinksToUse.length, 'lien(s)');
     }
 
     clientEmail = quote.client.email.trim().toLowerCase();
@@ -4070,12 +4087,46 @@ app.post('/api/send-quote-email', async (req, res) => {
     console.log('[Email] Nombre de paymentLinks:', paymentLinksToUse.length);
     console.log('[Email] PaymentLinks:', JSON.stringify(paymentLinksToUse, null, 2));
     
+    // Fonction helper pour convertir createdAt en Date
+    const getCreatedAtDate = (link) => {
+      if (!link.createdAt) return new Date(0);
+      if (link.createdAt.toDate) return link.createdAt.toDate(); // Firestore Timestamp
+      if (link.createdAt instanceof Date) return link.createdAt;
+      return new Date(link.createdAt);
+    };
+    
+    // Filtrer et trier les liens de paiement (accepter active, pending, ou sans status)
     const activePaymentLink = paymentLinksToUse
-      .filter(link => link.status === 'active' || link.status === 'pending' || !link.status)
-      .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt))[0];
+      .filter(link => {
+        if (!link) return false;
+        const status = link.status;
+        // Accepter active, pending, ou sans status (undefined/null)
+        return status === 'active' || status === 'pending' || !status;
+      })
+      .sort((a, b) => {
+        const dateA = getCreatedAtDate(a);
+        const dateB = getCreatedAtDate(b);
+        return dateB - dateA; // Plus récent en premier
+      })[0];
+    
     const paymentUrl = activePaymentLink?.url || null;
     
     console.log('[Email] Active payment link:', activePaymentLink ? 'Trouvé' : 'Non trouvé');
+    if (activePaymentLink) {
+      console.log('[Email] Payment link details:', {
+        id: activePaymentLink.id,
+        url: paymentUrl,
+        status: activePaymentLink.status,
+        amount: activePaymentLink.amount,
+        createdAt: activePaymentLink.createdAt
+      });
+    } else {
+      console.log('[Email] ⚠️ Aucun lien de paiement actif trouvé. PaymentLinks disponibles:', paymentLinksToUse.map(l => ({
+        id: l?.id,
+        status: l?.status,
+        hasUrl: !!l?.url
+      })));
+    }
     console.log('[Email] Payment URL:', paymentUrl);
     
     // Utiliser le montant du lien de paiement s'il existe, sinon le calculatedTotal
@@ -4215,16 +4266,24 @@ L'équipe MBE
     </div>
 
     ${paymentUrl ? `
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px;">
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid #2563eb;">
+      <p style="margin: 0 0 15px 0; font-size: 14px; color: #1e40af; font-weight: 600;">💳 Procéder au paiement</p>
       <a href="${paymentUrl}" 
-         style="display: inline-block; background: #2563eb; color: white; padding: 14px 32px; text-decoration: none; border-radius: 8px; font-weight: 600; font-size: 16px; box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1); transition: background 0.2s;">
-        💳 Payer maintenant
+         style="display: inline-block; background: #2563eb; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); transition: background 0.2s; letter-spacing: 0.5px;">
+        Payer ${finalTotal.toFixed(2)}€ maintenant
       </a>
-      <p style="margin-top: 12px; font-size: 12px; color: #6b7280;">
-        Ou copiez ce lien : <a href="${paymentUrl}" style="color: #2563eb; word-break: break-all;">${paymentUrl}</a>
+      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
+        Ou copiez ce lien dans votre navigateur :<br>
+        <a href="${paymentUrl}" style="color: #2563eb; word-break: break-all; text-decoration: underline;">${paymentUrl}</a>
       </p>
     </div>
-    ` : ''}
+    ` : `
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 15px; background: #fef3c7; border-radius: 8px; border: 1px solid #f59e0b;">
+      <p style="margin: 0; font-size: 14px; color: #92400e;">
+        ⚠️ Le lien de paiement sera disponible prochainement. Vous recevrez un email avec le lien de paiement.
+      </p>
+    </div>
+    `}
 
     <p style="margin-top: 30px; color: #6b7280;">Pour toute question, n'hésitez pas à nous contacter.</p>
   </div>
