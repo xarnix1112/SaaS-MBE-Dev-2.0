@@ -36,6 +36,7 @@ const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_CONNECT_CLIENT_ID = process.env.STRIPE_CONNECT_CLIENT_ID;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
+const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
 
 if (!STRIPE_SECRET_KEY) {
   console.warn("[stripe-connect] ⚠️  STRIPE_SECRET_KEY non définie");
@@ -332,11 +333,11 @@ export async function handleStripeCallback(req, res, firestore) {
     const { code, state: saasAccountId } = req.query;
 
     if (!code) {
-      return res.redirect(`/settings?error=no_code`);
+      return res.redirect(`${FRONTEND_URL}/settings?error=no_code&source=stripe`);
     }
 
     if (!saasAccountId) {
-      return res.redirect(`/settings?error=no_saas_account_id`);
+      return res.redirect(`${FRONTEND_URL}/settings?error=no_saas_account_id&source=stripe`);
     }
 
     // Échanger le code contre un access token
@@ -348,12 +349,12 @@ export async function handleStripeCallback(req, res, firestore) {
     const stripeAccountId = response.stripe_user_id;
 
     if (!stripeAccountId) {
-      return res.redirect(`/settings?error=no_stripe_account_id`);
+      return res.redirect(`${FRONTEND_URL}/settings?error=no_stripe_account_id&source=stripe`);
     }
 
     // Vérifier que le saasAccount existe
     if (!firestore) {
-      return res.redirect(`/settings?error=firestore_not_configured`);
+      return res.redirect(`${FRONTEND_URL}/settings?error=firestore_not_configured&source=stripe`);
     }
 
     const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
@@ -361,17 +362,17 @@ export async function handleStripeCallback(req, res, firestore) {
     
     if (!saasAccountDoc.exists) {
       console.error('[stripe-connect] ❌ Compte SaaS non trouvé:', saasAccountId);
-      return res.redirect(`/settings?error=saas_account_not_found`);
+      return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=stripe`);
     }
 
     // Sauvegarder dans saasAccounts/{id}/integrations/stripe
     await saveStripeAccountId(firestore, saasAccountId, stripeAccountId);
     console.log(`[stripe-connect] ✅ Compte Stripe connecté pour saasAccountId ${saasAccountId}:`, stripeAccountId);
 
-    return res.redirect("/settings?connected=true&stripe=true");
+    return res.redirect(`${FRONTEND_URL}/settings?connected=true&source=stripe`);
   } catch (error) {
     console.error("[stripe-connect] Erreur callback OAuth:", error);
-    return res.redirect(`/settings?error=${encodeURIComponent(error.message)}`);
+    return res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=stripe`);
   }
 }
 
