@@ -45,7 +45,7 @@ const App = () => {
         if (zones.length > 0) {
           console.log(`[App] ✅ ${zones.length} zone(s) d'expédition chargée(s) avec succès`);
         } else {
-          console.error(`[App] ❌ AUCUNE zone d'expédition chargée - Vérifiez la publication du Google Sheet`);
+          console.error(`[App] ❌ AUCUNE zone d'expédition chargée - Vérifiez que la grille tarifaire est initialisée dans Paramètres → Expédition`);
         }
       }).catch(error => {
         console.error(`[App] ❌ Erreur lors du chargement des tarifs d'expédition:`, error);
@@ -54,7 +54,7 @@ const App = () => {
         if (prices.size > 0) {
           console.log(`[App] ✅ ${prices.size} prix de carton(s) chargé(s) avec succès`);
         } else {
-          console.error(`[App] ❌ AUCUN prix de carton chargé - Vérifiez la publication du Google Sheet`);
+          console.error(`[App] ❌ AUCUN prix de carton chargé - Vérifiez que des cartons sont configurés dans Paramètres → Cartons`);
         }
       }).catch(error => {
         console.error(`[App] ❌ Erreur lors du chargement des prix cartons:`, error);

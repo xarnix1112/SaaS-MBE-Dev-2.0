@@ -1,18 +1,13 @@
-import Papa from "papaparse";
+import { authenticatedFetch } from './api';
+import type { ShippingGridData, ShippingZone as FirestoreShippingZone, ShippingService, WeightBracket, ShippingRate } from '../types/shipping';
 
-// URLs de publication spécifiques pour chaque onglet
-// Format : /e/{PUB_ID}/pub?gid={GID}&single=true&output=csv
-// 
-// URLs validées :
-// - Prix carton : gid=1299775832
-// - Prix expé volume/zone : gid=1518712190
-// - My new form (devis) : gid=1137251647 (dans sheetQuotes.ts)
+// ⚠️ DÉPRÉCIÉ : Les URLs Google Sheets ne sont plus utilisées
+// Les tarifs sont maintenant chargés depuis Firestore via l'API
+// Ces constantes sont conservées pour compatibilité mais ne sont plus utilisées
 const CARTON_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR2YRtgja8K3BZMILM-qJl_pztYKJSqiB0g1-wo02KzydyMGyXoDgdfA0Ih4Bf4hp40XL1NJObMuEHz/pub?gid=1299775832&single=true&output=csv";
 const SHIPPING_SHEET_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vR2YRtgja8K3BZMILM-qJl_pztYKJSqiB0g1-wo02KzydyMGyXoDgdfA0Ih4Bf4hp40XL1NJObMuEHz/pub?gid=1518712190&single=true&output=csv";
-
-// GID par défaut (utilisés comme fallback si nécessaire)
-const DEFAULT_CARTON_GID = "1299775832"; // Prix carton
-const DEFAULT_SHIPPING_GID = "1518712190"; // Prix expé volume/zone
+const DEFAULT_CARTON_GID = "1299775832";
+const DEFAULT_SHIPPING_GID = "1518712190";
 
 // Cache pour éviter de recharger les données à chaque appel
 let cartonPricesCache: Map<string, number> | null = null;
@@ -31,11 +26,13 @@ interface CartonPrice {
   };
 }
 
+// Interface pour compatibilité avec le code existant
+// Transforme les données Firestore en format utilisé par les fonctions de calcul
 interface ShippingZone {
-  zone: string;
-  countries: string[];
+  zone: string; // Code de la zone (ex: "Zone A")
+  countries: string[]; // Codes pays (ex: ["FR", "BE"])
   express: {
-    [weightRange: string]: number; // "0-1", "1-2", etc.
+    [weightRange: string]: number; // "1-2", "2-5", etc. → prix en €
   };
 }
 
@@ -87,7 +84,8 @@ async function findSheetGidByName(sheetName: string): Promise<string | null> {
 }
 
 /**
- * Charge les prix des cartons depuis la page "Prix carton"
+ * Charge les prix des cartons depuis Firestore via l'API /api/cartons
+ * Chaque client SaaS utilise ses propres cartons configurés dans Paramètres → Cartons
  */
 export async function loadCartonPrices(gid?: string, forceReload: boolean = false): Promise<Map<string, number>> {
   // Vérifier le cache
@@ -100,16 +98,14 @@ export async function loadCartonPrices(gid?: string, forceReload: boolean = fals
   const cartonData = new Map<string, { ref: string; price: number; dimensions?: { length: number; width: number; height: number } }>();
   
   try {
-    // Utiliser l'URL spécifique pour "Prix carton" (URL complète, plus besoin de GID)
-    const url = CARTON_SHEET_URL;
-    console.log(`[pricing] Chargement Prix carton depuis: ${url}`);
+    console.log(`[pricing] Chargement Prix carton depuis Firestore (cartons du client SaaS)`);
     
-    const response = await fetch(url);
+    // Charger les cartons depuis l'API
+    const response = await authenticatedFetch('/api/cartons');
     
     if (!response.ok) {
-      console.error(`[pricing] Erreur ${response.status} lors du chargement Prix carton: ${response.statusText}`);
-      console.error(`[pricing] URL utilisée: ${url}`);
-      console.error(`[pricing] Vérifiez que l'onglet "Prix carton" est publié individuellement dans Google Sheets`);
+      const errorText = await response.text();
+      console.error(`[pricing] Erreur ${response.status} lors du chargement des cartons: ${errorText}`);
       // En cas d'erreur, retourner le cache si disponible
       if (cartonPricesCache) {
         console.warn('[pricing] Utilisation du cache en cas d\'erreur');
@@ -118,163 +114,48 @@ export async function loadCartonPrices(gid?: string, forceReload: boolean = fals
       return prices;
     }
     
-    const csv = await response.text();
-    if (csv.toLowerCase().includes("<html")) {
-      console.warn("[pricing] La page Prix carton n'est pas publiée");
-      return prices;
-    }
+    const data = await response.json();
+    const cartons = data.cartons || [];
     
-    // Parser avec et sans header pour gérer différents formats
-    const parsed = Papa.parse(csv, { header: true, skipEmptyLines: true });
-    const rows = parsed.data as Record<string, string>[];
+    console.log(`[pricing] ✅ ${cartons.length} carton(s) chargé(s) depuis Firestore`);
     
-    // Si pas de données avec header, essayer sans header
-    if (rows.length === 0 || Object.keys(rows[0] || {}).length === 0) {
-      const parsedNoHeader = Papa.parse(csv, { header: false, skipEmptyLines: true });
-      const dataRows = parsedNoHeader.data as string[][];
+    // Transformer les cartons Firestore en Map
+    for (const carton of cartons) {
+      if (!carton.isActive) continue;
       
-      // Chercher la ligne d'en-tête
-      let headerRowIndex = -1;
-      let refColIndex = -1;
-      let priceColIndex = -1;
+      const ref = carton.carton_ref?.trim().toUpperCase() || '';
+      const price = carton.packaging_price || 0;
       
-      for (let i = 0; i < Math.min(5, dataRows.length); i++) {
-        const row = dataRows[i] || [];
-        for (let j = 0; j < row.length; j++) {
-          const cell = (row[j] || "").toString().toLowerCase();
-          if (cell.includes("référence") || cell.includes("reference") || cell.includes("ref") || cell.includes("carton")) {
-            refColIndex = j;
-            headerRowIndex = i;
-          }
-          if (cell.includes("prix") || cell.includes("price")) {
-            priceColIndex = j;
-            if (headerRowIndex === -1) headerRowIndex = i;
-          }
-        }
-        if (refColIndex >= 0 && priceColIndex >= 0) break;
-      }
-      
-      // Parser les données
-      if (refColIndex >= 0 && priceColIndex >= 0 && headerRowIndex >= 0) {
-        for (let i = headerRowIndex + 1; i < dataRows.length; i++) {
-          const row = dataRows[i] || [];
-          const ref = (row[refColIndex] || "").toString().trim();
-          const priceStr = (row[priceColIndex] || "").toString().trim();
-          
-          if (ref && priceStr) {
-            const cleanedPrice = priceStr
-              .replace(/\s+/g, "")
-              .replace("€", "")
-              .replace(",", ".")
-              .replace(/[^\d.]/g, "");
-            const price = parseFloat(cleanedPrice);
-            if (!isNaN(price) && price > 0) {
-              // Nettoyer la référence : enlever " / — " ou " / - " au début
-              let cleanedRef = ref.trim();
-              // Enlever le préfixe " / — " ou " / - " ou " /— " ou " /- " (avec ou sans espace)
-              cleanedRef = cleanedRef.replace(/^[\s\/\u2014\u2013-]+/i, "").trim();
-              const refUpper = cleanedRef.toUpperCase();
-              prices.set(refUpper, price);
-              // Stocker aussi dans cartonData (sans dimensions car non disponibles sans header)
-              cartonData.set(refUpper, { ref: refUpper, price });
-            }
-          }
-        }
-      }
-    } else {
-      // Parser avec header - Format attendu : carton_ref, inner_length, inner_width, inner_height, packaging_price
-      console.log('[pricing] Headers détectés:', Object.keys(rows[0] || {}));
-      for (const row of rows) {
-        // Chercher la colonne avec la référence du carton (carton_ref)
-        // Essayer plusieurs variantes de noms de colonnes (normalisées)
-        const normalizedRow: Record<string, string> = {};
-        Object.keys(row).forEach(key => {
-          const normalizedKey = key.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "").trim();
-          normalizedRow[normalizedKey] = row[key];
+      if (ref && price > 0) {
+        // Nettoyer la référence : enlever " / — " ou " / - " au début
+        const cleanedRef = ref.replace(/^[\s\/\u2014\u2013-]+/i, "").trim().toUpperCase();
+        
+        prices.set(cleanedRef, price);
+        
+        // Stocker aussi les données complètes avec dimensions
+        const dimensions = (carton.inner_length && carton.inner_width && carton.inner_height) 
+          ? { 
+              length: carton.inner_length, 
+              width: carton.inner_width, 
+              height: carton.inner_height 
+            } 
+          : undefined;
+        
+        cartonData.set(cleanedRef, { 
+          ref: cleanedRef, 
+          price, 
+          dimensions 
         });
         
-        // Format attendu : carton_ref, inner_length, inner_width, inner_height, packaging_price
-        // Chercher la référence (carton_ref en priorité)
-        const ref = row["carton_ref"] || normalizedRow["carton_ref"] || normalizedRow["cartonref"] || 
-                   normalizedRow["reference"] || normalizedRow["ref"] || normalizedRow["carton"] || 
-                   row["Référence"] || row["reference"] || row["Ref"] || row["ref"] || row["Carton"] || row["carton"] || "";
-        
-        // Chercher les dimensions (inner_length, inner_width, inner_height)
-        const lengthStr = row["inner_length"] || normalizedRow["inner_length"] || normalizedRow["innerlength"] ||
-                         row["L (cm)"] || row["l (cm)"] || row["length"] || normalizedRow["length"] || "";
-        const widthStr = row["inner_width"] || normalizedRow["inner_width"] || normalizedRow["innerwidth"] ||
-                         row["l (cm)"] || row["width"] || normalizedRow["width"] || "";
-        const heightStr = row["inner_height"] || normalizedRow["inner_height"] || normalizedRow["innerheight"] ||
-                          row["H (cm)"] || row["h (cm)"] || row["height"] || normalizedRow["height"] || "";
-        
-        // Parser les dimensions
-        const parseDimension = (str: string): number | null => {
-          if (!str) return null;
-          const cleaned = str.toString().replace(/\s+/g, "").replace(",", ".").replace(/[^\d.]/g, "");
-          const val = parseFloat(cleaned);
-          return !isNaN(val) && val > 0 ? val : null;
-        };
-        const length = parseDimension(lengthStr);
-        const width = parseDimension(widthStr);
-        const height = parseDimension(heightStr);
-        
-        // Chercher le prix (packaging_price en priorité)
-        // PapaParse peut renommer les colonnes dupliquées (packaging_price_1, etc.)
-        let priceStr = row["packaging_price"] || row["Packaging_price"] || 
-                       normalizedRow["packaging_price"] || normalizedRow["packagingprice"];
-        
-        // Si pas trouvé, chercher dans toutes les colonnes qui contiennent "prix" ou "price"
-        if (!priceStr) {
-          for (const key of Object.keys(row)) {
-            const keyLower = key.toLowerCase();
-            if (keyLower.includes("packaging") && (keyLower.includes("prix") || keyLower.includes("price"))) {
-              priceStr = row[key];
-              break;
-            }
-          }
-        }
-        
-        // Fallback : chercher "prix" ou "price" en général
-        if (!priceStr) {
-          priceStr = normalizedRow["prix"] || normalizedRow["prix ttc"] || normalizedRow["price"] ||
-                     row["Prix"] || row["prix"] || row["Prix TTC"] || row["prix ttc"] || row["Price"] || 
-                     row["Prix TTC (€)"] || row["Prix (€)"] || "";
-        }
-        
-        if (ref && priceStr) {
-          // Nettoyer le prix (enlever espaces, €, virgules, etc.)
-          const cleanedPrice = priceStr.toString()
-            .replace(/\s+/g, "")
-            .replace("€", "")
-            .replace(",", ".")
-            .replace(/[^\d.]/g, "");
-          const price = parseFloat(cleanedPrice);
-          if (!isNaN(price) && price > 0) {
-            // Nettoyer la référence : enlever " / — " ou " / - " au début
-            let cleanedRef = ref.trim();
-            // Enlever le préfixe " / — " ou " / - " ou " /— " ou " /- " (avec ou sans espace)
-            cleanedRef = cleanedRef.replace(/^[\s\/\u2014\u2013-]+/i, "").trim();
-            const refUpper = cleanedRef.toUpperCase();
-            prices.set(refUpper, price);
-            
-            // Stocker aussi les données complètes avec dimensions pour recherche par dimensions
-            const dimensions = (length && width && height) ? { length, width, height } : undefined;
-            cartonData.set(refUpper, { ref: refUpper, price, dimensions });
-            
-            console.log(`[pricing] Prix trouvé: "${ref}" -> "${refUpper}" = ${price}€${dimensions ? ` (${length}x${width}x${height}cm)` : ''}`);
-          } else {
-            console.warn(`[pricing] Prix invalide pour ${ref}: "${priceStr}" -> "${cleanedPrice}"`);
-          }
-        } else {
-          if (!ref) console.warn('[pricing] Référence manquante dans la ligne:', row);
-          if (!priceStr) console.warn('[pricing] Prix manquant dans la ligne:', row);
-        }
+        console.log(`[pricing] Prix trouvé: "${carton.carton_ref}" -> "${cleanedRef}" = ${price}€${dimensions ? ` (${dimensions.length}x${dimensions.width}x${dimensions.height}cm)` : ''}`);
       }
     }
     
-    console.log(`[pricing] ${prices.size} prix de cartons chargés depuis Google Sheets`);
+    console.log(`[pricing] ${prices.size} prix de cartons chargés depuis Firestore`);
     if (prices.size > 0) {
       console.log('[pricing] Exemples de prix chargés:', Array.from(prices.entries()).slice(0, 5));
+    } else {
+      console.warn('[pricing] ⚠️ Aucun carton trouvé - vérifiez que des cartons sont configurés dans Paramètres → Cartons');
     }
     
     // Mettre à jour le cache
@@ -293,7 +174,8 @@ export async function loadCartonPrices(gid?: string, forceReload: boolean = fals
 }
 
 /**
- * Charge les tarifs d'expédition depuis la page "Prix expé volume/zone"
+ * Charge les tarifs d'expédition depuis Firestore via l'API /api/shipping/grid
+ * Chaque client SaaS utilise ses propres tarifs configurés dans la grille tarifaire
  */
 export async function loadShippingRates(gid?: string, forceReload: boolean = false): Promise<ShippingZone[]> {
   // Vérifier le cache
@@ -305,17 +187,14 @@ export async function loadShippingRates(gid?: string, forceReload: boolean = fal
   const zones: ShippingZone[] = [];
   
   try {
-    // Utiliser l'URL spécifique pour "Prix expé volume/zone" (URL complète, plus besoin de GID)
-    const url = SHIPPING_SHEET_URL;
-    console.log(`[pricing] 🔄 CHARGEMENT TARIFS D'EXPÉDITION depuis: ${url}`);
-    console.log(`[pricing] URL complète: ${url}`);
+    console.log(`[pricing] 🔄 CHARGEMENT TARIFS D'EXPÉDITION depuis Firestore (grille tarifaire du client SaaS)`);
     
-    const response = await fetch(url);
+    // Charger la grille complète depuis l'API
+    const response = await authenticatedFetch('/api/shipping/grid');
     
     if (!response.ok) {
-      console.error(`[pricing] Erreur ${response.status} lors du chargement Prix expé volume/zone: ${response.statusText}`);
-      console.error(`[pricing] URL utilisée: ${url}`);
-      console.error(`[pricing] Vérifiez que l'onglet "Prix expé volume/zone" est publié individuellement dans Google Sheets`);
+      const errorText = await response.text();
+      console.error(`[pricing] Erreur ${response.status} lors du chargement de la grille tarifaire: ${errorText}`);
       // En cas d'erreur, retourner le cache si disponible
       if (shippingRatesCache) {
         console.warn('[pricing] Utilisation du cache en cas d\'erreur');
@@ -324,213 +203,58 @@ export async function loadShippingRates(gid?: string, forceReload: boolean = fal
       return zones;
     }
     
-    const csv = await response.text();
-    console.log(`[pricing] CSV reçu: ${csv.length} caractères`);
+    const gridData: ShippingGridData = await response.json();
+    console.log(`[pricing] ✅ Grille tarifaire chargée: ${gridData.zones.length} zones, ${gridData.services.length} services, ${gridData.weightBrackets.length} tranches`);
     
-    if (csv.toLowerCase().includes("<html")) {
-      console.error(`[pricing] ❌ La page Prix expé volume/zone n'est pas publiée - réponse HTML au lieu de CSV`);
-      console.error(`[pricing] ❌ Vérifiez que l'onglet est publié avec le format CSV`);
+    // Trouver le service EXPRESS
+    const expressService = gridData.services.find(s => s.name.toUpperCase() === 'EXPRESS' && s.isActive);
+    if (!expressService) {
+      console.warn('[pricing] ⚠️ Service EXPRESS non trouvé dans la grille tarifaire');
       return zones;
     }
     
-    if (csv.trim().length === 0) {
-      console.error(`[pricing] ❌ CSV vide reçu`);
-      return zones;
-    }
-    
-    console.log(`[pricing] ✅ CSV valide reçu (${csv.split('\n').length} lignes)`);
-    
-    // Parser sans header car la structure est complexe (zones, pays, poids, tarifs)
-    const parsedNoHeader = Papa.parse(csv, { header: false, skipEmptyLines: true });
-    const rows = parsedNoHeader.data as string[][];
-    const useArrayFormat = true;
-    
-    console.log(`[pricing] ${rows.length} lignes à parser pour les tarifs d'expédition`);
-    
-    // Parser la structure du tableau
-    // Format attendu : Zones avec pays et tarifs par poids (1kg, 2kg, 5kg, 10kg, 15kg, 20kg, 30kg)
-    // Structure : ZONE A – FRANCE, puis Service \ Poids (kg), puis STANDARD/EXPRESS avec prix
-    let currentZone: ShippingZone | null = null;
-    let isInExpressRow = false;
-    let weightColumns: number[] = []; // Indices des colonnes de poids (1, 2, 5, 10, 15, 20, 30)
-    
-    console.log('[pricing] Parsing shipping rates, nombre de lignes:', rows.length);
-    
-    for (let rowIdx = 0; rowIdx < rows.length; rowIdx++) {
-      const row = rows[rowIdx];
-      let rowValues: string[] = [];
-      let firstCell = "";
+    // Transformer les données Firestore en format ShippingZone[]
+    for (const zone of gridData.zones) {
+      if (!zone.isActive) continue;
       
-      if (useArrayFormat && Array.isArray(row)) {
-        rowValues = row.map(v => (v || "").toString().trim());
-        firstCell = rowValues[0] || "";
-      } else if (!useArrayFormat && typeof row === 'object') {
-        rowValues = Object.values(row as Record<string, string>).map(v => (v || "").toString().trim());
-        firstCell = rowValues[0] || "";
-      } else {
-        continue;
-      }
+      // Récupérer tous les tarifs Express pour cette zone
+      const expressRates: { [weightRange: string]: number } = {};
       
-      const allCells = rowValues.filter(Boolean);
+      // Trier les tranches de poids par ordre croissant
+      const sortedBrackets = [...gridData.weightBrackets].sort((a, b) => a.minWeight - b.minWeight);
       
-      // Détecter une nouvelle zone (ligne avec "ZONE" suivi d'une lettre, ex: "ZONE A – FRANCE")
-      if (firstCell.match(/^ZONE\s+[A-H]/i)) {
-        if (currentZone) {
-          zones.push(currentZone);
-          console.log(`[pricing] Zone ${currentZone.zone} finalisée avec ${currentZone.countries.length} pays et ${Object.keys(currentZone.express).length} tranches`);
-        }
-        const zoneMatch = firstCell.match(/ZONE\s+([A-H])/i);
-        currentZone = {
-          zone: zoneMatch ? `Zone ${zoneMatch[1].toUpperCase()}` : firstCell.replace(/^ZONE\s+/i, "Zone "),
-          countries: [],
-          express: {},
-        };
-        isInExpressRow = false;
-        weightColumns = [];
-        console.log(`[pricing] Nouvelle zone détectée: ${currentZone.zone} (ligne ${rowIdx + 1})`);
-      }
-      
-      // Détecter la ligne d'en-tête des poids (Service \ Poids (kg), puis 1, 2, 5, 10, 15, 20, 30)
-      if (firstCell.toLowerCase().includes("service") && firstCell.toLowerCase().includes("poids")) {
-        // Les colonnes suivantes contiennent les poids : 1, 2, 5, 10, 15, 20, 30
-        weightColumns = [];
-        for (let i = 1; i < rowValues.length; i++) {
-          const cell = (rowValues[i] || "").toString().trim();
-          const weight = parseInt(cell);
-          if (!isNaN(weight) && weight > 0) {
-            weightColumns.push(i);
-            console.log(`[pricing] Colonne poids détectée: index ${i} = ${weight}kg`);
-          }
-        }
-        console.log(`[pricing] ${weightColumns.length} colonnes de poids détectées pour ${currentZone?.zone || 'zone inconnue'}`);
-        continue;
-      }
-      
-      // Détecter les pays (codes à 2 lettres comme FR, DE, etc. ou listes entre parenthèses)
-      if (currentZone) {
-        // Cas 1: Ligne avec pays entre parenthèses : "(BE, LU, DE, NL, ES, IT)" ou "(FR)"
-        if (firstCell.includes("(") && firstCell.includes(")")) {
-          // Extraire les codes pays entre parenthèses
-          const countryMatches = firstCell.matchAll(/\(([^)]+)\)/g);
-          for (const match of countryMatches) {
-            const countriesStr = match[1];
-            // Nettoyer et extraire les codes pays (gérer "USA – DHL only" en filtrant)
-            const countryCodes = countriesStr
-              .split(",")
-              .map(c => {
-                // Extraire le code pays (2 lettres) même s'il y a du texte après
-                const codeMatch = c.trim().match(/\b([A-Z]{2})\b/);
-                return codeMatch ? codeMatch[1] : null;
-              })
-              .filter((c): c is string => c !== null && c.length === 2)
-              .map(c => c.toUpperCase());
-            
-            if (countryCodes.length > 0) {
-              currentZone.countries.push(...countryCodes);
-              console.log(`[pricing] Pays ajoutés à ${currentZone.zone}:`, countryCodes);
-            }
-          }
-        }
+      for (let i = 0; i < sortedBrackets.length; i++) {
+        const bracket = sortedBrackets[i];
+        const nextBracket = sortedBrackets[i + 1];
         
-        // Cas 2: Ligne avec juste le code pays : "(FR)" ou "FR"
-        const countryCodeMatch = firstCell.match(/^\(([A-Z]{2})\)$/);
-        if (countryCodeMatch && currentZone) {
-          const code = countryCodeMatch[1].toUpperCase();
-          if (!currentZone.countries.includes(code)) {
-            currentZone.countries.push(code);
-            console.log(`[pricing] Pays ajouté à ${currentZone.zone}: ${code}`);
-          }
-        }
+        // Trouver le tarif pour cette zone + service EXPRESS + tranche
+        const rate = gridData.rates.find(
+          r => r.zoneId === zone.id && 
+               r.serviceId === expressService.id && 
+               r.weightBracketId === bracket.id &&
+               r.price !== null
+        );
         
-        // Cas 3: Chercher des codes pays isolés (2 lettres majuscules) dans toutes les cellules
-        const countryCodes = allCells.filter(v => 
-          v && v.match(/^[A-Z]{2}$/)
-        ) as string[];
-        if (countryCodes.length > 0) {
-          countryCodes.forEach(code => {
-            if (!currentZone.countries.includes(code)) {
-              currentZone.countries.push(code);
-            }
-          });
-          if (countryCodes.length > 0) {
-            console.log(`[pricing] Codes pays isolés ajoutés à ${currentZone.zone}:`, countryCodes);
-          }
+        if (rate && rate.price !== null) {
+          // Créer la tranche de poids (ex: "1-2", "2-5", etc.)
+          const maxWeight = nextBracket ? nextBracket.minWeight : bracket.minWeight + 10;
+          const weightRange = `${bracket.minWeight}-${maxWeight}`;
+          expressRates[weightRange] = rate.price;
         }
       }
       
-      // Détecter la ligne EXPRESS (doit être exactement "EXPRESS")
-      if (firstCell.toUpperCase().trim() === "EXPRESS") {
-        isInExpressRow = true;
-        console.log(`[pricing] Ligne EXPRESS détectée pour ${currentZone?.zone} (ligne ${rowIdx + 1})`);
+      if (Object.keys(expressRates).length > 0) {
+        zones.push({
+          zone: zone.name || zone.code || `Zone ${zone.id}`,
+          countries: zone.countries || [],
+          express: expressRates,
+        });
         
-        // Parser les prix Express pour chaque poids
-        // Les poids sont dans les colonnes : 1, 2, 5, 10, 15, 20, 30
-        if (currentZone && weightColumns.length > 0) {
-          const weights = [1, 2, 5, 10, 15, 20, 30]; // Poids standard du CSV
-          console.log(`[pricing] Parsing ${weightColumns.length} prix Express pour ${currentZone.zone}`);
-          
-          for (let i = 0; i < Math.min(weightColumns.length, weights.length); i++) {
-            const colIdx = weightColumns[i];
-            if (colIdx < rowValues.length) {
-              const priceStr = (rowValues[colIdx] || "").toString().trim();
-              // Nettoyer le prix (gérer "NA", espaces, virgules, etc.)
-              let cleanedPrice = priceStr
-                .replace(/\s+/g, "")
-                .replace("€", "")
-                .replace("EUR", "")
-                .replace(",", ".")
-                .replace(/[^\d.]/g, "");
-              
-              // Si c'est "NA", mettre 0 mais ne pas l'enregistrer
-              if (priceStr.toUpperCase() === "NA") {
-                console.log(`[pricing] Prix Express ${currentZone.zone} pour ${weights[i]}kg: NA (non disponible)`);
-                continue;
-              }
-              
-              const price = parseFloat(cleanedPrice);
-              if (!isNaN(price) && price > 0) {
-                const weight = weights[i];
-                // Créer une tranche de poids
-                // Pour 1kg -> "1-2", pour 2kg -> "2-5", pour 5kg -> "5-10", pour 10kg -> "10-15", etc.
-                const nextWeight = i < weights.length - 1 ? weights[i + 1] : weight + 10;
-                const range = `${weight}-${nextWeight}`;
-                currentZone.express[range] = price;
-                console.log(`[pricing] ✅ Prix Express ${currentZone.zone}: ${range}kg = ${price}€`);
-              } else {
-                console.warn(`[pricing] Prix invalide pour ${currentZone.zone} ${weights[i]}kg: "${priceStr}" -> "${cleanedPrice}"`);
-              }
-            }
-          }
-        } else if (currentZone && weightColumns.length === 0) {
-          // Si les colonnes de poids n'ont pas été détectées, essayer de les trouver maintenant
-          console.warn(`[pricing] ⚠️ Colonnes de poids non détectées pour ${currentZone.zone}, tentative de détection alternative...`);
-          // Essayer de détecter les poids dans cette ligne directement
-          const weights = [1, 2, 5, 10, 15, 20, 30];
-          for (let i = 1; i < rowValues.length && i <= weights.length; i++) {
-            const priceStr = (rowValues[i] || "").toString().trim();
-            if (priceStr.toUpperCase() !== "NA" && priceStr) {
-              const cleanedPrice = priceStr.replace(/\s+/g, "").replace("€", "").replace(",", ".").replace(/[^\d.]/g, "");
-              const price = parseFloat(cleanedPrice);
-              if (!isNaN(price) && price > 0) {
-                const weight = weights[i - 1];
-                const nextWeight = i < weights.length ? weights[i] : weight + 10;
-                const range = `${weight}-${nextWeight}`;
-                currentZone.express[range] = price;
-                console.log(`[pricing] ✅ Prix Express (détection alt) ${currentZone.zone}: ${range}kg = ${price}€`);
-              }
-            }
-          }
-        } else if (!currentZone) {
-          console.warn(`[pricing] ⚠️ Ligne EXPRESS détectée mais aucune zone active`);
-        }
+        console.log(`[pricing] ✅ Zone ${zone.name} chargée: ${zone.countries.length} pays, ${Object.keys(expressRates).length} tranches Express`);
       }
     }
     
-    if (currentZone) {
-      zones.push(currentZone);
-    }
-    
-    console.log(`[pricing] ${zones.length} zones de tarification chargées depuis Google Sheets`);
+    console.log(`[pricing] ${zones.length} zones de tarification chargées depuis Firestore`);
     if (zones.length > 0) {
       console.log('[pricing] Détail des zones chargées:');
       zones.forEach(z => {
@@ -539,7 +263,7 @@ export async function loadShippingRates(gid?: string, forceReload: boolean = fal
         console.log(`    Poids Express:`, Object.entries(z.express).slice(0, 3).map(([r, p]) => `${r}kg=${p}€`).join(', '));
       });
     } else {
-      console.warn('[pricing] Aucune zone chargée - vérifiez le format du CSV');
+      console.warn('[pricing] Aucune zone chargée - vérifiez que la grille tarifaire est initialisée dans Paramètres → Expédition');
     }
     
     // Mettre à jour le cache
@@ -558,9 +282,9 @@ export async function loadShippingRates(gid?: string, forceReload: boolean = fal
   }
   
   if (zones.length === 0) {
-    console.error(`[pricing] ❌ AUCUNE ZONE CHARGÉE - Vérifiez le format du CSV et la publication du Google Sheet`);
+    console.error(`[pricing] ❌ AUCUNE ZONE CHARGÉE - Vérifiez que la grille tarifaire est initialisée dans Paramètres → Expédition`);
   } else {
-    console.log(`[pricing] ✅ ${zones.length} zone(s) chargée(s) avec succès`);
+    console.log(`[pricing] ✅ ${zones.length} zone(s) chargée(s) avec succès depuis Firestore`);
   }
   
   return zones;
@@ -752,9 +476,8 @@ export async function calculateShippingPrice(
   console.log(`[pricing] 📊 ${zones.length} zone(s) chargée(s) pour le calcul`);
   
   if (zones.length === 0) {
-    console.error(`[pricing] ❌ AUCUNE ZONE CHARGÉE - Vérifiez que le Google Sheet (gid=1518712190) est publié et accessible`);
-    console.error(`[pricing] ❌ URL attendue: ${SHIPPING_SHEET_URL}`);
-    console.error(`[pricing] ❌ Testez cette URL dans un navigateur privé pour vérifier l'accessibilité`);
+    console.error(`[pricing] ❌ AUCUNE ZONE CHARGÉE - Vérifiez que la grille tarifaire est initialisée dans Paramètres → Expédition`);
+    console.error(`[pricing] ❌ Cliquez sur "Initialiser la grille tarifaire" si c'est la première fois`);
     return 0;
   }
   
