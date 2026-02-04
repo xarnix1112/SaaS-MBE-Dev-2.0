@@ -216,18 +216,20 @@ if (RESEND_API_KEY) {
 
 const app = express();
 
-// IMPORTANT: Ne pas parser le body JSON pour la route webhook Stripe
+// IMPORTANT: Ne pas parser le body JSON pour les routes webhook Stripe
 // Stripe a besoin du body brut (Buffer) pour vérifier la signature
-// On applique express.json() seulement si ce n'est pas la route webhook
-const jsonParser = express.json();
+// On applique express.raw() pour les routes webhook AVANT express.json()
 app.use((req, res, next) => {
-  // Exclure la route webhook du parsing JSON
-  if (req.path === '/api/stripe/webhook') {
-    return next();
+  // Appliquer express.raw() pour les routes webhook Stripe
+  if (req.path === '/api/stripe/webhook' || req.path === '/webhooks/stripe') {
+    return express.raw({ type: "application/json" })(req, res, next);
   }
-  // Pour toutes les autres routes, parser le JSON
-  jsonParser(req, res, next);
+  // Pour toutes les autres routes, continuer sans parser
+  next();
 });
+
+// Puis appliquer express.json() pour toutes les autres routes
+app.use(express.json());
 
 // CORS pour permettre les requêtes depuis le frontend
 app.use((req, res, next) => {
@@ -821,8 +823,30 @@ app.get("/api/stripe/webhook/test", (req, res) => {
   });
 });
 
+// Endpoint de test pour vérifier que le webhook Connect est accessible
+app.get("/webhooks/stripe/test", (req, res) => {
+  res.json({
+    status: "ok",
+    endpoint: "/webhooks/stripe",
+    webhookConfigured: Boolean(stripe && STRIPE_WEBHOOK_SECRET),
+    stripeConfigured: Boolean(stripe),
+    webhookSecretSet: Boolean(STRIPE_WEBHOOK_SECRET),
+    webhookSecretPrefix: STRIPE_WEBHOOK_SECRET ? STRIPE_WEBHOOK_SECRET.substring(0, 10) + '...' : 'missing',
+    firestoreConfigured: Boolean(firestore),
+    message: "Stripe Connect webhook endpoint is accessible. Configure in Stripe Dashboard: https://api.mbe-sdv.fr/webhooks/stripe",
+    instructions: [
+      "1. Go to Stripe Dashboard → Developers → Webhooks",
+      "2. Add endpoint: https://api.mbe-sdv.fr/webhooks/stripe",
+      "3. IMPORTANT: Enable 'Listen to events on Connected accounts'",
+      "4. Select events: checkout.session.completed, payment_intent.succeeded",
+      "5. Copy the Signing secret and add it to Railway as STRIPE_WEBHOOK_SECRET"
+    ]
+  });
+});
+
 // Webhook Stripe pour mettre à jour Firestore après un paiement réussi
-app.post("/api/stripe/webhook", express.raw({ type: "application/json" }), async (req, res) => {
+// Body raw déjà appliqué dans le middleware
+app.post("/api/stripe/webhook", async (req, res) => {
   console.log("[ai-proxy] 📥 Webhook reçu - Headers:", {
     'stripe-signature': req.headers['stripe-signature'] ? 'present' : 'missing',
     'content-type': req.headers['content-type'],
@@ -8803,9 +8827,16 @@ app.get('/api/shipping/grid', requireAuth, (req, res) => {
 // Exporter la fonction d'initialisation pour l'utiliser lors de la création d'un compte SaaS
 export { initializeShippingRates };
 
-// Webhook Stripe UNIQUE (Connect) - DOIT utiliser raw body
-app.post("/webhooks/stripe", express.raw({ type: "application/json" }), (req, res) => {
+// Webhook Stripe UNIQUE (Connect) - Body raw déjà appliqué dans le middleware
+app.post("/webhooks/stripe", (req, res) => {
   console.log('[AI Proxy] 📥 POST /webhooks/stripe appelé (Stripe Connect)');
+  console.log('[AI Proxy] 📥 Headers reçus:', {
+    'stripe-signature': req.headers['stripe-signature'] ? 'present' : 'missing',
+    'content-type': req.headers['content-type'],
+    'content-length': req.headers['content-length'],
+    'user-agent': req.headers['user-agent'],
+  });
+  console.log('[AI Proxy] 📥 Body reçu:', req.body ? (Buffer.isBuffer(req.body) ? `${req.body.length} bytes (Buffer)` : typeof req.body) : 'empty');
   handleStripeWebhook(req, res, firestore);
 });
 

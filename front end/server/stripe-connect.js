@@ -745,7 +745,18 @@ export async function handleCancelPaiement(req, res, firestore) {
  * Webhook Stripe UNIQUE pour tous les comptes connectés
  */
 export async function handleStripeWebhook(req, res, firestore) {
+  console.log("[stripe-connect] 🔵 handleStripeWebhook appelé");
+  console.log("[stripe-connect] 🔵 Configuration:", {
+    stripe: Boolean(stripe),
+    webhookSecret: Boolean(STRIPE_WEBHOOK_SECRET),
+    webhookSecretPrefix: STRIPE_WEBHOOK_SECRET ? STRIPE_WEBHOOK_SECRET.substring(0, 10) + '...' : 'missing',
+  });
+
   if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+    console.error("[stripe-connect] ❌ Webhook non configuré:", {
+      stripe: Boolean(stripe),
+      webhookSecret: Boolean(STRIPE_WEBHOOK_SECRET),
+    });
     return res.status(400).send("Stripe webhook non configuré");
   }
 
@@ -758,10 +769,51 @@ export async function handleStripeWebhook(req, res, firestore) {
   } else {
     // Sinon, construire l'event à partir de la signature
     const sig = req.headers["stripe-signature"];
+    
+    // Vérifier que le body est un Buffer (requis pour la vérification de signature)
+    const isBuffer = Buffer.isBuffer(req.body);
+    const bodyType = typeof req.body;
+    const bodyLength = req.body ? (isBuffer ? req.body.length : JSON.stringify(req.body).length) : 0;
+    
+    console.log("[stripe-connect] 🔍 Tentative de construction de l'événement:", {
+      signaturePresent: Boolean(sig),
+      bodyType: bodyType,
+      isBuffer: isBuffer,
+      bodyLength: bodyLength,
+    });
+    
+    if (!isBuffer) {
+      console.error("[stripe-connect] ❌ ERREUR CRITIQUE: req.body n'est pas un Buffer!", {
+        bodyType: bodyType,
+        bodyIsObject: typeof req.body === 'object',
+        bodyIsString: typeof req.body === 'string',
+        bodyIsBuffer: Buffer.isBuffer(req.body),
+        bodyPreview: typeof req.body === 'object' ? JSON.stringify(req.body).substring(0, 200) : String(req.body).substring(0, 200),
+      });
+      return res.status(400).send("Webhook Error: Body must be a Buffer. Check middleware configuration.");
+    }
+    
+    if (!sig) {
+      console.error("[stripe-connect] ❌ Signature Stripe manquante dans les headers");
+      return res.status(400).send("Missing stripe-signature header");
+    }
+
     try {
       event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
+      console.log("[stripe-connect] ✅ Événement construit avec succès:", {
+        type: event.type,
+        id: event.id,
+        account: event.account,
+      });
     } catch (err) {
       console.error("[stripe-connect] ⚠️  Webhook signature invalide:", err.message);
+      console.error("[stripe-connect] ⚠️  Détails de l'erreur:", {
+        message: err.message,
+        signaturePrefix: sig ? sig.substring(0, 20) + '...' : 'missing',
+        bodyIsBuffer: Buffer.isBuffer(req.body),
+        bodyType: typeof req.body,
+        bodyLength: req.body ? req.body.length : 0,
+      });
       return res.status(400).send(`Webhook Error: ${err.message}`);
     }
   }
@@ -1083,8 +1135,16 @@ export async function handleStripeWebhook(req, res, firestore) {
         await updateDevisStatus(firestore, devisId);
         console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
       }
+    } else {
+      // Log pour les événements non traités (pour débogage)
+      console.log(`[stripe-connect] ⚠️  Événement non traité: ${event.type}`, {
+        eventId: event.id,
+        account: event.account,
+        objectId: obj.id,
+      });
     }
 
+    console.log(`[stripe-connect] ✅ Webhook traité avec succès, réponse 200 envoyée`);
     return res.status(200).send("ok");
   } catch (err) {
     console.error("[stripe-connect] ❌ Erreur traitement webhook:", err);
