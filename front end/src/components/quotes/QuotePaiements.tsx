@@ -191,11 +191,11 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
     }
   };
 
-  // Polling automatique toutes les 30 secondes
+  // Polling automatique toutes les 10 secondes (plus fréquent pour détecter les paiements rapidement)
   useEffect(() => {
     loadPaiements();
 
-    const interval = setInterval(loadPaiements, 30000);
+    const interval = setInterval(loadPaiements, 10000); // 10 secondes au lieu de 30
     return () => clearInterval(interval);
   }, [devisId]);
 

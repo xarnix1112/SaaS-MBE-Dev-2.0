@@ -178,20 +178,58 @@ async function updatePaiement(firestore, paiementId, updates) {
 
 /**
  * Récupère un paiement par son stripeSessionId
+ * Recherche aussi par devisId si le sessionId ne correspond pas exactement
  */
-async function getPaiementBySessionId(firestore, sessionId) {
-  const snapshot = await firestore
+async function getPaiementBySessionId(firestore, sessionId, devisId = null) {
+  console.log(`[stripe-connect] 🔍 Recherche paiement avec sessionId: ${sessionId}${devisId ? `, devisId: ${devisId}` : ''}`);
+  
+  // Première tentative : recherche directe par stripeSessionId
+  let snapshot = await firestore
     .collection("paiements")
     .where("stripeSessionId", "==", sessionId)
     .limit(1)
     .get();
 
-  if (snapshot.empty) {
-    return null;
+  if (!snapshot.empty) {
+    const doc = snapshot.docs[0];
+    const paiement = { id: doc.id, ...doc.data() };
+    console.log(`[stripe-connect] ✅ Paiement trouvé par sessionId direct: ${paiement.id}`);
+    return paiement;
   }
 
-  const doc = snapshot.docs[0];
-  return { id: doc.id, ...doc.data() };
+  console.log(`[stripe-connect] ⚠️  Paiement non trouvé par sessionId direct, recherche alternative...`);
+
+  // Recherche alternative : si devisId est fourni, chercher tous les paiements du devis
+  if (devisId) {
+    try {
+      const paiementsByDevis = await getPaiementsByDevisId(firestore, devisId);
+      console.log(`[stripe-connect] 📊 ${paiementsByDevis.length} paiement(s) trouvé(s) pour devisId: ${devisId}`);
+      
+      // Chercher un paiement en attente qui pourrait correspondre
+      const matchingPaiement = paiementsByDevis.find(
+        p => p.stripeSessionId === sessionId || 
+             (p.status === 'PENDING' && !p.stripeSessionId) // Paiement créé mais sessionId pas encore sauvegardé
+      );
+      
+      if (matchingPaiement) {
+        console.log(`[stripe-connect] ✅ Paiement trouvé par recherche alternative: ${matchingPaiement.id}`);
+        return matchingPaiement;
+      }
+      
+      // Afficher tous les paiements pour déboguer
+      console.log(`[stripe-connect] 📋 Paiements disponibles pour ce devis:`, paiementsByDevis.map(p => ({
+        id: p.id,
+        stripeSessionId: p.stripeSessionId,
+        status: p.status,
+        amount: p.amount,
+        type: p.type,
+      })));
+    } catch (error) {
+      console.error(`[stripe-connect] ❌ Erreur lors de la recherche alternative:`, error);
+    }
+  }
+
+  return null;
 }
 
 /**
@@ -859,10 +897,100 @@ export async function handleStripeWebhook(req, res, firestore) {
 
         // Récupérer le paiement
         console.log(`[stripe-connect] 🔍 Recherche du paiement avec sessionId: ${session.id}`);
-        const paiement = await getPaiementBySessionId(firestore, session.id);
+        console.log(`[stripe-connect] 📋 Métadonnées de la session:`, {
+          devisId: devisId,
+          saasAccountId: saasAccountId,
+          paiementType: paiementType,
+          sessionId: session.id,
+          paymentIntent: session.payment_intent,
+          amountTotal: session.amount_total,
+          currency: session.currency,
+        });
+        
+        const paiement = await getPaiementBySessionId(firestore, session.id, devisId);
 
         if (!paiement) {
           console.error(`[stripe-connect] ❌ Paiement non trouvé pour session: ${session.id}`);
+          console.error(`[stripe-connect] 💡 Tentative de recherche alternative par devisId: ${devisId}`);
+          
+          // Essayer de trouver le paiement par devisId et statut PENDING
+          if (devisId) {
+            try {
+              const paiementsByDevis = await getPaiementsByDevisId(firestore, devisId);
+              console.log(`[stripe-connect] 📊 Paiements trouvés pour ce devis:`, paiementsByDevis.length);
+              
+              // Chercher un paiement avec le même sessionId ou en attente
+              const matchingPaiement = paiementsByDevis.find(
+                p => p.stripeSessionId === session.id || 
+                     (p.status === 'PENDING' && p.amount === (session.amount_total / 100))
+              );
+              
+              if (matchingPaiement) {
+                console.log(`[stripe-connect] ✅ Paiement trouvé par recherche alternative:`, matchingPaiement.id);
+                // Utiliser ce paiement trouvé
+                const paiementId = matchingPaiement.id;
+                await updatePaiement(firestore, paiementId, {
+                  status: "PAID",
+                  paidAt: Timestamp.now(),
+                  stripePaymentIntentId: session.payment_intent,
+                  stripeSessionId: session.id, // S'assurer que le sessionId est bien sauvegardé
+                });
+                
+                console.log(`[stripe-connect] ✅ Paiement ${paiementId} mis à jour avec status PAID`);
+                
+                // Continuer avec le traitement normal
+                const updatedPaiement = { ...matchingPaiement, status: "PAID", stripeSessionId: session.id };
+                
+                // Récupérer le devis pour déterminer le bon statut
+                const devisRef = firestore.collection("quotes").doc(devisId);
+                const devisDoc = await devisRef.get();
+                const currentStatus = devisDoc.exists ? devisDoc.data().status : 'awaiting_payment';
+                const timelineStatus = updatedPaiement.type === 'PRINCIPAL' ? 'awaiting_collection' : currentStatus;
+
+                // Ajouter un événement à l'historique du devis
+                await addTimelineEventToQuote(firestore, devisId, {
+                  id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+                  date: Timestamp.now(),
+                  status: timelineStatus,
+                  description: updatedPaiement.type === 'PRINCIPAL'
+                    ? `Paiement principal reçu (${updatedPaiement.amount.toFixed(2)}€)`
+                    : `Paiement de surcoût reçu (${updatedPaiement.amount.toFixed(2)}€)`,
+                  user: 'Stripe Webhook',
+                });
+
+                // Créer une notification
+                const devis = devisDoc.data();
+                await createNotification(firestore, {
+                  clientSaasId: saasAccountId,
+                  devisId: devisId,
+                  type: updatedPaiement.type === 'PRINCIPAL' 
+                    ? NOTIFICATION_TYPES.PAYMENT_RECEIVED 
+                    : NOTIFICATION_TYPES.SURCOUT_CREATED,
+                  title: updatedPaiement.type === 'PRINCIPAL' 
+                    ? 'Paiement reçu' 
+                    : 'Paiement de surcoût reçu',
+                  message: `Le devis ${devis.reference || devisId} a été payé (${updatedPaiement.amount.toFixed(2)}€)`,
+                });
+
+                // Recalculer le statut du devis
+                await updateDevisStatus(firestore, devisId);
+                console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
+                
+                return res.status(200).send("ok");
+              } else {
+                console.error(`[stripe-connect] ❌ Aucun paiement correspondant trouvé pour devisId: ${devisId}`);
+                console.error(`[stripe-connect] 📋 Paiements disponibles:`, paiementsByDevis.map(p => ({
+                  id: p.id,
+                  stripeSessionId: p.stripeSessionId,
+                  status: p.status,
+                  amount: p.amount,
+                })));
+              }
+            } catch (searchError) {
+              console.error(`[stripe-connect] ❌ Erreur lors de la recherche alternative:`, searchError);
+            }
+          }
+          
           console.error(`[stripe-connect] 💡 Vérifiez que le paiement existe dans Firestore avec ce stripeSessionId`);
           return res.status(200).send("ok");
         }
@@ -874,10 +1002,12 @@ export async function handleStripeWebhook(req, res, firestore) {
         });
 
         // Mettre à jour le paiement
+        console.log(`[stripe-connect] 🔄 Mise à jour du paiement ${paiement.id}...`);
         await updatePaiement(firestore, paiement.id, {
           status: "PAID",
           paidAt: Timestamp.now(),
           stripePaymentIntentId: session.payment_intent,
+          stripeSessionId: session.id, // S'assurer que le sessionId est bien sauvegardé
         });
 
         console.log(`[stripe-connect] ✅ Paiement ${paiement.id} marqué comme PAID`, {
@@ -886,14 +1016,31 @@ export async function handleStripeWebhook(req, res, firestore) {
           amount: paiement.amount,
           type: paiement.type,
           status: "PAID",
+          stripeSessionId: session.id,
         });
         
-        // Vérifier que la mise à jour a bien été effectuée
-        const updatedPaiement = await getPaiementBySessionId(firestore, session.id);
-        if (updatedPaiement && updatedPaiement.status === "PAID") {
-          console.log(`[stripe-connect] ✅ Vérification: Paiement ${paiement.id} bien mis à jour avec status PAID`);
-        } else {
-          console.error(`[stripe-connect] ❌ ERREUR: Paiement ${paiement.id} n'a pas été mis à jour correctement`);
+        // Vérifier que la mise à jour a bien été effectuée en récupérant directement le document
+        try {
+          const paiementDoc = await firestore.collection("paiements").doc(paiement.id).get();
+          if (paiementDoc.exists) {
+            const updatedData = paiementDoc.data();
+            if (updatedData.status === "PAID") {
+              console.log(`[stripe-connect] ✅ Vérification: Paiement ${paiement.id} bien mis à jour avec status PAID`);
+              console.log(`[stripe-connect] 📊 Données du paiement mis à jour:`, {
+                id: paiement.id,
+                status: updatedData.status,
+                paidAt: updatedData.paidAt?.toDate?.() || updatedData.paidAt,
+                stripeSessionId: updatedData.stripeSessionId,
+                amount: updatedData.amount,
+              });
+            } else {
+              console.error(`[stripe-connect] ❌ ERREUR: Paiement ${paiement.id} n'a pas été mis à jour correctement. Status actuel: ${updatedData.status}`);
+            }
+          } else {
+            console.error(`[stripe-connect] ❌ ERREUR: Document paiement ${paiement.id} n'existe plus`);
+          }
+        } catch (verifyError) {
+          console.error(`[stripe-connect] ❌ Erreur lors de la vérification:`, verifyError);
         }
 
         // Récupérer le devis pour déterminer le bon statut
