@@ -923,7 +923,14 @@ export async function handleStripeWebhook(req, res, firestore) {
 
       // Gérer les paiements individuels
       if (!devisId) {
-        console.warn("[stripe-connect] ⚠️  Pas de devisId dans les metadata");
+        console.warn("[stripe-connect] ⚠️  Pas de devisId dans les metadata", {
+          sessionId: session.id,
+          metadata: session.metadata,
+          account: stripeAccountId,
+          paymentStatus: session.payment_status,
+        });
+        // Même sans devisId, on retourne 200 pour éviter que Stripe réessaie
+        // Mais on log pour déboguer
         return res.status(200).send("ok");
       }
 
@@ -1148,6 +1155,15 @@ export async function handleStripeWebhook(req, res, firestore) {
     return res.status(200).send("ok");
   } catch (err) {
     console.error("[stripe-connect] ❌ Erreur traitement webhook:", err);
+    console.error("[stripe-connect] ❌ Stack trace:", err.stack);
+    console.error("[stripe-connect] ❌ Détails de l'erreur:", {
+      message: err.message,
+      name: err.name,
+      eventType: event?.type,
+      eventId: event?.id,
+      account: event?.account,
+    });
+    // Retourner 500 pour que Stripe réessaie automatiquement
     return res.status(500).send("Webhook handler error");
   }
 }
