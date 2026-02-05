@@ -100,7 +100,7 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
     }
   }, [devisId, initialQuote]);
 
-  // Calcul du total du devis
+  // Calcul du total du devis (incluant les surcoûts)
   const calculateQuoteTotal = () => {
     if (!quote) return 0;
     
@@ -112,7 +112,12 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
       quote.options?.insuranceAmount
     );
     
-    return packagingPrice + shippingPrice + insuranceAmount;
+    // Ajouter les surcoûts (paiements SURCOUT non annulés)
+    const surchargeAmount = paiements
+      .filter((p) => p.type === 'SURCOUT' && p.status !== 'CANCELLED')
+      .reduce((sum, p) => sum + p.amount, 0);
+    
+    return packagingPrice + shippingPrice + insuranceAmount + surchargeAmount;
   };
 
   // Charger les paiements
@@ -299,6 +304,11 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
     .filter((p) => p.status === 'PAID')
     .reduce((sum, p) => sum + p.amount, 0);
 
+  // Récupérer les surcoûts pour l'affichage (paiements SURCOUT non annulés)
+  const surchargePaiements = paiements.filter(
+    (p) => p.type === 'SURCOUT' && p.status !== 'CANCELLED'
+  );
+
   // Calcul du total du devis
   const quoteTotal = calculateQuoteTotal();
 
@@ -331,6 +341,15 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
                 </span>
               </div>
             )}
+            {/* Ligne surcoût - affichée seulement s'il y a des surcoûts */}
+            {surchargePaiements.length > 0 && surchargePaiements.map((surcharge) => (
+              <div key={surcharge.id} className="flex items-center justify-between text-sm">
+                <span className="text-muted-foreground">
+                  Surcoût{surcharge.description ? `: ${surcharge.description}` : ''}
+                </span>
+                <span className="font-medium">{surcharge.amount.toFixed(2)}€</span>
+              </div>
+            ))}
             <Separator />
             <div className="flex items-center justify-between">
               <span className="font-semibold">Total du devis</span>
