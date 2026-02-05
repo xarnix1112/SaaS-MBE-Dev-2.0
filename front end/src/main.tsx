@@ -46,11 +46,10 @@ if (import.meta.env.VITE_SENTRY_DSN) {
   });
   console.log("[Sentry] ✅ Sentry initialisé pour le frontend");
   
-  // Exposer Sentry globalement pour les tests (développement uniquement)
-  if (import.meta.env.DEV) {
-    (window as any).Sentry = Sentry;
-    console.log("[Sentry] 💡 Sentry exposé dans window.Sentry pour les tests");
-  }
+  // Exposer Sentry globalement pour les tests (développement et production)
+  // Cela permet de tester Sentry depuis la console du navigateur
+  (window as any).Sentry = Sentry;
+  console.log("[Sentry] 💡 Sentry exposé dans window.Sentry pour les tests");
 } else {
   console.warn("[Sentry] ⚠️  VITE_SENTRY_DSN non configuré, Sentry désactivé");
   console.warn("[Sentry] 💡 Pour activer Sentry, configurez VITE_SENTRY_DSN dans Vercel");
