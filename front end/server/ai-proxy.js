@@ -21,6 +21,7 @@ import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
 import { google } from "googleapis";
+import * as Sentry from "@sentry/node";
 import {
   handleStripeConnect,
   handleStripeCallback,
@@ -214,7 +215,29 @@ if (RESEND_API_KEY) {
 
 // Les variables Resend sont maintenant disponibles globalement
 
+// Initialiser Sentry AVANT Express
+if (process.env.SENTRY_DSN) {
+  Sentry.init({
+    dsn: process.env.SENTRY_DSN,
+    environment: process.env.NODE_ENV || "production",
+    tracesSampleRate: 1.0,
+    // Capturer les erreurs non gérées
+    beforeSend(event, hint) {
+      console.log("[Sentry] Erreur capturée:", event.error?.message || event.message);
+      return event;
+    },
+  });
+  console.log("[Sentry] ✅ Sentry initialisé pour le backend");
+} else {
+  console.warn("[Sentry] ⚠️  SENTRY_DSN non configuré, Sentry désactivé");
+}
+
 const app = express();
+
+// Ajouter le request handler Sentry APRÈS la création de l'app mais AVANT les routes
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.Handlers.requestHandler());
+}
 
 // IMPORTANT: Ne pas parser le body JSON pour les routes webhook Stripe
 // Stripe a besoin du body brut (Buffer) pour vérifier la signature
@@ -821,6 +844,26 @@ app.get("/api/stripe/webhook/test", (req, res) => {
     firestoreConfigured: Boolean(firestore),
     message: "Webhook endpoint is accessible. Use Stripe CLI: stripe listen --forward-to localhost:5174/api/stripe/webhook",
   });
+});
+
+// Route de test Sentry - À RETIRER APRÈS LES TESTS
+app.get("/api/test-sentry", (req, res) => {
+  try {
+    throw new Error("Test Sentry Backend - " + new Date().toISOString());
+  } catch (error) {
+    if (process.env.SENTRY_DSN) {
+      Sentry.captureException(error);
+      console.log("[Test Sentry] ✅ Erreur de test envoyée à Sentry");
+    } else {
+      console.warn("[Test Sentry] ⚠️  SENTRY_DSN non configuré, erreur non envoyée");
+    }
+    res.status(500).json({ 
+      success: false, 
+      message: "Erreur de test envoyée à Sentry ! Vérifiez votre dashboard Sentry.",
+      error: error.message,
+      sentryConfigured: Boolean(process.env.SENTRY_DSN)
+    });
+  }
 });
 
 // Endpoint de test pour vérifier que le webhook Connect est accessible
@@ -8849,6 +8892,11 @@ console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
 // IMPORTANT: Le middleware catch-all DOIT être défini APRÈS toutes les routes
 // Express vérifie les routes spécifiques (app.get, app.post) AVANT les middlewares app.use()
 // Donc le catch-all ne devrait pas intercepter les routes définies avant
+// Ajouter le error handler Sentry AVANT le catch-all 404
+if (process.env.SENTRY_DSN) {
+  app.use(Sentry.Handlers.errorHandler());
+}
+
 // Mais pour être sûr, on le définit juste avant app.listen()
 app.use((req, res) => {
   console.log('[AI Proxy] ❌ Route non trouvée (catch-all):', req.method, req.url);
