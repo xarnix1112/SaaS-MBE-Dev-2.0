@@ -17,6 +17,7 @@ import {
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
+import { useQuoteTotal } from '@/hooks/use-quote-total';
 
 interface QuoteCardProps {
   quote: Quote;
@@ -44,6 +45,12 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
     createdAt: quote.createdAt instanceof Date ? quote.createdAt : (quote.createdAt ? new Date(quote.createdAt) : new Date()),
     reference: quote.reference || 'N/A'
   };
+  
+  // Calculer le total avec surcoûts
+  const { totalWithSurcharge } = useQuoteTotal(quote);
+  
+  // Utiliser le total avec surcoût s'il est disponible, sinon le totalAmount
+  const displayTotal = totalWithSurcharge !== null ? totalWithSurcharge : safeQuote.totalAmount;
   
   const hasIssues = (safeQuote.verificationIssues?.length || 0) > 0;
 
@@ -104,7 +111,7 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
             </p>
           </div>
           <div className="text-right">
-            <p className="font-semibold text-lg">{safeQuote.totalAmount > 0 ? `${safeQuote.totalAmount}€` : '-'}</p>
+            <p className="font-semibold text-lg">{displayTotal > 0 ? `${displayTotal.toFixed(2)}€` : '-'}</p>
             <StatusBadge status={safeQuote.paymentStatus} type="payment" />
           </div>
         </div>
