@@ -234,10 +234,8 @@ if (process.env.SENTRY_DSN) {
 
 const app = express();
 
-// Ajouter le request handler Sentry APRÈS la création de l'app mais AVANT les routes
-if (process.env.SENTRY_DSN) {
-  app.use(Sentry.Handlers.requestHandler());
-}
+// Note: Dans Sentry v10+, les handlers Express sont configurés automatiquement
+// via setupExpressErrorHandler() après toutes les routes (voir plus bas)
 
 // IMPORTANT: Ne pas parser le body JSON pour les routes webhook Stripe
 // Stripe a besoin du body brut (Buffer) pour vérifier la signature
@@ -8893,8 +8891,21 @@ console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
 // Express vérifie les routes spécifiques (app.get, app.post) AVANT les middlewares app.use()
 // Donc le catch-all ne devrait pas intercepter les routes définies avant
 // Ajouter le error handler Sentry AVANT le catch-all 404
+// Dans Sentry v10+, utiliser setupExpressErrorHandler() qui configure automatiquement les handlers
 if (process.env.SENTRY_DSN) {
-  app.use(Sentry.Handlers.errorHandler());
+  try {
+    if (typeof Sentry.setupExpressErrorHandler === 'function') {
+      Sentry.setupExpressErrorHandler(app);
+      console.log("[Sentry] ✅ setupExpressErrorHandler configuré");
+    } else {
+      // Fallback pour les anciennes versions
+      console.warn("[Sentry] ⚠️  setupExpressErrorHandler non disponible, Sentry fonctionnera sans middleware Express spécifique");
+      console.log("[Sentry] ℹ️  Les erreurs seront quand même capturées via l'initialisation globale");
+    }
+  } catch (error) {
+    console.error("[Sentry] ❌ Erreur lors de la configuration des handlers Express:", error.message);
+    console.log("[Sentry] ℹ️  Sentry continuera de fonctionner sans middleware Express");
+  }
 }
 
 // Mais pour être sûr, on le définit juste avant app.listen()
