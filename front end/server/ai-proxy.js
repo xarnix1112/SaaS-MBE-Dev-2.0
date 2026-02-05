@@ -4505,6 +4505,268 @@ L'équipe MBE
 });
 
 /**
+ * Route: Envoyer le surcoût par email au client
+ * POST /api/send-surcharge-email
+ * Body: { quote: Quote, surchargePaiement: { id, amount, description, url } }
+ */
+app.post('/api/send-surcharge-email', async (req, res) => {
+  console.log('[AI Proxy] ✅ POST /api/send-surcharge-email appelé - Route trouvée!');
+  console.log('[AI Proxy] Request body:', JSON.stringify(req.body).substring(0, 200));
+  
+  let clientEmail = null;
+  
+  try {
+    const { quote, surchargePaiement } = req.body;
+    console.log('[Surcharge Email] 📦 Quote reçu - ID:', quote?.id);
+    console.log('[Surcharge Email] 📦 Surcharge paiement:', surchargePaiement);
+
+    if (!quote || !quote.client || !quote.client.email) {
+      return res.status(400).json({ error: 'Quote ou email client manquant' });
+    }
+
+    if (!surchargePaiement || !surchargePaiement.amount || !surchargePaiement.url) {
+      return res.status(400).json({ error: 'Informations surcoût manquantes (amount ou url)' });
+    }
+
+    clientEmail = quote.client.email.trim().toLowerCase();
+    
+    // Validation de l'email
+    if (!isValidEmail(clientEmail)) {
+      return res.status(400).json({ 
+        error: `Format d'email invalide: ${clientEmail}`,
+        hint: 'Vérifiez que l\'email du client est correct'
+      });
+    }
+
+    const clientName = quote.client.name || 'Client';
+    const reference = quote.reference || 'N/A';
+    const surchargeAmount = surchargePaiement.amount;
+    const surchargeUrl = surchargePaiement.url;
+    
+    // Améliorer la description du surcoût pour la rendre plus soutenue et compréhensible
+    let enhancedDescription = surchargePaiement.description || 'Surcoût supplémentaire';
+    
+    // Si la description est courte ou générique, l'améliorer
+    if (enhancedDescription.length < 20 || 
+        enhancedDescription.toLowerCase().includes('surcoût') || 
+        enhancedDescription.toLowerCase().includes('supplément')) {
+      // Créer une description plus professionnelle
+      enhancedDescription = `Surcoût supplémentaire pour le devis ${reference}`;
+      
+      // Si on a une description originale, essayer de l'enrichir
+      if (surchargePaiement.description && surchargePaiement.description.length > 0) {
+        const originalDesc = surchargePaiement.description.trim();
+        // Si la description originale contient des détails, les préserver
+        if (originalDesc.length > 10 && !originalDesc.toLowerCase().match(/^(surcoût|supplément|frais)/i)) {
+          enhancedDescription = `${originalDesc.charAt(0).toUpperCase() + originalDesc.slice(1)} - Surcoût pour le devis ${reference}`;
+        } else {
+          enhancedDescription = `Surcoût supplémentaire : ${originalDesc}`;
+        }
+      }
+    } else {
+      // Description déjà détaillée, capitaliser la première lettre
+      enhancedDescription = enhancedDescription.charAt(0).toUpperCase() + enhancedDescription.slice(1);
+    }
+
+    // Texte brut
+    const textContent = `
+Bonjour ${clientName},
+
+Nous vous contactons concernant votre devis de transport ${reference}.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SURCOÛT SUPPLÉMENTAIRE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+${enhancedDescription}
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💰 MONTANT DU SURCOÛT : ${surchargeAmount.toFixed(2)}€
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🔗 LIEN DE PAIEMENT :
+${surchargeUrl}
+
+Cliquez sur le lien ci-dessus pour procéder au paiement du surcoût.
+
+Pour toute question concernant ce surcoût, n'hésitez pas à nous contacter.
+
+Cordialement,
+L'équipe MBE
+    `.trim();
+
+    // HTML (basé sur la structure du mail principal)
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
+    .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; }
+    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
+    .section { margin-bottom: 20px; }
+    .label { font-weight: bold; color: #6b7280; font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
+    .value { font-size: 16px; color: #111827; margin-bottom: 15px; }
+    .surcharge-box { background: #fef3c7; padding: 20px; border-radius: 8px; border: 2px solid #f59e0b; margin: 20px 0; }
+    .total { background: #fef3c7; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; color: #92400e; text-align: center; margin-top: 20px; }
+    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1 style="margin:0;">💳 Surcoût Supplémentaire</h1>
+  </div>
+  <div class="content">
+    <p>Bonjour <strong>${clientName}</strong>,</p>
+    <p>Nous vous contactons concernant votre devis de transport <strong>${reference}</strong>.</p>
+    
+    <div class="surcharge-box">
+      <div class="label" style="color: #92400e; font-size: 14px; margin-bottom: 10px;">SURCOÛT SUPPLÉMENTAIRE</div>
+      <div class="value" style="color: #111827; font-size: 15px; line-height: 1.8;">
+        ${enhancedDescription}
+      </div>
+    </div>
+
+    <div class="total" style="margin-top: 25px;">
+      💰 Montant du surcoût : ${surchargeAmount.toFixed(2)}€
+    </div>
+
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid #2563eb;">
+      <p style="margin: 0 0 15px 0; font-size: 14px; color: #1e40af; font-weight: 600;">💳 Procéder au paiement du surcoût</p>
+      <a href="${surchargeUrl}" 
+         style="display: inline-block; background: #2563eb; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); transition: background 0.2s; letter-spacing: 0.5px;">
+        Payer ${surchargeAmount.toFixed(2)}€ maintenant
+      </a>
+      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
+        Ou copiez ce lien dans votre navigateur :<br>
+        <a href="${surchargeUrl}" style="color: #2563eb; word-break: break-all; text-decoration: underline;">${surchargeUrl}</a>
+      </p>
+    </div>
+
+    <p style="margin-top: 30px; color: #6b7280;">Pour toute question concernant ce surcoût, n'hésitez pas à nous contacter.</p>
+  </div>
+  <div class="footer">
+    Cordialement,<br>
+    <strong>L'équipe MBE</strong>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    // Envoi via Resend
+    console.log('[AI Proxy] Envoi email surcoût via Resend à:', clientEmail);
+    const result = await sendEmail({
+      to: clientEmail,
+      subject: `Surcoût supplémentaire - Devis ${reference}`,
+      text: textContent,
+      html: htmlContent,
+    });
+    console.log('[AI Proxy] Email surcoût envoyé avec succès:', result);
+
+    console.log(`[Resend] Email surcoût envoyé avec succès:`, result.messageId);
+    
+    // Sauvegarder l'email dans Firestore (collection emailMessages)
+    try {
+      if (firestore && quote.id) {
+        const emailMessageData = {
+          devisId: quote.id,
+          clientId: quote.client?.id || null,
+          clientEmail: clientEmail,
+          direction: 'OUT',
+          source: 'RESEND',
+          from: EMAIL_FROM || 'devis@mbe-sdv.fr',
+          to: [clientEmail],
+          subject: `Surcoût supplémentaire - Devis ${reference}`,
+          bodyText: textContent,
+          bodyHtml: htmlContent,
+          messageId: result.id || result.messageId || null,
+          createdAt: Timestamp.now(),
+        };
+        
+        await firestore.collection('emailMessages').add(emailMessageData);
+        console.log('[emailMessages] ✅ Email surcoût sauvegardé dans Firestore pour devis:', quote.id);
+      } else {
+        console.warn('[emailMessages] ⚠️ Firestore non initialisé ou quote.id manquant, email non sauvegardé');
+      }
+    } catch (firestoreError) {
+      // Ne pas faire échouer l'envoi d'email si la sauvegarde Firestore échoue
+      console.error('[emailMessages] ❌ Erreur lors de la sauvegarde de l\'email surcoût dans Firestore:', firestoreError);
+    }
+    
+    res.json({ success: true, messageId: result.id, to: clientEmail });
+  } catch (error) {
+    console.error(`[Resend] Erreur envoi email surcoût:`, error);
+    console.error(`[Resend] Erreur complète:`, {
+      message: error.message,
+      name: error.name,
+      resendError: error.resendError,
+      resendType: error.resendType,
+      resendStatusCode: error.resendStatusCode,
+      stack: error.stack?.split('\n').slice(0, 3).join('\n')
+    });
+    
+    const errorMessage = error.message || 'Erreur lors de l\'envoi de l\'email surcoût';
+    
+    // Extraire les métadonnées Resend de l'erreur
+    const resendErrorObj = error.resendError || (error.name === 'Error' && error.resendError ? error.resendError : null) || error;
+    const resendError = typeof resendErrorObj === 'object' && resendErrorObj !== null ? resendErrorObj : {};
+    const resendType = error.resendType || resendError.type || resendError.name || '';
+    const resendStatusCode = error.resendStatusCode || resendError.statusCode || 0;
+    
+    let statusCode = 500;
+    let errorCode = 'EMAIL_SEND_ERROR';
+    let hint = '';
+    
+    // Détection précise des erreurs Resend (même logique que send-quote-email)
+    const errorMsgLower = errorMessage.toLowerCase();
+    const isDomainNotVerified = (
+      (errorMsgLower.includes('domain') && errorMsgLower.includes('not verified')) ||
+      errorMsgLower.includes('domain is not verified') ||
+      (errorMsgLower.includes('the domain') && errorMsgLower.includes('is not verified'))
+    );
+    
+    // Mapper les erreurs Resend pour une meilleure UX
+    if (errorMessage.includes('non configuré') || errorMessage.includes('Resend non configuré')) {
+      statusCode = 502;
+      errorCode = 'RESEND_NOT_CONFIGURED';
+      hint = `⚠️ Resend non configuré. Ajoutez RESEND_API_KEY et EMAIL_FROM dans front end/.env.local`;
+    } else if (isDomainNotVerified) {
+      statusCode = 400;
+      errorCode = 'EMAIL_DOMAIN_NOT_VERIFIED';
+      const emailDomain = EMAIL_FROM?.split('@')[1] || 'domaine inconnu';
+      
+      if (emailDomain === 'gmail.com' || emailDomain === 'yahoo.com' || emailDomain === 'hotmail.com' || emailDomain === 'outlook.com') {
+        hint = `⚠️ Vous utilisez actuellement ${EMAIL_FROM} (domaine ${emailDomain}) qui n'est pas vérifiable dans Resend. Pour utiliser votre domaine vérifié mbe-sdv.fr, modifiez EMAIL_FROM dans votre fichier front end/.env.local avec : EMAIL_FROM=devis@mbe-sdv.fr (ou contact@mbe-sdv.fr)`;
+      } else {
+        hint = `⚠️ Le domaine "${emailDomain}" utilisé dans EMAIL_FROM (${EMAIL_FROM}) n'est pas vérifié dans Resend. Vérifiez que ce domaine est bien vérifié dans Resend Dashboard > Domains, ou utilisez un email avec le domaine mbe-sdv.fr (ex: devis@mbe-sdv.fr).`;
+      }
+    } else if (errorMessage.includes('API') || errorMessage.includes('api key') || errorMessage.includes('401') || (errorMessage.includes('403') && !isDomainNotVerified)) {
+      statusCode = 403;
+      errorCode = 'RESEND_AUTH_ERROR';
+      hint = `⚠️ Erreur d'authentification Resend (403). Vérifiez que RESEND_API_KEY est correcte sur https://resend.com/api-keys. Si le domaine ${EMAIL_FROM?.split('@')[1] || 'mbe-sdv.fr'} est vérifié, cela peut être une autre erreur. Détails: ${errorMessage.substring(0, 200)}`;
+    } else if (errorMessage.includes('invalid') || errorMessage.includes('format')) {
+      statusCode = 400;
+      errorCode = 'INVALID_EMAIL_FORMAT';
+      hint = `⚠️ Format d'email invalide`;
+    } else {
+      statusCode = 500;
+      errorCode = 'EMAIL_SEND_ERROR';
+      hint = `⚠️ Erreur lors de l'envoi: ${errorMessage.substring(0, 150)}`;
+    }
+    
+    res.status(statusCode).json({ 
+      success: false,
+      error: errorMessage,
+      code: errorCode,
+      hint: hint || undefined,
+      clientEmail: clientEmail || 'email inconnu',
+      emailFrom: EMAIL_FROM
+    });
+  }
+});
+
+/**
  * Route: Envoyer un email à la salle des ventes pour planifier une collecte
  * POST /api/send-collection-email
  * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }

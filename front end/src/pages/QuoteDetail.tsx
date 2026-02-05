@@ -115,6 +115,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
+import { getPaiements } from "@/lib/stripeConnect";
+import type { Paiement } from "@/types/stripe";
 
 export default function QuoteDetail() {
   const { id } = useParams();
@@ -144,6 +146,8 @@ export default function QuoteDetail() {
   const [isSaving, setIsSaving] = useState(false);
   const [isAddNoteDialogOpen, setIsAddNoteDialogOpen] = useState(false);
   const [lastSaveTime, setLastSaveTime] = useState<number | null>(null);
+  const [surchargePaiements, setSurchargePaiements] = useState<Paiement[]>([]);
+  const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -204,6 +208,30 @@ export default function QuoteDetail() {
     };
     testBackendConnection();
   }, []);
+
+  // Charger les paiements SURCOUT pour afficher le bouton d'envoi
+  useEffect(() => {
+    const loadSurchargePaiements = async () => {
+      if (!id) return;
+      
+      try {
+        setIsLoadingSurcharges(true);
+        const paiements = await getPaiements(id);
+        // Filtrer uniquement les surcoûts non payés
+        const surcharges = paiements.filter(
+          (p) => p.type === 'SURCOUT' && p.status === 'PENDING'
+        );
+        setSurchargePaiements(surcharges);
+      } catch (error) {
+        console.error('[QuoteDetail] Erreur chargement surcoûts:', error);
+        // Ne pas afficher d'erreur toast pour éviter le spam, juste logger
+      } finally {
+        setIsLoadingSurcharges(false);
+      }
+    };
+
+    loadSurchargePaiements();
+  }, [id]);
 
   // IMPORTANT: la liste de devis (useQuotes) se met à jour après merge Firestore.
   // Sans resync, la page détail peut rester bloquée sur l'ancien état (bordereau invisible).
@@ -944,6 +972,134 @@ export default function QuoteDetail() {
       } else {
         toast.error(`Erreur lors de l'envoi de l'email: ${error instanceof Error ? error.message : 'Erreur inconnue'}`);
       }
+    }
+  };
+
+  const handleSendSurchargeEmail = async (surchargePaiement: Paiement) => {
+    if (!quote) return;
+    
+    // Validation de l'email client
+    const clientEmailRaw = quote.client?.email || quote.delivery?.contact?.email;
+    if (!clientEmailRaw) {
+      toast.error('Email client manquant');
+      return;
+    }
+
+    const clientEmail = clientEmailRaw.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(clientEmail)) {
+      toast.error(`Format d'email invalide: ${clientEmail}`);
+      return;
+    }
+
+    console.log('[Surcharge Email] Début envoi email surcoût à:', clientEmail);
+    console.log('[Surcharge Email] Paiement ID:', surchargePaiement.id);
+    
+    try {
+      const apiUrl = '/api/send-surcharge-email';
+      console.log('[Surcharge Email] Appel API:', apiUrl);
+      
+      // Utiliser authenticatedFetch pour router correctement vers le backend Railway
+      // Le champ 'url' vient de Firestore, 'stripeCheckoutUrl' est le type TypeScript
+      const paymentUrl = (surchargePaiement as any).url || surchargePaiement.stripeCheckoutUrl || '';
+      
+      if (!paymentUrl) {
+        toast.error('URL de paiement manquante pour ce surcoût');
+        return;
+      }
+      
+      const response = await authenticatedFetch(apiUrl, {
+        method: 'POST',
+        body: JSON.stringify({ 
+          quote,
+          surchargePaiement: {
+            id: surchargePaiement.id,
+            amount: surchargePaiement.amount,
+            description: surchargePaiement.description || '',
+            url: paymentUrl,
+          }
+        }),
+      });
+
+      console.log('[Surcharge Email] Réponse status:', response.status, response.statusText);
+
+      if (!response.ok) {
+        // Essayer de parser l'erreur comme JSON
+        let error;
+        const contentType = response.headers.get('content-type');
+        if (contentType && contentType.includes('application/json')) {
+          try {
+            error = await response.json();
+          } catch (e) {
+            const text = await response.text();
+            console.error('[Surcharge Email] Réponse non-JSON:', text);
+            toast.error(`Erreur serveur (${response.status}): ${text.substring(0, 100)}`);
+            return;
+          }
+        } else {
+          const text = await response.text();
+          console.error('[Surcharge Email] Réponse HTML/text:', text.substring(0, 200));
+          toast.error(`Erreur serveur (${response.status}). Vérifiez que le proxy backend est démarré sur le port 5174.`);
+          return;
+        }
+        
+        // Afficher le hint si disponible
+        if (error.hint) {
+          toast.error(error.hint, { duration: 8000 });
+        } else {
+          toast.error(error.error || `Erreur serveur (${response.status})`);
+        }
+        console.error('[Surcharge Email] Erreur serveur:', error);
+        return;
+      }
+
+      const result = await response.json();
+      console.log('[Surcharge Email] ✅ Email envoyé avec succès:', result);
+      
+      // Ajouter un événement à l'historique
+      try {
+        const quoteDoc = await getDoc(doc(db, 'quotes', quote.id));
+        const existingData = quoteDoc.data();
+        const existingTimeline = existingData?.timeline || quote.timeline || [];
+        
+        const timelineEvent = createTimelineEvent(
+          quote.status || 'awaiting_payment',
+          `Email surcoût envoyé au client (${clientEmail}) - ${surchargePaiement.amount.toFixed(2)}€`
+        );
+        
+        const cleanedExistingTimeline = existingTimeline.filter((event: any) => {
+          if (!event.date) return false;
+          const date = event.date?.toDate ? event.date.toDate() : new Date(event.date);
+          return !isNaN(date.getTime());
+        });
+        
+        const updatedTimeline = [...cleanedExistingTimeline, timelineEvent];
+        const timelineForFirestore = updatedTimeline.map(timelineEventToFirestore);
+        
+        await setDoc(
+          doc(db, "quotes", quote.id),
+          {
+            timeline: timelineForFirestore,
+            updatedAt: Timestamp.now(),
+          },
+          { merge: true }
+        );
+        
+        setQuote(prev => prev ? {
+          ...prev,
+          timeline: updatedTimeline,
+          updatedAt: new Date(),
+        } : prev);
+        
+        queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      } catch (firestoreError) {
+        console.error('[Surcharge Email] Erreur lors de la mise à jour du timeline:', firestoreError);
+      }
+      
+      toast.success(`Email surcoût envoyé avec succès à ${clientEmail}`);
+    } catch (error) {
+      console.error('[Surcharge Email] Erreur:', error);
+      toast.error('Erreur lors de l\'envoi de l\'email surcoût');
     }
   };
 
@@ -2356,6 +2512,19 @@ export default function QuoteDetail() {
                   <Mail className="w-4 h-4" />
                   Envoyer le devis
                 </Button>
+                {/* Bouton "Envoyer surcoût" - affiché uniquement s'il y a des surcoûts non payés */}
+                {surchargePaiements.length > 0 && surchargePaiements.map((surcharge) => (
+                  <Button
+                    key={surcharge.id}
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={() => handleSendSurchargeEmail(surcharge)}
+                    disabled={isLoadingSurcharges}
+                  >
+                    <Send className="w-4 h-4" />
+                    Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
+                  </Button>
+                ))}
               </CardContent>
             </Card>
           </div>
