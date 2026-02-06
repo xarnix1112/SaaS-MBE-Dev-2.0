@@ -16,7 +16,7 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children, requireSetup = true }: ProtectedRouteProps) {
-  const { user, isLoading, isSetupComplete } = useAuth();
+  const { user, isLoading, isSetupComplete, userDoc } = useAuth();
   const location = useLocation();
 
   // Afficher un loader pendant le chargement
@@ -32,9 +32,10 @@ export function ProtectedRoute({ children, requireSetup = true }: ProtectedRoute
   }
 
   // Ignorer les utilisateurs anonymes (considérés comme non connectés)
-  const isAuthenticated = user && !user.isAnonymous;
+  // Un utilisateur est vraiment authentifié seulement s'il a un document user
+  const isAuthenticated = user && !user.isAnonymous && userDoc;
 
-  // Si non connecté ou utilisateur anonyme, rediriger vers welcome
+  // Si non connecté, utilisateur anonyme, ou utilisateur sans document user, rediriger vers welcome
   if (!isAuthenticated) {
     return <Navigate to="/welcome" state={{ from: location }} replace />;
   }
