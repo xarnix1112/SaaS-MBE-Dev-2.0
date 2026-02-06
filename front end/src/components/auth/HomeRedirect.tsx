@@ -33,14 +33,15 @@ export function HomeRedirect() {
   }
 
   // Si connecté (avec email/password) mais setup non terminé, aller au setup
+  // MAIS seulement si l'utilisateur a un document user (sinon c'est qu'il n'est pas vraiment connecté)
   // Cela inclut les cas où :
   // - L'utilisateur a un document user mais pas de saasAccountId
-  // - L'utilisateur n'a pas encore de document user (vient de s'inscrire)
-  if (isAuthenticated && !isSetupComplete) {
+  if (isAuthenticated && !isSetupComplete && userDoc) {
     return <Navigate to="/setup-mbe" replace />;
   }
 
-  // Dans TOUS les autres cas (non connecté, utilisateur anonyme), aller à la page de bienvenue
+  // Dans TOUS les autres cas (non connecté, utilisateur anonyme, ou utilisateur sans document user), aller à la page de bienvenue
+  // Cela permet aux utilisateurs de se connecter ou créer un compte même s'il y a une session Firebase persistante invalide
   return <Navigate to="/welcome" replace />;
 }
 
