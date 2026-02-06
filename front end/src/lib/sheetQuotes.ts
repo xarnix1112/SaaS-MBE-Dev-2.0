@@ -623,39 +623,95 @@ export async function loadQuotes(): Promise<Quote[]> {
     }
     
     // Les devis viennent déjà de Firestore avec tous les enrichissements
-    // On peut les retourner directement, mais on s'assure que toutes les propriétés requises existent
-    return quotes.map((q: any) => ({
-      ...q,
-      status: q.status || 'new',
-      paymentStatus: q.paymentStatus || 'pending',
-      createdAt: q.createdAt ? new Date(q.createdAt) : new Date(),
-      updatedAt: q.updatedAt ? new Date(q.updatedAt) : new Date(),
-      timeline: q.timeline?.map((event: any) => ({
-        ...event,
-        date: event.date ? new Date(event.date) : new Date()
-      })) || [],
-      verificationIssues: q.verificationIssues || [],
-      client: q.client || { name: '', email: '', phone: '', address: '' },
-      delivery: q.delivery || { mode: 'client', contact: {}, address: {} },
-      items: q.items || [],
-      paymentLinks: q.paymentLinks?.map((link: any) => ({
-        ...link,
-        createdAt: link.createdAt ? new Date(link.createdAt) : new Date()
-      })) || [],
-      messages: q.messages || [],
-      internalNotes: q.internalNotes || [],
-      auctionHouseComments: q.auctionHouseComments || [],
-      // S'assurer que les options avec les prix sont bien copiées
-      // Fallback: si options.xxxPrice n'existe pas, utiliser la valeur à la racine (ancien format)
-      options: {
-        insurance: q.options?.insurance || false,
-        express: q.options?.express || false,
-        insuranceAmount: q.options?.insuranceAmount || q.insuranceAmount || 0,
-        expressAmount: q.options?.expressAmount || q.expressAmount || 0,
-        packagingPrice: q.options?.packagingPrice || q.packagingPrice || 0,
-        shippingPrice: q.options?.shippingPrice || q.shippingPrice || 0,
-      }
-    })) as Quote[];
+    // IMPORTANT: Fusionner les champs modifiés depuis Firestore (clientName, clientEmail, etc.)
+    // dans la structure Quote (client.name, client.email, etc.)
+    return quotes.map((q: any) => {
+      // Fusionner les champs modifiés depuis Firestore dans la structure Quote
+      // Les champs Firestore (clientName, clientEmail, etc.) ont priorité sur les champs Google Sheets
+      const clientName = q.clientName !== undefined && q.clientName !== null ? q.clientName : (q.client?.name || '');
+      const clientEmail = q.clientEmail !== undefined && q.clientEmail !== null ? q.clientEmail : (q.client?.email || '');
+      const clientPhone = q.clientPhone !== undefined && q.clientPhone !== null ? q.clientPhone : (q.client?.phone || '');
+      const clientAddress = q.clientAddress !== undefined && q.clientAddress !== null ? q.clientAddress : (q.client?.address || '');
+      
+      const lotNumber = q.lotNumber !== undefined && q.lotNumber !== null ? q.lotNumber : (q.lot?.number || '');
+      const lotDescription = q.lotDescription !== undefined && q.lotDescription !== null ? q.lotDescription : (q.lot?.description || '');
+      const lotValue = q.lotValue !== undefined && q.lotValue !== null ? q.lotValue : (q.lot?.value || 0);
+      const lotAuctionHouse = q.lotAuctionHouse !== undefined && q.lotAuctionHouse !== null ? q.lotAuctionHouse : (q.lot?.auctionHouse || '');
+      
+      // Fusionner les dimensions du lot si elles existent dans Firestore
+      const lotDimensions = q.lotDimensions ? {
+        length: Number(q.lotDimensions.length) || 0,
+        width: Number(q.lotDimensions.width) || 0,
+        height: Number(q.lotDimensions.height) || 0,
+        weight: Number(q.lotDimensions.weight) || 0,
+        estimated: q.lotDimensions.estimated !== undefined ? q.lotDimensions.estimated : true,
+      } : (q.lot?.dimensions || { length: 0, width: 0, height: 0, weight: 0, estimated: false });
+      
+      // Fusionner les informations de livraison
+      const deliveryMode = q.deliveryMode !== undefined && q.deliveryMode !== null ? q.deliveryMode : (q.delivery?.mode || 'client');
+      const deliveryContactName = q.deliveryContactName !== undefined && q.deliveryContactName !== null ? q.deliveryContactName : (q.delivery?.contact?.name || '');
+      const deliveryContactEmail = q.deliveryContactEmail !== undefined && q.deliveryContactEmail !== null ? q.deliveryContactEmail : (q.delivery?.contact?.email || '');
+      const deliveryContactPhone = q.deliveryContactPhone !== undefined && q.deliveryContactPhone !== null ? q.deliveryContactPhone : (q.delivery?.contact?.phone || '');
+      const deliveryAddress = q.deliveryAddress || q.delivery?.address || {};
+      
+      return {
+        ...q,
+        status: q.status || 'new',
+        paymentStatus: q.paymentStatus || 'pending',
+        createdAt: q.createdAt ? new Date(q.createdAt) : new Date(),
+        updatedAt: q.updatedAt ? new Date(q.updatedAt) : new Date(),
+        timeline: q.timeline?.map((event: any) => ({
+          ...event,
+          date: event.date ? new Date(event.date) : new Date()
+        })) || [],
+        verificationIssues: q.verificationIssues || [],
+        // Fusionner les champs modifiés dans la structure client
+        client: {
+          ...(q.client || {}),
+          name: clientName,
+          email: clientEmail,
+          phone: clientPhone,
+          address: clientAddress,
+        },
+        // Fusionner les champs modifiés dans la structure lot
+        lot: {
+          ...(q.lot || {}),
+          number: lotNumber,
+          description: lotDescription,
+          value: lotValue,
+          auctionHouse: lotAuctionHouse,
+          dimensions: lotDimensions,
+        },
+        // Fusionner les informations de livraison
+        delivery: {
+          mode: deliveryMode,
+          contact: {
+            name: deliveryContactName,
+            email: deliveryContactEmail,
+            phone: deliveryContactPhone,
+          },
+          address: deliveryAddress,
+        },
+        items: q.items || [],
+        paymentLinks: q.paymentLinks?.map((link: any) => ({
+          ...link,
+          createdAt: link.createdAt ? new Date(link.createdAt) : new Date()
+        })) || [],
+        messages: q.messages || [],
+        internalNotes: q.internalNotes || [],
+        auctionHouseComments: q.auctionHouseComments || [],
+        // S'assurer que les options avec les prix sont bien copiées
+        // Fallback: si options.xxxPrice n'existe pas, utiliser la valeur à la racine (ancien format)
+        options: {
+          insurance: q.options?.insurance !== undefined ? q.options.insurance : (q.insurance !== undefined ? q.insurance : false),
+          express: q.options?.express || false,
+          insuranceAmount: q.options?.insuranceAmount !== undefined && q.options?.insuranceAmount !== null ? q.options.insuranceAmount : (q.insuranceAmount !== undefined && q.insuranceAmount !== null ? q.insuranceAmount : 0),
+          expressAmount: q.options?.expressAmount || q.expressAmount || 0,
+          packagingPrice: q.options?.packagingPrice !== undefined && q.options?.packagingPrice !== null ? q.options.packagingPrice : (q.packagingPrice !== undefined && q.packagingPrice !== null ? q.packagingPrice : 0),
+          shippingPrice: q.options?.shippingPrice !== undefined && q.options?.shippingPrice !== null ? q.options.shippingPrice : (q.shippingPrice !== undefined && q.shippingPrice !== null ? q.shippingPrice : 0),
+        }
+      };
+    }) as Quote[];
   } catch (error) {
     console.error("[quotes] Erreur lors du chargement des devis depuis l'API:", error);
     return mockQuotes;

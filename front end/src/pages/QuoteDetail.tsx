@@ -2628,19 +2628,22 @@ export default function QuoteDetail() {
                   // Mettre à jour le state local AVANT l'invalidation pour un feedback immédiat
                   setQuote(updatedQuote);
                   
-                  // Enregistrer le temps de sauvegarde pour empêcher le resync pendant 3 secondes
-                  // Cela laisse le temps à mergeEnhancementsIntoQuotes de récupérer les champs modifiés depuis Firestore
+                  // Enregistrer le temps de sauvegarde pour empêcher le resync pendant 5 secondes
+                  // Cela laisse le temps aux données d'être récupérées depuis Firestore
                   const saveTime = Date.now();
                   setLastSaveTime(saveTime);
+                  
+                  // Attendre un peu pour que Firestore soit à jour (latence de propagation)
+                  await new Promise(resolve => setTimeout(resolve, 500));
                   
                   // Invalider et refetch le cache React Query pour forcer le refetch avec les nouvelles données Firestore
                   // Utiliser refetchQueries pour attendre la fin du refetch
                   await queryClient.refetchQueries({ queryKey: ['quotes'] });
                   
-                  // Attendre que mergeEnhancementsIntoQuotes ait fini de récupérer les champs modifiés
-                  // On attend jusqu'à 3 secondes pour que les données fusionnées soient prêtes
+                  // Attendre que les données fusionnées soient disponibles dans le cache
+                  // On attend jusqu'à 5 secondes pour que les données soient prêtes
                   let attempts = 0;
-                  const maxAttempts = 30; // 3 secondes max (30 * 100ms)
+                  const maxAttempts = 50; // 5 secondes max (50 * 100ms)
                   let foundMatchingQuote = false;
                   while (attempts < maxAttempts) {
                     await new Promise(resolve => setTimeout(resolve, 100));
@@ -2672,10 +2675,10 @@ export default function QuoteDetail() {
                   }
                   
                   // Réinitialiser lastSaveTime après un délai plus long pour permettre le resync avec les données fusionnées
-                  // On attend 3 secondes pour s'assurer que les données sont bien fusionnées et que le resync ne les écrase pas
+                  // On attend 5 secondes pour s'assurer que les données sont bien fusionnées et que le resync ne les écrase pas
                   setTimeout(() => {
                     setLastSaveTime(null);
-                  }, 3000);
+                  }, 5000);
                   
                   toast.success("Devis modifié avec succès");
                   setIsEditDialogOpen(false);
