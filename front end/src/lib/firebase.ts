@@ -5,35 +5,42 @@ import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndP
 
 const env = import.meta.env as Record<string, string | undefined>;
 
-// Fallback config (si .env.local n'est pas lu / pas défini)
-// Note: Pour une app web Firebase, ces valeurs ne sont pas des "secrets" au sens Stripe,
-// mais elles doivent correspondre à TON projet Firebase.
-const DEFAULT_FIREBASE_CONFIG = {
-  apiKey: "AIzaSyDfIvWIWpWGVcPHIxVqUpoxQzrHHr6Yjv0",
-  authDomain: "sdv-automation-mbe.firebaseapp.com",
-  projectId: "sdv-automation-mbe",
-  storageBucket: "sdv-automation-mbe.firebasestorage.app",
-  messagingSenderId: "603940578796",
-  appId: "1:603940578796:web:89052f95b5eed311db8cc9",
-  measurementId: "G-M4R1KW7B3W",
+// IMPORTANT SÉCURITÉ: Ne plus hardcoder la clé API dans le code source
+// Utiliser uniquement les variables d'environnement pour éviter l'exposition publique sur GitHub
+// Les variables d'environnement doivent être définies dans front end/.env.local (non commité)
+
+// Vérification que les variables d'environnement requises sont présentes
+const requiredEnvVars = {
+  apiKey: env.VITE_FIREBASE_API_KEY,
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN,
+  projectId: env.VITE_FIREBASE_PROJECT_ID,
+  appId: env.VITE_FIREBASE_APP_ID || env.VITE_FIREBASE_APPID,
 };
 
+const missingVars = Object.entries(requiredEnvVars)
+  .filter(([_, value]) => !value)
+  .map(([key]) => key);
+
+if (missingVars.length > 0) {
+  console.error('[firebase] ⚠️ Variables d\'environnement Firebase manquantes:', missingVars.join(', '));
+  console.error('[firebase] Veuillez définir ces variables dans front end/.env.local');
+}
+
 const firebaseConfig = {
-  apiKey: env.VITE_FIREBASE_API_KEY || DEFAULT_FIREBASE_CONFIG.apiKey,
-  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || DEFAULT_FIREBASE_CONFIG.authDomain,
-  projectId: env.VITE_FIREBASE_PROJECT_ID || DEFAULT_FIREBASE_CONFIG.projectId,
+  apiKey: env.VITE_FIREBASE_API_KEY || '',
+  authDomain: env.VITE_FIREBASE_AUTH_DOMAIN || '',
+  projectId: env.VITE_FIREBASE_PROJECT_ID || '',
   // fallback classique si pas renseigné
   storageBucket:
     env.VITE_FIREBASE_STORAGE_BUCKET ||
-    DEFAULT_FIREBASE_CONFIG.storageBucket ||
     (env.VITE_FIREBASE_PROJECT_ID ? `${env.VITE_FIREBASE_PROJECT_ID}.appspot.com` : undefined),
   // plusieurs noms possibles
   messagingSenderId:
     env.VITE_FIREBASE_SENDER_ID ||
     env.VITE_FIREBASE_MESSAGING_SENDER_ID ||
-    DEFAULT_FIREBASE_CONFIG.messagingSenderId,
-  appId: env.VITE_FIREBASE_APP_ID || env.VITE_FIREBASE_APPID || DEFAULT_FIREBASE_CONFIG.appId,
-  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || DEFAULT_FIREBASE_CONFIG.measurementId,
+    '',
+  appId: env.VITE_FIREBASE_APP_ID || env.VITE_FIREBASE_APPID || '',
+  measurementId: env.VITE_FIREBASE_MEASUREMENT_ID || '',
 };
 
 // Guard: ensure mandatory keys exist
