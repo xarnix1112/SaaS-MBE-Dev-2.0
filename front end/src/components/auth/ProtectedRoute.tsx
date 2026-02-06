@@ -32,18 +32,25 @@ export function ProtectedRoute({ children, requireSetup = true }: ProtectedRoute
   }
 
   // Ignorer les utilisateurs anonymes (considérés comme non connectés)
-  // Un utilisateur est vraiment authentifié seulement s'il a un document user
-  const isAuthenticated = user && !user.isAnonymous && userDoc;
+  const isAuthenticated = user && !user.isAnonymous;
 
-  // Si non connecté, utilisateur anonyme, ou utilisateur sans document user, rediriger vers welcome
+  // Si non connecté ou utilisateur anonyme, rediriger vers welcome
   if (!isAuthenticated) {
     return <Navigate to="/welcome" state={{ from: location }} replace />;
   }
 
-  // Si setup non terminé et requis, rediriger vers setup-mbe
-  if (requireSetup && !isSetupComplete) {
-    return <Navigate to="/setup-mbe" replace />;
+  // Si setup requis (requireSetup = true) :
+  // - Vérifier que l'utilisateur a un document user ET que le setup est terminé
+  // - Sinon, rediriger vers setup-mbe
+  if (requireSetup) {
+    if (!userDoc || !isSetupComplete) {
+      return <Navigate to="/setup-mbe" replace />;
+    }
   }
+
+  // Si setup non requis (requireSetup = false), comme pour /setup-mbe :
+  // - Laisser passer l'utilisateur connecté même sans document user
+  // - C'est justement dans /setup-mbe qu'on crée le document user
 
   return <>{children}</>;
 }
