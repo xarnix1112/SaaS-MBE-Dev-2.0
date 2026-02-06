@@ -25,20 +25,23 @@ export function HomeRedirect() {
   }
 
   // Ignorer les utilisateurs anonymes (considérés comme non connectés)
-  // Un utilisateur est vraiment authentifié seulement s'il a un document user
-  const isAuthenticated = user && !user.isAnonymous && userDoc;
+  const isAuthenticated = user && !user.isAnonymous;
 
-  // Si connecté (avec email/password ET document user) et setup terminé, aller au dashboard
-  if (isAuthenticated && isSetupComplete) {
+  // Si connecté (avec email/password) et setup terminé, aller au dashboard
+  // (nécessite userDoc pour être considéré comme setup terminé)
+  if (isAuthenticated && userDoc && isSetupComplete) {
     return <Navigate to="/dashboard" replace />;
   }
 
-  // Si connecté (avec email/password ET document user) mais setup non terminé, aller au setup
-  if (isAuthenticated && !isSetupComplete) {
+  // Si connecté (avec email/password) mais setup non terminé OU pas de document user, aller au setup
+  // Cela inclut les cas où :
+  // - L'utilisateur vient de se connecter mais n'a pas encore de document user
+  // - L'utilisateur a un document user mais pas de saasAccountId
+  if (isAuthenticated && (!userDoc || !isSetupComplete)) {
     return <Navigate to="/setup-mbe" replace />;
   }
 
-  // Dans TOUS les autres cas (non connecté, utilisateur anonyme, ou utilisateur sans document user), aller à la page de bienvenue
+  // Dans TOUS les autres cas (non connecté, utilisateur anonyme), aller à la page de bienvenue
   return <Navigate to="/welcome" replace />;
 }
 
