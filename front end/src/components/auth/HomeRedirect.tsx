@@ -32,14 +32,15 @@ export function HomeRedirect() {
     return <Navigate to="/dashboard" replace />;
   }
 
-  // Si connecté (avec email/password) ET a un document user mais setup non terminé, aller au setup
-  // Si l'utilisateur n'a pas encore de document user, considérer comme non connecté → Welcome
-  if (isAuthenticated && userDoc && !isSetupComplete) {
+  // Si connecté (avec email/password) mais setup non terminé, aller au setup
+  // Cela inclut les cas où :
+  // - L'utilisateur a un document user mais pas de saasAccountId
+  // - L'utilisateur n'a pas encore de document user (vient de s'inscrire)
+  if (isAuthenticated && !isSetupComplete) {
     return <Navigate to="/setup-mbe" replace />;
   }
 
-  // Dans TOUS les autres cas (non connecté, utilisateur anonyme, ou utilisateur sans document user), aller à la page de bienvenue
-  // C'est le comportement par défaut et souhaité
+  // Dans TOUS les autres cas (non connecté, utilisateur anonyme), aller à la page de bienvenue
   return <Navigate to="/welcome" replace />;
 }
 

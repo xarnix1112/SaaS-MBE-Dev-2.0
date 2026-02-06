@@ -33,17 +33,17 @@ export default function Welcome() {
           return; // Ne pas rediriger après déconnexion, rester sur Welcome
         }
         
-        // Si connecté avec email/password ET a un document user, rediriger
-        // Si l'utilisateur n'a pas encore de document user, rester sur Welcome
+        // Si connecté avec email/password, rediriger selon l'état du setup
         if (user && !user.isAnonymous) {
           if (isSetupComplete) {
             navigate('/dashboard', { replace: true });
-          } else if (userDoc) {
-            // Seulement rediriger vers setup-mbe si l'utilisateur a déjà un document user
-            // Sinon, il doit d'abord créer son compte via /register
+          } else {
+            // Si le setup n'est pas terminé (avec ou sans userDoc), aller au setup
+            // Cela inclut les cas où :
+            // - L'utilisateur vient de s'inscrire et n'a pas encore de document user
+            // - L'utilisateur a un document user mais pas de saasAccountId
             navigate('/setup-mbe', { replace: true });
           }
-          // Si pas de userDoc, rester sur Welcome pour qu'il puisse créer un compte
         }
       }
     };

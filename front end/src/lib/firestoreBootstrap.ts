@@ -1,5 +1,5 @@
 import { doc, setDoc } from "firebase/firestore";
-import { db } from "./firebase";
+import { db, auth } from "./firebase";
 
 // Liste des collections à initialiser. Ajoutez/enlevez ici selon vos besoins.
 const BASE_COLLECTIONS = [
@@ -17,6 +17,7 @@ let alreadyRun = false;
 /**
  * Crée un document _meta dans chaque collection pour forcer leur existence.
  * Idempotent : ne fait rien si déjà exécuté pendant la session.
+ * Ne s'exécute que si l'utilisateur est authentifié (pas anonyme).
  */
 export async function bootstrapFirestoreCollections() {
   if (alreadyRun) return;
@@ -25,6 +26,13 @@ export async function bootstrapFirestoreCollections() {
   // Si la config Firebase est absente, on ne tente rien
   if (!import.meta.env.VITE_FIREBASE_API_KEY || !import.meta.env.VITE_FIREBASE_PROJECT_ID) {
     console.warn("[firestore-bootstrap] Config Firebase manquante, aucun bootstrap effectué.");
+    return;
+  }
+
+  // Ne s'exécuter que si l'utilisateur est authentifié (pas anonyme)
+  const currentUser = auth.currentUser;
+  if (!currentUser || currentUser.isAnonymous) {
+    console.log("[firestore-bootstrap] Utilisateur non authentifié, bootstrap différé");
     return;
   }
 
@@ -43,7 +51,12 @@ export async function bootstrapFirestoreCollections() {
       )
     )
   ).catch((err) => {
-    console.warn("[firestore-bootstrap] Impossible de créer les collections", err);
+    // Ne logger que si ce n'est pas une erreur de permissions normale (utilisateur non authentifié)
+    if (err?.code !== 'permission-denied') {
+      console.warn("[firestore-bootstrap] Impossible de créer les collections", err);
+    } else {
+      console.log("[firestore-bootstrap] Bootstrap différé - utilisateur non authentifié ou permissions insuffisantes");
+    }
   });
 }
 

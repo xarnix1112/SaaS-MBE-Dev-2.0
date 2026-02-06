@@ -48,6 +48,8 @@ export function useAuth() {
 
         if (!userDocSnap.exists()) {
           // User existe mais pas de document user → setup non terminé
+          // C'est normal si l'utilisateur vient de s'inscrire et n'a pas encore complété le setup MBE
+          console.log('[useAuth] Document user non trouvé - setup non terminé, redirection vers /setup-mbe');
           setAuthState({
             user,
             saasAccount: null,

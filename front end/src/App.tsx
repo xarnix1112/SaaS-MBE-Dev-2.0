@@ -38,8 +38,11 @@ const App = () => {
 
   useEffect(() => {
     // Bootstrap Firestore collections (_meta) pour assurer leur existence
-    bootstrapFirestoreCollections();
-  }, []);
+    // Ne s'exécute que si l'utilisateur est authentifié
+    if (user && !user.isAnonymous && !authLoading) {
+      bootstrapFirestoreCollections();
+    }
+  }, [user, authLoading]);
 
   // Charger les tarifs uniquement lorsque l'utilisateur est authentifié
   useEffect(() => {

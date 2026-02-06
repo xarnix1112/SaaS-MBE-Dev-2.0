@@ -16,7 +16,8 @@
     "serve": "node server/index.js",
     "start": "npm run build && npm run serve",
     "stripe:check": "node scripts/check-stripe-config.mjs",
-    "stripe:init": "node scripts/init-firestore-stripe.mjs"
+    "stripe:init": "node scripts/init-firestore-stripe.mjs",
+    "test:firebase": "node scripts/test-firebase-config.mjs"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

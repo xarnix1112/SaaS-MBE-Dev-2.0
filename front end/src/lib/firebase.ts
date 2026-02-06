@@ -88,16 +88,63 @@ export const registerWithEmail = async (email: string, password: string) => {
 };
 
 export const loginWithEmail = async (email: string, password: string, rememberMe: boolean = true) => {
-  // Définir la persistance avant la connexion
-  await setPersistence(
-    auth,
-    rememberMe ? browserLocalPersistence : browserSessionPersistence
-  );
-  return await signInWithEmailAndPassword(auth, email, password);
+  try {
+    // Définir la persistance avant la connexion
+    await setPersistence(
+      auth,
+      rememberMe ? browserLocalPersistence : browserSessionPersistence
+    );
+    
+    // Nettoyer l'email (enlever les espaces avant/après)
+    const cleanedEmail = email.trim();
+    
+    console.log('[firebase] Tentative de connexion avec email:', cleanedEmail);
+    
+    const result = await signInWithEmailAndPassword(auth, cleanedEmail, password);
+    
+    console.log('[firebase] ✅ Connexion réussie, User ID:', result.user.uid);
+    
+    return result;
+  } catch (error: any) {
+    console.error('[firebase] ❌ Erreur lors de la connexion:', {
+      code: error.code,
+      message: error.message,
+      email: email.trim(),
+    });
+    
+    // Vérifier si c'est une erreur liée aux restrictions API
+    if (error.code === 'auth/api-key-not-valid' || error.code === 'auth/network-request-failed') {
+      console.error('[firebase] ⚠️ Erreur possiblement liée aux restrictions API Firebase');
+      console.error('[firebase] Vérifiez que Firebase Authentication API est autorisée dans Google Cloud Console');
+    }
+    
+    throw error;
+  }
 };
 
 export const logout = async () => {
-  return await signOut(auth);
+  try {
+    console.log('[firebase] Déconnexion en cours...');
+    await signOut(auth);
+    console.log('[firebase] ✅ Déconnexion réussie');
+    
+    // Nettoyer le cache local si nécessaire
+    if (typeof window !== 'undefined') {
+      // Vider le localStorage pour éviter les problèmes de session
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith('firebase:') || key.startsWith('firebaseui:'))) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach(key => localStorage.removeItem(key));
+      console.log('[firebase] Cache localStorage nettoyé');
+    }
+  } catch (error: any) {
+    console.error('[firebase] ❌ Erreur lors de la déconnexion:', error);
+    throw error;
+  }
 };
 
 export const resetPassword = async (email: string) => {
