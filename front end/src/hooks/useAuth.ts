@@ -47,18 +47,16 @@ export function useAuth() {
         const userDocSnap = await getDoc(userDocRef);
 
         if (!userDocSnap.exists()) {
-          // User existe mais pas de document user → session Firebase invalide ou utilisateur non inscrit
-          // Pour la redirection initiale, considérer comme non connecté pour aller à /welcome
-          // Mais garder l'utilisateur dans l'état pour permettre le setup si nécessaire
-          console.log('[useAuth] Document user non trouvé - considérer comme non connecté pour redirection');
+          // User existe mais pas de document user → utilisateur vient de se connecter mais n'a pas encore complété le setup MBE
+          // Garder l'utilisateur connecté pour permettre la redirection vers /setup-mbe
+          console.log('[useAuth] Document user non trouvé - utilisateur doit compléter le setup MBE');
           setAuthState({
-            user: null, // Considérer comme non connecté pour la redirection vers /welcome
+            user, // Garder l'utilisateur connecté pour permettre le setup
             saasAccount: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
           });
-          // Ne pas déconnecter automatiquement - laisser l'utilisateur se connecter normalement
           return;
         }
 

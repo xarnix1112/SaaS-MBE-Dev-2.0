@@ -35,14 +35,13 @@ export default function Login() {
         // Si l'utilisateur a un document user et le setup est terminé, aller au dashboard
         if (userDoc && isSetupComplete) {
           navigate('/dashboard', { replace: true });
-        } else if (userDoc && !isSetupComplete) {
-          // Si l'utilisateur a un document user mais le setup n'est pas terminé, aller au setup
-          navigate('/setup-mbe', { replace: true });
         } else {
-          // Si pas de document user après connexion, rester sur welcome (cas anormal)
-          // Normalement cela ne devrait pas arriver, mais on gère le cas
-          console.warn('[Login] Utilisateur connecté mais pas de document user - rester sur welcome');
-          setLoginSuccess(false);
+          // Si pas de document user OU setup non terminé, aller au setup-mbe
+          // Cela inclut les cas où :
+          // - L'utilisateur vient de se connecter mais n'a pas encore de document user (userDoc === null)
+          // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
+          console.log('[Login] Redirection vers /setup-mbe pour compléter le setup');
+          navigate('/setup-mbe', { replace: true });
         }
         setLoginSuccess(false); // Reset pour éviter les redirections multiples
       }, 1500); // Attendre 1.5 secondes pour que useAuth charge les données
