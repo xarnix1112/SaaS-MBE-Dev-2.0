@@ -245,18 +245,16 @@ export default function QuoteDetail() {
       return;
     }
     
-    // Ne pas écraser les modifications pendant 2 secondes après la sauvegarde
+    // Ne pas écraser les modifications pendant 4 secondes après la sauvegarde
     // pour laisser le temps à mergeEnhancementsIntoQuotes de récupérer les champs modifiés depuis Firestore
-    if (lastSaveTime && Date.now() - lastSaveTime < 2000) {
+    if (lastSaveTime && Date.now() - lastSaveTime < 4000) {
       console.log('[QuoteDetail] ⏸️  Resync ignoré (sauvegarde récente, attente de la fusion Firestore)');
       return;
     }
     
     // Si on a un quote local avec des modifications récentes, vérifier que foundQuote contient bien ces modifications
     // avant de mettre à jour le state (pour éviter d'écraser les modifications avec les données Google Sheets)
-    // Si on a un quote local avec des modifications récentes, vérifier que foundQuote contient bien ces modifications
-    // avant de mettre à jour le state (pour éviter d'écraser les modifications avec les données Google Sheets)
-    if (quote && lastSaveTime && Date.now() - lastSaveTime < 3000) {
+    if (quote && lastSaveTime && Date.now() - lastSaveTime < 5000) {
       // Vérifier que foundQuote contient les champs modifiés depuis Firestore
       // Si foundQuote a les mêmes valeurs que quote pour les champs modifiés, c'est bon
       // Sinon, attendre encore un peu
@@ -2640,9 +2638,10 @@ export default function QuoteDetail() {
                   await queryClient.refetchQueries({ queryKey: ['quotes'] });
                   
                   // Attendre que mergeEnhancementsIntoQuotes ait fini de récupérer les champs modifiés
-                  // On attend jusqu'à 2 secondes pour que les données fusionnées soient prêtes
+                  // On attend jusqu'à 3 secondes pour que les données fusionnées soient prêtes
                   let attempts = 0;
-                  const maxAttempts = 20; // 2 secondes max (20 * 100ms)
+                  const maxAttempts = 30; // 3 secondes max (30 * 100ms)
+                  let foundMatchingQuote = false;
                   while (attempts < maxAttempts) {
                     await new Promise(resolve => setTimeout(resolve, 100));
                     // Récupérer le foundQuote actuel depuis le cache React Query
@@ -2658,17 +2657,25 @@ export default function QuoteDetail() {
                         console.log('[EditQuote] ✅ Champs modifiés détectés dans foundQuote après', attempts * 100, 'ms');
                         // Mettre à jour le state avec les données fusionnées
                         setQuote(currentFoundQuote);
+                        foundMatchingQuote = true;
                         break;
                       }
                     }
                     attempts++;
                   }
                   
-                  // Réinitialiser lastSaveTime après le délai pour permettre le resync avec les données fusionnées
-                  // Mais seulement si on a attendu assez longtemps
+                  // Si on n'a pas trouvé de quote correspondant après l'attente, garder les modifications locales
+                  if (!foundMatchingQuote) {
+                    console.warn('[EditQuote] ⚠️ Champs modifiés non trouvés dans foundQuote après', maxAttempts * 100, 'ms, conservation des modifications locales');
+                    // Garder updatedQuote qui contient les modifications
+                    setQuote(updatedQuote);
+                  }
+                  
+                  // Réinitialiser lastSaveTime après un délai plus long pour permettre le resync avec les données fusionnées
+                  // On attend 3 secondes pour s'assurer que les données sont bien fusionnées et que le resync ne les écrase pas
                   setTimeout(() => {
                     setLastSaveTime(null);
-                  }, 1000);
+                  }, 3000);
                   
                   toast.success("Devis modifié avec succès");
                   setIsEditDialogOpen(false);
