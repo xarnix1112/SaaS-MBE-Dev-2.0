@@ -47,24 +47,18 @@ export function useAuth() {
         const userDocSnap = await getDoc(userDocRef);
 
         if (!userDocSnap.exists()) {
-          // User existe mais pas de document user → peut être une session invalide ou utilisateur non inscrit
-          // Dans ce cas, on considère l'utilisateur comme non connecté pour permettre la connexion/inscription
-          console.log('[useAuth] Document user non trouvé - session Firebase invalide ou utilisateur non inscrit');
-          console.log('[useAuth] Redirection vers /welcome pour permettre la connexion/inscription');
+          // User existe mais pas de document user → utilisateur vient de s'inscrire mais n'a pas encore complété le setup MBE
+          // C'est normal et attendu après l'inscription, on ne déconnecte PAS l'utilisateur
+          // Il doit aller au setup-mbe pour créer son document user et saasAccount
+          console.log('[useAuth] Document user non trouvé - utilisateur doit compléter le setup MBE');
+          console.log('[useAuth] Redirection vers /setup-mbe pour permettre la configuration');
           setAuthState({
-            user: null, // Considérer comme non connecté pour permettre la connexion
+            user, // Garder l'utilisateur connecté pour permettre le setup
             saasAccount: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
           });
-          // Déconnecter l'utilisateur Firebase pour nettoyer la session invalide
-          try {
-            await auth.signOut();
-            console.log('[useAuth] Session Firebase invalide nettoyée');
-          } catch (signOutError) {
-            console.warn('[useAuth] Erreur lors du nettoyage de la session:', signOutError);
-          }
           return;
         }
 

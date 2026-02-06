@@ -34,19 +34,19 @@ export default function Login() {
       const timer = setTimeout(() => {
         if (isSetupComplete) {
           navigate('/dashboard', { replace: true });
-        } else if (userDoc) {
-          // Si l'utilisateur a un document user mais pas de saasAccount, aller au setup
-          navigate('/setup-mbe', { replace: true });
         } else {
-          // Si pas de document user, rediriger vers welcome pour créer un compte
-          navigate('/welcome', { replace: true });
+          // Si le setup n'est pas terminé, aller au setup-mbe
+          // Cela inclut les cas où :
+          // - L'utilisateur vient de s'inscrire et n'a pas encore de document user (userDoc === null)
+          // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
+          navigate('/setup-mbe', { replace: true });
         }
         setLoginSuccess(false); // Reset pour éviter les redirections multiples
       }, 1000); // Attendre 1 seconde pour que useAuth charge les données
       
       return () => clearTimeout(timer);
     }
-  }, [loginSuccess, authLoading, user, isSetupComplete, userDoc, navigate]);
+  }, [loginSuccess, authLoading, user, isSetupComplete, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
