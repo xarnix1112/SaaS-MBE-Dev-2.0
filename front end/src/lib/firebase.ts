@@ -15,7 +15,7 @@ const DEFAULT_FIREBASE_CONFIG = {
   storageBucket: "sdv-automation-mbe.firebasestorage.app",
   messagingSenderId: "603940578796",
   appId: "1:603940578796:web:89052f95b5eed311db8cc9",
-  measurementId: "G-MW3N3FRJBX",
+  measurementId: "G-M4R1KW7B3W",
 };
 
 const firebaseConfig = {
