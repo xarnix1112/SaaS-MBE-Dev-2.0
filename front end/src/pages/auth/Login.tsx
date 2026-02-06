@@ -32,21 +32,24 @@ export default function Login() {
     if (loginSuccess && !authLoading && user && !user.isAnonymous) {
       // Attendre un peu pour que useAuth charge les données Firestore
       const timer = setTimeout(() => {
-        if (isSetupComplete) {
+        // Si l'utilisateur a un document user et le setup est terminé, aller au dashboard
+        if (userDoc && isSetupComplete) {
           navigate('/dashboard', { replace: true });
-        } else {
-          // Si le setup n'est pas terminé, aller au setup-mbe
-          // Cela inclut les cas où :
-          // - L'utilisateur vient de s'inscrire et n'a pas encore de document user (userDoc === null)
-          // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
+        } else if (userDoc && !isSetupComplete) {
+          // Si l'utilisateur a un document user mais le setup n'est pas terminé, aller au setup
           navigate('/setup-mbe', { replace: true });
+        } else {
+          // Si pas de document user après connexion, rester sur welcome (cas anormal)
+          // Normalement cela ne devrait pas arriver, mais on gère le cas
+          console.warn('[Login] Utilisateur connecté mais pas de document user - rester sur welcome');
+          setLoginSuccess(false);
         }
         setLoginSuccess(false); // Reset pour éviter les redirections multiples
-      }, 1000); // Attendre 1 seconde pour que useAuth charge les données
+      }, 1500); // Attendre 1.5 secondes pour que useAuth charge les données
       
       return () => clearTimeout(timer);
     }
-  }, [loginSuccess, authLoading, user, isSetupComplete, navigate]);
+  }, [loginSuccess, authLoading, user, isSetupComplete, userDoc, navigate]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();

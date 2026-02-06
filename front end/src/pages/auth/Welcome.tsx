@@ -33,18 +33,17 @@ export default function Welcome() {
           return; // Ne pas rediriger après déconnexion, rester sur Welcome
         }
         
-        // Si connecté avec email/password, rediriger selon l'état du setup
-        if (user && !user.isAnonymous) {
+        // Si connecté avec email/password ET a un document user, rediriger selon l'état du setup
+        // Ne rediriger que si l'utilisateur a vraiment un document user (pas juste une session Firebase)
+        if (user && !user.isAnonymous && userDoc) {
           if (isSetupComplete) {
             navigate('/dashboard', { replace: true });
           } else {
-            // Si le setup n'est pas terminé, aller au setup
-            // Cela inclut les cas où :
-            // - L'utilisateur vient de s'inscrire et n'a pas encore de document user (userDoc === null)
-            // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
+            // Si le setup n'est pas terminé mais que l'utilisateur a un document user, aller au setup
             navigate('/setup-mbe', { replace: true });
           }
         }
+        // Si pas de userDoc, rester sur Welcome pour permettre la connexion/inscription
       }
     };
     
