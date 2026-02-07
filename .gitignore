@@ -26,6 +26,12 @@ firebase-credentials.json
 **/firebase-credentials.json
 *-credentials.json
 
+# Debug files that may contain secrets
+DEBUG_*.md
+*_DEBUG.md
+*_PRODUCTION.md
+DIAGNOSTIC_*.md
+
 # Editor
 .vscode/*
 !.vscode/extensions.json
