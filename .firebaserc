@@ -1,6 +1,6 @@
 {
   "projects": {
-    "default": "sdv-automation-mbe"
+    "default": "saas-mbe-sdv-production"
   },
   "targets": {},
   "etags": {}
