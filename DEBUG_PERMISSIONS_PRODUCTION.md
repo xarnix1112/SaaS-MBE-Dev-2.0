@@ -36,7 +36,7 @@
 
 4. **Vérifiez que `VITE_FIREBASE_API_KEY` correspond à la nouvelle clé API** :
    ```
-   AIzaSyBn5GPuY_NNBvxTEIoDsKoRAxlfRHaZmEI
+   AIzaSyAQu-I-nSVEeAkb94KsMAg7bSqZMMWSpOs
    ```
 
 5. **Si ce n'est PAS le cas** :
@@ -78,7 +78,7 @@
    https://console.cloud.google.com/apis/credentials?project=saas-mbe-sdv-production
    ```
 
-2. **Cliquez sur la clé API** (`AIzaSyBn5GPuY_NNBvxTEIoDsKoRAxlfRHaZmEI`)
+2. **Cliquez sur la clé API** (`AIzaSyAQu-I-nSVEeAkb94KsMAg7bSqZMMWSpOs`)
 
 3. **Vérifiez "Restrictions relatives aux applications"** :
    - ✅ **Référents HTTP (sites Web)** doit être sélectionné
