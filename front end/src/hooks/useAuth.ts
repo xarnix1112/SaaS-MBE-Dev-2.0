@@ -103,11 +103,23 @@ export function useAuth() {
         });
       } catch (error: any) {
         console.error('[useAuth] Erreur lors du chargement:', error);
+        console.error('[useAuth] Code erreur:', error?.code);
+        console.error('[useAuth] Message erreur:', error?.message);
+        console.error('[useAuth] User UID:', user?.uid);
         
-        // Si c'est une erreur de permissions, l'utilisateur existe mais n'a peut-être pas encore de document user
-        // Dans ce cas, on considère qu'il est connecté mais le setup n'est pas terminé
+        // Si c'est une erreur de permissions, cela peut être dû à :
+        // 1. Les règles Firestore ne sont pas déployées correctement
+        // 2. Les restrictions de la clé API Firebase bloquent Cloud Firestore API
+        // 3. Le document user n'existe vraiment pas
         if (error?.code === 'permission-denied') {
-          console.warn('[useAuth] Permission refusée - l\'utilisateur n\'a peut-être pas encore de document user');
+          console.error('[useAuth] ⚠️ ERREUR DE PERMISSIONS FIRESTORE');
+          console.error('[useAuth] Vérifiez que:');
+          console.error('[useAuth] 1. Les règles Firestore sont déployées (firebase deploy --only firestore:rules)');
+          console.error('[useAuth] 2. Les restrictions API incluent "Cloud Firestore API"');
+          console.error('[useAuth] 3. Le document users/' + user?.uid + ' existe dans Firestore');
+          
+          // Pour l'instant, considérer comme connecté mais setup non terminé
+          // Cela permettra à l'utilisateur d'accéder à /setup-mbe pour créer son compte
           setAuthState({
             user,
             saasAccount: null,
