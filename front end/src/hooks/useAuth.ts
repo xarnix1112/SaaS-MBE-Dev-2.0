@@ -42,6 +42,12 @@ export function useAuth() {
       }
 
       try {
+        // Log pour diagnostiquer le projet Firebase utilisé
+        console.log('[useAuth] Tentative de chargement du document user:', {
+          uid: user.uid,
+          projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
+        });
+        
         // Charger le document user
         const userDocRef = doc(db, 'users', user.uid);
         const userDocSnap = await getDoc(userDocRef);

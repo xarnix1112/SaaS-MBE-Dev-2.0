@@ -54,7 +54,7 @@ console.info("[firebase] env status", {
   enabled: firebaseEnabled,
   hasApiKey: Boolean(firebaseConfig.apiKey),
   hasAuthDomain: Boolean(firebaseConfig.authDomain),
-  hasProjectId: Boolean(firebaseConfig.projectId),
+  projectId: firebaseConfig.projectId, // Afficher le projectId pour vérifier le projet utilisé
   hasStorageBucket: Boolean(firebaseConfig.storageBucket),
   hasSenderId: Boolean(firebaseConfig.messagingSenderId),
   hasAppId: Boolean(firebaseConfig.appId),
