@@ -12,6 +12,8 @@ L'utilisateur ne peut pas lire son document `users/zUWaigdSisakUVcmLp9BswbZgr22`
 - ✅ Le chargement des données utilisateur
 - ✅ L'accès aux fonctionnalités de l'application
 
+**⚠️ IMPORTANT :** Si vous utilisez un projet Firebase de production (`sdv-automation-mbe-production`), vérifiez d'abord que votre application utilise le bon projet Firebase. Voir `CORRIGER_PROJET_FIRESTORE.md` pour plus de détails.
+
 ---
 
 ## 🔍 Diagnostic Rapide
