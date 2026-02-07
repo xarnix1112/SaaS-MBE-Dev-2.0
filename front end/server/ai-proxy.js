@@ -3773,15 +3773,17 @@ app.post('/api/bordereau/extract', upload.single('file'), async (req, res) => {
  * @param {string} params.subject - Sujet
  * @param {string} params.text - Contenu texte brut (fallback)
  * @param {string} params.html - Contenu HTML
+ * @param {string} [params.saasAccountId] - ID du compte SaaS (optionnel, pour récupérer le nom commercial)
  * @returns {Promise<Object>} Réponse avec messageId
  */
-async function sendEmail({ to, subject, text, html }) {
+async function sendEmail({ to, subject, text, html, saasAccountId }) {
   console.log('[Resend] ===== DÉBUT sendEmail =====');
   console.log('[Resend] Paramètres reçus:', {
     to: typeof to === 'string' ? to.substring(0, 50) : String(to),
     subject: typeof subject === 'string' ? subject.substring(0, 50) : String(subject),
     hasText: !!text,
-    hasHtml: !!html
+    hasHtml: !!html,
+    saasAccountId: saasAccountId || 'non fourni'
   });
 
   // Vérification du client Resend
@@ -3811,8 +3813,25 @@ async function sendEmail({ to, subject, text, html }) {
     throw new Error(`Email destinataire invalide: ${to}`);
   }
 
+  // Récupérer le nom commercial depuis Firestore si saasAccountId est fourni
+  let fromDisplayName = EMAIL_FROM_NAME || 'MBE Devis';
+  if (saasAccountId && firestore) {
+    try {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      if (saasAccountDoc.exists) {
+        const saasAccountData = saasAccountDoc.data();
+        if (saasAccountData.commercialName) {
+          fromDisplayName = `${saasAccountData.commercialName} Devis`;
+          console.log('[Resend] ✅ Nom commercial récupéré:', fromDisplayName);
+        }
+      }
+    } catch (error) {
+      console.warn('[Resend] ⚠️  Erreur lors de la récupération du nom commercial, utilisation du fallback:', error.message);
+    }
+  }
+
   const fromValue = EMAIL_FROM.trim();
-  const fromDisplayName = (EMAIL_FROM_NAME || 'MBE Devis').trim();
+  fromDisplayName = fromDisplayName.trim();
   
   // Format Resend selon la documentation: "Name <email@domain.com>"
   // https://resend.com/docs/api-reference/emails/send-email
@@ -3931,7 +3950,7 @@ async function sendEmail({ to, subject, text, html }) {
     if (isPatternError) {
       console.log('[Resend] ⚠️  Erreur de pattern détectée, tentative avec appel HTTP direct...');
       try {
-        const directResult = await sendEmailDirectHTTP({ to, subject, text, html });
+        const directResult = await sendEmailDirectHTTP({ to, subject, text, html, saasAccountId });
         console.log('[Resend] ✅ Email envoyé avec succès via HTTP direct!');
         console.log('[Resend] Message ID:', directResult.id);
         console.log('[Resend] ===== FIN sendEmail (succès via HTTP direct) =====');
@@ -3970,7 +3989,7 @@ async function sendEmail({ to, subject, text, html }) {
  * Fonction de test: Appel HTTP direct à l'API Resend (contourne le SDK)
  * Utile pour diagnostiquer les problèmes avec le SDK
  */
-async function sendEmailDirectHTTP({ to, subject, text, html }) {
+async function sendEmailDirectHTTP({ to, subject, text, html, saasAccountId }) {
   console.log('[Resend Direct HTTP] ===== Test avec appel HTTP direct =====');
   
   if (!RESEND_API_KEY) {
@@ -3986,7 +4005,24 @@ async function sendEmailDirectHTTP({ to, subject, text, html }) {
     throw new Error(`Email destinataire invalide: ${to}`);
   }
   
-  const fromString = `${EMAIL_FROM_NAME || 'MBE Nice Devis'} <${EMAIL_FROM}>`;
+  // Récupérer le nom commercial depuis Firestore si saasAccountId est fourni
+  let fromDisplayName = EMAIL_FROM_NAME || 'MBE Devis';
+  if (saasAccountId && firestore) {
+    try {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      if (saasAccountDoc.exists) {
+        const saasAccountData = saasAccountDoc.data();
+        if (saasAccountData.commercialName) {
+          fromDisplayName = `${saasAccountData.commercialName} Devis`;
+          console.log('[Resend Direct HTTP] ✅ Nom commercial récupéré:', fromDisplayName);
+        }
+      }
+    } catch (error) {
+      console.warn('[Resend Direct HTTP] ⚠️  Erreur lors de la récupération du nom commercial, utilisation du fallback:', error.message);
+    }
+  }
+  
+  const fromString = `${fromDisplayName} <${EMAIL_FROM}>`;
   
   const payload = {
     from: fromString,
@@ -4362,11 +4398,14 @@ L'équipe MBE
 
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email via Resend à:', clientEmail);
+    // Récupérer saasAccountId depuis le quote ou req.saasAccountId
+    const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
       subject: `Votre devis de transport - ${reference}`,
       text: textContent,
       html: htmlContent,
+      saasAccountId,
     });
     console.log('[AI Proxy] Email envoyé avec succès:', result);
 
@@ -4656,11 +4695,14 @@ L'équipe MBE
 
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email surcoût via Resend à:', clientEmail);
+    // Récupérer saasAccountId depuis le quote ou req.saasAccountId
+    const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
       subject: `Surcoût supplémentaire - Devis ${reference}`,
       text: textContent,
       html: htmlContent,
+      saasAccountId,
     });
     console.log('[AI Proxy] Email surcoût envoyé avec succès:', result);
 
@@ -4914,11 +4956,14 @@ app.post('/api/send-collection-email', async (req, res) => {
     const textBody = text || `Demande de collecte pour ${quotes?.length || 0} lot(s)`;
 
     console.log('[AI Proxy] Envoi email collecte à:', to);
+    // Récupérer saasAccountId depuis req.saasAccountId ou depuis le premier quote
+    const saasAccountId = req.saasAccountId || (quotes && quotes.length > 0 ? quotes[0].saasAccountId : null);
     const result = await sendEmail({
       to,
       subject,
       text: textBody,
       html: htmlBody,
+      saasAccountId,
     });
 
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);
@@ -4972,6 +5017,8 @@ app.post('/api/test-email', async (req, res) => {
 
     console.log(`[Test Email] Envoi email de test à ${testEmail}...`);
     
+    // Pour les emails de test, utiliser req.saasAccountId si disponible
+    const saasAccountId = req.saasAccountId;
     const result = await sendEmail({
       to: testEmail,
       subject: '🧪 Email de test - MBE Devis',
@@ -4987,7 +5034,8 @@ Configuration:
 - Date: ${new Date().toLocaleString('fr-FR')}
 
 Cordialement,
-L'équipe MBE`
+L'équipe MBE`,
+      saasAccountId,
     });
 
     res.json({ 
@@ -5040,6 +5088,8 @@ app.post('/api/test-email-direct', async (req, res) => {
 
     console.log(`[Test Email Direct HTTP] Envoi email de test à ${testEmail} via HTTP direct...`);
     
+    // Pour les emails de test, utiliser req.saasAccountId si disponible
+    const saasAccountId = req.saasAccountId;
     const result = await sendEmailDirectHTTP({
       to: testEmail,
       subject: '🧪 Email de test (HTTP direct) - MBE Devis',
@@ -5055,7 +5105,8 @@ Configuration:
 - Date: ${new Date().toLocaleString('fr-FR')}
 
 Cordialement,
-L'équipe MBE`
+L'équipe MBE`,
+      saasAccountId,
     });
 
     res.json({ 

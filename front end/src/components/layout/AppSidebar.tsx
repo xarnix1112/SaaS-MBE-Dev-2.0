@@ -15,6 +15,7 @@ import {
   ChevronRight,
 } from 'lucide-react';
 import { useState } from 'react';
+import { useAuth } from '@/hooks/useAuth';
 
 const navigation = [
   { name: 'Tableau de bord', href: '/', icon: LayoutDashboard },
@@ -35,6 +36,12 @@ const secondaryNavigation = [
 export function AppSidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
+  const { saasAccount, isLoading } = useAuth();
+
+  // Récupérer le nom commercial ou utiliser un fallback
+  const commercialName = saasAccount?.commercialName || 'MBE';
+  // Récupérer la première lettre du nom commercial pour l'icône
+  const firstLetter = commercialName.charAt(0).toUpperCase();
 
   return (
     <aside
@@ -48,9 +55,11 @@ export function AppSidebar() {
         {!collapsed && (
           <div className="flex items-center gap-2">
             <div className="w-8 h-8 rounded-lg bg-primary flex items-center justify-center">
-              <span className="text-primary-foreground font-bold text-sm">M</span>
+              <span className="text-primary-foreground font-bold text-sm">{firstLetter}</span>
             </div>
-            <span className="font-semibold text-lg">MBE Nice</span>
+            <span className="font-semibold text-lg" title={commercialName}>
+              {isLoading ? 'Chargement...' : commercialName}
+            </span>
           </div>
         )}
         <button
