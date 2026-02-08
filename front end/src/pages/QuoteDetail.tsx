@@ -60,6 +60,7 @@ import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
 import { calculateVolumetricWeight } from '@/lib/cartons';
 import { createStripeLink } from '@/lib/stripe';
+import { createPaiement, getPaiements, cancelPaiement } from '@/lib/stripeConnect';
 
 /**
  * Nettoie un objet pour Firestore en remplaçant undefined par null ou en omettant les champs
@@ -151,6 +152,7 @@ export default function QuoteDetail() {
   const [lastSaveTime, setLastSaveTime] = useState<number | null>(null);
   const [surchargePaiements, setSurchargePaiements] = useState<Paiement[]>([]);
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
+  const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -556,53 +558,62 @@ export default function QuoteDetail() {
               console.error(`[QuoteDetail] ❌ AUCUN CODE PAYS TROUVÉ (useEffect) - deliveryCountry="${deliveryCountry}", addressLine="${addressLine}"`);
             }
             
-            if (countryCode && (!quote.options.shippingPrice || quote.options.shippingPrice === 0)) {
+            if (countryCode) {
               const dimensions = quote.lot.dimensions;
-              console.log(`[QuoteDetail] 📐 Dimensions du colis (useEffect): L=${dimensions.length}cm × l=${dimensions.width}cm × H=${dimensions.height}cm`);
-              
-              const volumetricWeight = calculateVolumetricWeight(
-                dimensions.length,
-                dimensions.width,
-                dimensions.height
-              );
-              console.log(`[QuoteDetail] ⚖️ Poids volumétrique calculé (useEffect): ${volumetricWeight}kg`);
-              
-              // TOUS les colis sont en EXPRESS
-              const isExpress = true;
-              console.log(`[QuoteDetail] 🔄 Calcul prix expédition (useEffect): pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
-              
-              const newShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
-              
-              if (newShippingPrice > 0) {
-                console.log(`[QuoteDetail] ✅ Prix expédition calculé (useEffect): ${newShippingPrice}€`);
-                setQuote(prev => ({
-                  ...prev,
-                  options: {
-                    ...prev.options,
-                    shippingPrice: newShippingPrice,
-                  },
-                }));
+              // Recalculer le prix d'expédition si les dimensions sont valides
+              if (dimensions && dimensions.length > 0 && dimensions.width > 0 && dimensions.height > 0) {
+                console.log(`[QuoteDetail] 📐 Dimensions du colis (useEffect): L=${dimensions.length}cm × l=${dimensions.width}cm × H=${dimensions.height}cm`);
                 
-                // Sauvegarder dans Firestore dans options.shippingPrice
-                try {
-                  await setDoc(
-                    doc(db, "quotes", quote.id),
-                    {
+                const volumetricWeight = calculateVolumetricWeight(
+                  dimensions.length,
+                  dimensions.width,
+                  dimensions.height
+                );
+                console.log(`[QuoteDetail] ⚖️ Poids volumétrique calculé (useEffect): ${volumetricWeight}kg`);
+                
+                // TOUS les colis sont en EXPRESS
+                const isExpress = true;
+                console.log(`[QuoteDetail] 🔄 Calcul prix expédition (useEffect): pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+                
+                const newShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
+                
+                if (newShippingPrice > 0) {
+                  // Vérifier si le prix a changé avant de mettre à jour
+                  const currentShippingPrice = quote.options?.shippingPrice || 0;
+                  if (Math.abs(newShippingPrice - currentShippingPrice) > 0.01) {
+                    console.log(`[QuoteDetail] ✅ Prix expédition recalculé (useEffect): ${currentShippingPrice}€ → ${newShippingPrice}€`);
+                    setQuote(prev => ({
+                      ...prev,
                       options: {
+                        ...prev.options,
                         shippingPrice: newShippingPrice,
                       },
-                      updatedAt: Timestamp.now(),
-                    },
-                    { merge: true }
-                  );
-                  console.log(`[QuoteDetail] ✅ Prix expédition sauvegardé dans Firestore: ${newShippingPrice}€`);
-                } catch (e) {
-                  console.error("[QuoteDetail] ❌ Erreur sauvegarde shippingPrice:", e);
+                    }));
+                    
+                    // Sauvegarder dans Firestore dans options.shippingPrice
+                    try {
+                      await setDoc(
+                        doc(db, "quotes", quote.id),
+                        {
+                          options: {
+                            shippingPrice: newShippingPrice,
+                          },
+                          updatedAt: Timestamp.now(),
+                        },
+                        { merge: true }
+                      );
+                      console.log(`[QuoteDetail] ✅ Prix expédition sauvegardé dans Firestore: ${newShippingPrice}€`);
+                    } catch (e) {
+                      console.error("[QuoteDetail] ❌ Erreur sauvegarde shippingPrice:", e);
+                    }
+                  } else {
+                    console.log(`[QuoteDetail] ℹ️ Prix expédition inchangé: ${newShippingPrice}€`);
+                  }
+                } else {
+                  console.error(`[QuoteDetail] ❌ Prix expédition = 0€ (useEffect) - pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
                 }
-              } else {
-                console.error(`[QuoteDetail] ❌ Prix expédition = 0€ (useEffect) - pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
               }
-            } else if (!countryCode) {
+            } else {
               console.error(`[QuoteDetail] ❌ Code pays manquant (useEffect) - deliveryCountry="${deliveryCountry}", addressLine="${addressLine}"`);
             }
           }
@@ -2399,7 +2410,7 @@ export default function QuoteDetail() {
                 </Card>
 
                 {/* Stripe Connect Paiements - Gestion automatique des paiements */}
-                <QuotePaiements devisId={safeQuote.id} quote={safeQuote} />
+                <QuotePaiements devisId={safeQuote.id} quote={safeQuote} refreshKey={paiementsRefreshKey} />
               </TabsContent>
 
               <TabsContent value="messages" className="space-y-6 mt-6">
@@ -2614,6 +2625,10 @@ export default function QuoteDetail() {
           {quote && (
             <EditQuoteForm
               quote={quote}
+              onPaymentLinkCreated={() => {
+                // Forcer le rechargement des paiements dans QuotePaiements
+                setPaiementsRefreshKey(prev => prev + 1);
+              }}
               onSave={async (updatedQuote) => {
                 setIsSaving(true);
                 try {
@@ -3012,9 +3027,10 @@ interface EditQuoteFormProps {
   onSave: (updatedQuote: Quote) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
+  onPaymentLinkCreated?: () => void; // Callback appelé après la création d'un nouveau paiement
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
@@ -3079,11 +3095,95 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
   const [isCreatingPaymentLink, setIsCreatingPaymentLink] = useState(false);
 
   // Gérer la sélection d'un carton
-  const handleCartonSelect = (carton: any) => {
+  const handleCartonSelect = async (carton: any) => {
     console.log('[EditQuote] Carton sélectionné:', carton);
     
     // Calculer le poids volumétrique
     const volumetricWeight = calculateVolumetricWeight(carton);
+    
+    // Extraire le code pays pour le calcul du prix d'expédition
+    let countryCode = '';
+    const deliveryCountry = quote.delivery?.address?.country || '';
+    const addressLine = quote.delivery?.address?.line1 || '';
+    
+    if (deliveryCountry) {
+      // Mapping des noms de pays vers codes ISO
+      const countryMap: Record<string, string> = {
+        "france": "FR",
+        "belgique": "BE",
+        "belgium": "BE",
+        "suisse": "CH",
+        "switzerland": "CH",
+        "allemagne": "DE",
+        "germany": "DE",
+        "espagne": "ES",
+        "spain": "ES",
+        "italie": "IT",
+        "italy": "IT",
+        "pays-bas": "NL",
+        "netherlands": "NL",
+        "royaume-uni": "GB",
+        "united kingdom": "GB",
+        "uk": "GB",
+        "portugal": "PT",
+        "autriche": "AT",
+        "austria": "AT",
+        "danemark": "DK",
+        "denmark": "DK",
+        "irlande": "IE",
+        "ireland": "IE",
+        "suède": "SE",
+        "sweden": "SE",
+        "finlande": "FI",
+        "finland": "FI",
+        "pologne": "PL",
+        "poland": "PL",
+        "république tchèque": "CZ",
+        "czech republic": "CZ",
+        "hongrie": "HU",
+        "hungary": "HU",
+        "brésil": "BR",
+        "brazil": "BR",
+        "argentine": "AR",
+        "argentina": "AR",
+        "chili": "CL",
+        "chile": "CL",
+        "colombie": "CO",
+        "colombia": "CO",
+        "pérou": "PE",
+        "peru": "PE",
+        "usa": "US",
+        "united states": "US",
+        "états-unis": "US",
+        "canada": "CA",
+        "mexique": "MX",
+        "mexico": "MX",
+      };
+      const countryLower = deliveryCountry.toLowerCase().trim();
+      countryCode = countryMap[countryLower] || deliveryCountry.toUpperCase().substring(0, 2);
+    }
+    
+    if (!countryCode && addressLine) {
+      const countryMatch = addressLine.match(/\b([A-Z]{2})\b/);
+      if (countryMatch) {
+        countryCode = countryMatch[1];
+      }
+    }
+    
+    // Recalculer le prix d'expédition avec les nouvelles dimensions
+    let newShippingPrice = formData.shippingPrice; // Garder l'ancien prix par défaut
+    if (countryCode && volumetricWeight > 0) {
+      try {
+        const isExpress = true; // TOUS les colis sont en EXPRESS
+        console.log(`[EditQuote] 🔄 Recalcul prix expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+        newShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
+        console.log(`[EditQuote] ✅ Nouveau prix expédition calculé: ${newShippingPrice}€`);
+      } catch (error) {
+        console.error('[EditQuote] ❌ Erreur lors du calcul du prix d\'expédition:', error);
+      }
+    } else {
+      console.warn(`[EditQuote] ⚠️ Impossible de recalculer le prix d'expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
+    }
     
     // Mettre à jour les dimensions selon le carton (s'assurer que ce sont des nombres)
     setFormData({
@@ -3093,12 +3193,13 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
       lotHeight: Number(carton.inner_height) || 0,
       lotWeight: Number(volumetricWeight) || 0, // Poids volumétrique automatique (modifiable ensuite)
       packagingPrice: Number(carton.packaging_price) || 0,
+      shippingPrice: newShippingPrice, // Mettre à jour le prix d'expédition
     });
     
     setSelectedCartonId(carton.id);
     setSelectedCartonRef(carton.carton_ref);
     
-    toast.success(`Carton ${carton.carton_ref} sélectionné. Dimensions et prix mis à jour.`);
+    toast.success(`Carton ${carton.carton_ref} sélectionné. Dimensions, prix d'emballage et prix d'expédition mis à jour.`);
   };
 
   // Calculer le total du devis
@@ -3109,82 +3210,58 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
     return packagingPrice + shippingPrice + insuranceAmount;
   };
 
-  // Invalider tous les liens de paiement actifs
+  // Annuler tous les paiements actifs (PENDING) pour ce devis
   const invalidateActivePaymentLinks = async (quoteId: string) => {
     try {
-      const { collection, getDocs, query, where, updateDoc, doc, getFirestore } = await import('firebase/firestore');
-      const firestore = getFirestore();
+      // Récupérer tous les paiements pour ce devis
+      const paiements = await getPaiements(quoteId);
       
-      // Récupérer tous les liens de paiement actifs pour ce devis
-      const paymentLinksRef = collection(firestore, 'paymentLinks');
-      const q = query(
-        paymentLinksRef,
-        where('quoteId', '==', quoteId),
-        where('status', '==', 'active')
+      // Filtrer les paiements principaux en attente
+      const pendingPrincipalPaiements = paiements.filter(
+        (p) => p.type === 'PRINCIPAL' && p.status === 'PENDING'
       );
       
-      const snapshot = await getDocs(q);
-      
-      // Invalider chaque lien actif
-      const invalidatePromises = snapshot.docs.map(docSnapshot => 
-        updateDoc(doc(firestore, 'paymentLinks', docSnapshot.id), {
-          status: 'expired',
-          expiredAt: new Date(),
-          expiredReason: 'Devis modifié - nouveau lien généré'
-        })
+      // Annuler chaque paiement en attente
+      const cancelPromises = pendingPrincipalPaiements.map((paiement) =>
+        cancelPaiement(paiement.id)
       );
       
-      await Promise.all(invalidatePromises);
+      await Promise.all(cancelPromises);
       
-      console.log(`[EditQuote] ${snapshot.docs.length} lien(s) de paiement invalidé(s)`);
+      console.log(`[EditQuote] ${pendingPrincipalPaiements.length} paiement(s) principal(aux) annulé(s)`);
       
-      return snapshot.docs.length;
+      return pendingPrincipalPaiements.length;
     } catch (error) {
-      console.error('[EditQuote] Erreur lors de l\'invalidation des liens:', error);
+      console.error('[EditQuote] Erreur lors de l\'annulation des paiements:', error);
       throw error;
     }
   };
 
-  // Créer un nouveau lien de paiement
+  // Créer un nouveau paiement principal via l'API Stripe Connect
   const createNewPaymentLink = async (updatedQuote: Quote) => {
     try {
       setIsCreatingPaymentLink(true);
       
       const newTotal = calculateTotal();
       
-      console.log('[EditQuote] Création du nouveau lien de paiement pour un montant de', newTotal, '€');
+      console.log('[EditQuote] Création du nouveau paiement principal pour un montant de', newTotal, '€');
       
-      // Créer le lien de paiement via l'API Stripe
-      const { url, id } = await createStripeLink({
-        quote: updatedQuote,
+      // Créer le paiement via l'API Stripe Connect (même système que QuotePaiements)
+      const response = await createPaiement(updatedQuote.id, {
         amount: newTotal,
-        currency: 'EUR',
+        type: 'PRINCIPAL',
+        description: `Paiement principal du devis ${updatedQuote.reference || updatedQuote.id}`,
       });
       
-      // Enregistrer le lien dans Firestore
-      const { collection, addDoc, getFirestore } = await import('firebase/firestore');
-      const firestore = getFirestore();
+      console.log('[EditQuote] Nouveau paiement principal créé:', response.url);
       
-      const newPaymentLink: Partial<PaymentLink> = {
-        id: id || crypto.randomUUID(),
-        url,
+      return {
+        id: response.id,
+        url: response.url,
         amount: newTotal,
-        createdAt: new Date(),
-        status: 'active',
       };
-      
-      await addDoc(collection(firestore, 'paymentLinks'), {
-        ...newPaymentLink,
-        quoteId: updatedQuote.id,
-        quoteReference: updatedQuote.reference,
-        createdBy: 'system',
-      });
-      
-      console.log('[EditQuote] Nouveau lien de paiement créé:', url);
-      
-      return newPaymentLink;
     } catch (error) {
-      console.error('[EditQuote] Erreur lors de la création du lien de paiement:', error);
+      console.error('[EditQuote] Erreur lors de la création du paiement:', error);
       throw error;
     } finally {
       setIsCreatingPaymentLink(false);
@@ -3289,6 +3366,10 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
           
           if (newLink) {
             toast.success('Nouveau lien de paiement créé avec succès !');
+            // Notifier le parent pour forcer le rechargement des paiements
+            if (onPaymentLinkCreated) {
+              onPaymentLinkCreated();
+            }
           }
         } catch (error) {
           console.error('[EditQuote] Erreur lors de la gestion des liens de paiement:', error);

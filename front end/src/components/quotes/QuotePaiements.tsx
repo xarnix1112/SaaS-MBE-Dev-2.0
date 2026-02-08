@@ -48,6 +48,7 @@ import { db } from '@/lib/firebase';
 interface QuotePaiementsProps {
   devisId: string;
   quote?: Quote; // Quote optionnel passé depuis le parent
+  refreshKey?: number; // Clé pour forcer le rechargement des paiements
 }
 
 // Calcul du montant d'assurance (même logique que QuoteDetail)
@@ -70,7 +71,7 @@ function computeInsuranceAmount(
   return raw;
 }
 
-export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsProps) {
+export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: QuotePaiementsProps) {
   const [paiements, setPaiements] = useState<Paiement[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
@@ -215,7 +216,7 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
 
     const interval = setInterval(loadPaiements, 10000); // 10 secondes au lieu de 30
     return () => clearInterval(interval);
-  }, [devisId]);
+  }, [devisId, refreshKey]); // Recharger aussi quand refreshKey change
 
   // Générer automatiquement le paiement principal après le chargement
   useEffect(() => {
