@@ -100,11 +100,24 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
     }
   }, [devisId, initialQuote]);
 
+  // Mettre à jour le quote local quand initialQuote change
+  useEffect(() => {
+    if (initialQuote) {
+      setQuote(initialQuote);
+    }
+  }, [initialQuote]);
+
   // Calcul du total du devis (incluant les surcoûts)
   const calculateQuoteTotal = () => {
     if (!quote) return 0;
     
-    const packagingPrice = quote.options?.packagingPrice || 0;
+    // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+    // Sinon utiliser quote.options.packagingPrice comme fallback
+    const cartonPrice = quote.auctionSheet?.recommendedCarton?.price || 
+                        (quote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                        null;
+    const packagingPrice = cartonPrice !== null ? cartonPrice : (quote.options?.packagingPrice || 0);
+    
     const shippingPrice = quote.options?.shippingPrice || 0;
     const insuranceAmount = computeInsuranceAmount(
       quote.lot?.value || 0,
@@ -322,8 +335,18 @@ export function QuotePaiements({ devisId, quote: initialQuote }: QuotePaiementsP
           </CardHeader>
           <CardContent className="space-y-3">
             <div className="flex items-center justify-between text-sm">
-              <span className="text-muted-foreground">Emballage</span>
-              <span className="font-medium">{(quote.options?.packagingPrice || 0).toFixed(2)}€</span>
+              <span className="text-muted-foreground">
+                Emballage{quote.auctionSheet?.recommendedCarton?.ref ? ` (carton ${quote.auctionSheet.recommendedCarton.ref})` : ''}
+              </span>
+              <span className="font-medium">
+                {(() => {
+                  const cartonPrice = quote.auctionSheet?.recommendedCarton?.price || 
+                                      (quote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                                      null;
+                  const packagingPrice = cartonPrice !== null ? cartonPrice : (quote.options?.packagingPrice || 0);
+                  return packagingPrice.toFixed(2);
+                })()}€
+              </span>
             </div>
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">Expédition</span>

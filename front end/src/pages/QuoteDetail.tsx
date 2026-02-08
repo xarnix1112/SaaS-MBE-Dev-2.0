@@ -629,7 +629,13 @@ export default function QuoteDetail() {
   useEffect(() => {
     if (!quote) return;
     
-    const packagingPrice = quote.options.packagingPrice || 0;
+    // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+    // Sinon utiliser quote.options.packagingPrice comme fallback
+    const cartonPrice = quote.auctionSheet?.recommendedCarton?.price || 
+                        (quote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                        null;
+    const packagingPrice = cartonPrice !== null ? cartonPrice : (quote.options.packagingPrice || 0);
+    
     const shippingPrice = quote.options.shippingPrice || 0;
     const insuranceAmount = computeInsuranceAmount(
       quote.lot?.value || 0,
@@ -638,14 +644,22 @@ export default function QuoteDetail() {
     );
     const newTotal = packagingPrice + shippingPrice + insuranceAmount;
     
-    // Ne mettre à jour que si le total a changé
+    // Ne mettre à jour que si le total a changé ET que le packagingPrice utilisé correspond au carton sélectionné
+    // Cela évite d'écraser avec l'ancien prix depuis Firestore
     if (quote.totalAmount !== newTotal) {
+      // Si on utilise le prix du carton et qu'il diffère de quote.options.packagingPrice,
+      // c'est qu'on doit mettre à jour quote.options.packagingPrice aussi
+      const shouldUpdatePackagingPrice = cartonPrice !== null && cartonPrice !== quote.options.packagingPrice;
+      
       console.log('[QuoteDetail] 🔄 Recalcul totalAmount (useEffect):', {
         packagingPrice,
+        cartonPrice,
+        quotePackagingPrice: quote.options.packagingPrice,
         shippingPrice,
         insuranceAmount,
         oldTotal: quote.totalAmount,
         newTotal,
+        shouldUpdatePackagingPrice,
       });
       
       setQuote(prev => ({
@@ -653,27 +667,46 @@ export default function QuoteDetail() {
         totalAmount: newTotal,
         options: {
           ...prev.options,
+          packagingPrice: shouldUpdatePackagingPrice ? cartonPrice : prev.options.packagingPrice,
           insuranceAmount,
         },
       }));
       
-      // Sauvegarder dans Firestore (inclure insurance pour s'assurer qu'il est bien sauvegardé)
+      // Sauvegarder dans Firestore
+      const updateData: any = {
+        totalAmount: newTotal,
+        options: {
+          insuranceAmount,
+          insurance: quote.options?.insurance || false,
+        },
+        updatedAt: Timestamp.now(),
+      };
+      
+      // Si on doit mettre à jour le packagingPrice, l'inclure dans la sauvegarde
+      if (shouldUpdatePackagingPrice) {
+        updateData.options.packagingPrice = cartonPrice;
+      }
+      
       setDoc(
         doc(db, "quotes", quote.id),
-        {
-          totalAmount: newTotal,
-          options: {
-            insuranceAmount,
-            insurance: quote.options?.insurance || false, // S'assurer que insurance est sauvegardé
-          },
-          updatedAt: Timestamp.now(),
-        },
+        updateData,
         { merge: true }
       ).catch(e => {
         console.warn("[QuoteDetail] ❌ Erreur sauvegarde totalAmount (useEffect):", e);
       });
     }
-  }, [quote?.options?.packagingPrice, quote?.options?.shippingPrice, quote?.options?.insuranceAmount, quote?.options?.insurance, quote?.lot?.value, computeInsuranceAmount, quote?.id]);
+  }, [
+    quote?.options?.packagingPrice, 
+    quote?.options?.shippingPrice, 
+    quote?.options?.insuranceAmount, 
+    quote?.options?.insurance, 
+    quote?.lot?.value, 
+    quote?.auctionSheet?.recommendedCarton?.price,
+    (quote?.auctionSheet?.recommendedCarton as any)?.priceTTC,
+    quote?.totalAmount,
+    computeInsuranceAmount, 
+    quote?.id
+  ]);
 
   if (isLoading) {
     return (
@@ -2192,12 +2225,19 @@ export default function QuoteDetail() {
                           <div className="flex items-center gap-2">
                           <span className="font-medium">
                             {(() => {
-                              const price = safeQuote.options?.packagingPrice || 0;
-                                console.log('[QuoteDetail] Affichage prix emballage:', { 
-                                  price, 
-                                  options: safeQuote.options,
-                                  carton: safeQuote.auctionSheet?.recommendedCarton,
-                                });
+                              // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+                              // Sinon utiliser quote.options.packagingPrice comme fallback
+                              const cartonPrice = safeQuote.auctionSheet?.recommendedCarton?.price || 
+                                                  (safeQuote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                                                  null;
+                              const price = cartonPrice !== null ? cartonPrice : (safeQuote.options?.packagingPrice || 0);
+                              console.log('[QuoteDetail] Affichage prix emballage:', { 
+                                price, 
+                                cartonPrice,
+                                quotePackagingPrice: safeQuote.options?.packagingPrice,
+                                options: safeQuote.options,
+                                carton: safeQuote.auctionSheet?.recommendedCarton,
+                              });
                               return price.toFixed(2);
                             })()}€
                           </span>
@@ -2328,7 +2368,12 @@ export default function QuoteDetail() {
                       <span>Total</span>
                       <span>
                         {(() => {
-                          const packagingPrice = safeQuote.options.packagingPrice || 0;
+                          // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+                          // Sinon utiliser quote.options.packagingPrice comme fallback
+                          const cartonPrice = safeQuote.auctionSheet?.recommendedCarton?.price || 
+                                              (safeQuote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                                              null;
+                          const packagingPrice = cartonPrice !== null ? cartonPrice : (safeQuote.options.packagingPrice || 0);
                           const shippingPrice = safeQuote.options.shippingPrice || 0;
                           const insuranceAmount = computeInsuranceAmount(
                             safeQuote.lot.value || 0,
@@ -2338,6 +2383,8 @@ export default function QuoteDetail() {
                           const total = packagingPrice + shippingPrice + insuranceAmount;
                           console.log('[QuoteDetail] 💰 Calcul total affiché:', {
                             packagingPrice,
+                            cartonPrice,
+                            quotePackagingPrice: safeQuote.options.packagingPrice,
                             shippingPrice,
                             insuranceAmount,
                             total,
