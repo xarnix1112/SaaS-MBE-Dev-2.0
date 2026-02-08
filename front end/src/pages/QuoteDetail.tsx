@@ -2591,6 +2591,35 @@ export default function QuoteDetail() {
                     lotDescription: updatedQuote.lot.description,
                   });
                   
+                  // Construire l'objet auctionSheet pour Firestore
+                  const auctionSheetData: any = {};
+                  if (updatedQuote.auctionSheet) {
+                    if (updatedQuote.auctionSheet.recommendedCarton) {
+                      auctionSheetData.recommendedCarton = {
+                        id: updatedQuote.auctionSheet.recommendedCarton.id || null,
+                        ref: updatedQuote.auctionSheet.recommendedCarton.ref || null,
+                        inner_length: updatedQuote.auctionSheet.recommendedCarton.inner_length || null,
+                        inner_width: updatedQuote.auctionSheet.recommendedCarton.inner_width || null,
+                        inner_height: updatedQuote.auctionSheet.recommendedCarton.inner_height || null,
+                        price: updatedQuote.auctionSheet.recommendedCarton.price || null,
+                        priceTTC: updatedQuote.auctionSheet.recommendedCarton.priceTTC || null,
+                      };
+                    }
+                    // Conserver les autres propriétés de auctionSheet si elles existent
+                    if (updatedQuote.auctionSheet.totalLots !== undefined) {
+                      auctionSheetData.totalLots = updatedQuote.auctionSheet.totalLots;
+                    }
+                    if (updatedQuote.auctionSheet.totalObjects !== undefined) {
+                      auctionSheetData.totalObjects = updatedQuote.auctionSheet.totalObjects;
+                    }
+                    if (updatedQuote.auctionSheet.auctionHouse) {
+                      auctionSheetData.auctionHouse = updatedQuote.auctionSheet.auctionHouse;
+                    }
+                    if (updatedQuote.auctionSheet.auctionDate) {
+                      auctionSheetData.auctionDate = updatedQuote.auctionSheet.auctionDate;
+                    }
+                  }
+
                   await setDoc(
                     doc(db, "quotes", quote.id),
                     {
@@ -2613,17 +2642,23 @@ export default function QuoteDetail() {
                         weight: updatedQuote.lot.dimensions.weight,
                         estimated: updatedQuote.lot.dimensions.estimated,
                       },
+                      lotVolumetricWeight: updatedQuote.lot.volumetricWeight || null,
                       // Prix
                       packagingPrice: updatedQuote.options.packagingPrice || null,
                       shippingPrice: updatedQuote.options.shippingPrice || null,
                       insuranceAmount: updatedQuote.options.insuranceAmount || null,
                       insurance: updatedQuote.options.insurance || false,
+                      totalAmount: updatedQuote.totalAmount || null,
                       // Informations de livraison
                       deliveryMode: updatedQuote.delivery?.mode || null,
                       deliveryContactName: updatedQuote.delivery?.contact?.name || null,
                       deliveryContactEmail: updatedQuote.delivery?.contact?.email || null,
                       deliveryContactPhone: updatedQuote.delivery?.contact?.phone || null,
                       deliveryAddress: deliveryAddress,
+                      // Carton sélectionné
+                      cartonId: updatedQuote.cartonId || null,
+                      // AuctionSheet avec recommendedCarton
+                      ...(Object.keys(auctionSheetData).length > 0 ? { auctionSheet: auctionSheetData } : {}),
                     },
                     { merge: true }
                   );
@@ -2658,9 +2693,20 @@ export default function QuoteDetail() {
                       const emailMatches = currentFoundQuote.client.email === updatedQuote.client.email;
                       const nameMatches = currentFoundQuote.client.name === updatedQuote.client.name;
                       const descriptionMatches = currentFoundQuote.lot.description === updatedQuote.lot.description;
+                      const cartonMatches = currentFoundQuote.cartonId === updatedQuote.cartonId;
+                      const totalMatches = Math.abs((currentFoundQuote.totalAmount || 0) - (updatedQuote.totalAmount || 0)) < 0.01;
                       
-                      if (emailMatches && nameMatches && descriptionMatches) {
-                        console.log('[EditQuote] ✅ Champs modifiés détectés dans foundQuote après', attempts * 100, 'ms');
+                      // Si au moins 3 champs correspondent (ou si le carton et le total correspondent), on considère que c'est bon
+                      const matchesCount = [emailMatches, nameMatches, descriptionMatches, cartonMatches, totalMatches].filter(Boolean).length;
+                      if (matchesCount >= 3 || (cartonMatches && totalMatches)) {
+                        console.log('[EditQuote] ✅ Champs modifiés détectés dans foundQuote après', attempts * 100, 'ms', {
+                          emailMatches,
+                          nameMatches,
+                          descriptionMatches,
+                          cartonMatches,
+                          totalMatches,
+                          matchesCount
+                        });
                         // Mettre à jour le state avec les données fusionnées
                         setQuote(currentFoundQuote);
                         foundMatchingQuote = true;
@@ -2973,8 +3019,16 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
   });
 
   // État pour le carton sélectionné
-  const [selectedCartonId, setSelectedCartonId] = useState<string | null>(quote.cartonId || null);
-  const [selectedCartonRef, setSelectedCartonRef] = useState<string | null>(null);
+  // Initialiser avec le carton existant depuis auctionSheet.recommendedCarton ou cartonId
+  const existingCartonRef = quote.auctionSheet?.recommendedCarton?.ref || 
+                            (quote.auctionSheet?.recommendedCarton as any)?.label ||
+                            null;
+  const [selectedCartonId, setSelectedCartonId] = useState<string | null>(
+    quote.cartonId || 
+    (quote.auctionSheet?.recommendedCarton as any)?.id || 
+    null
+  );
+  const [selectedCartonRef, setSelectedCartonRef] = useState<string | null>(existingCartonRef);
   const [isCreatingPaymentLink, setIsCreatingPaymentLink] = useState(false);
 
   // Gérer la sélection d'un carton
