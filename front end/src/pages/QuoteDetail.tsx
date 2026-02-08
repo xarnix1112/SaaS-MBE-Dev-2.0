@@ -2948,17 +2948,17 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
     // Lot
     lotNumber: safeQuote.lot.number || '',
     lotDescription: safeQuote.lot.description || '',
-    lotValue: safeQuote.lot.value || 0,
+    lotValue: Number(safeQuote.lot.value) || 0,
     lotAuctionHouse: safeQuote.lot.auctionHouse || '',
     // Dimensions
-    lotLength: safeQuote.lot.dimensions.length || 0,
-    lotWidth: safeQuote.lot.dimensions.width || 0,
-    lotHeight: safeQuote.lot.dimensions.height || 0,
-    lotWeight: safeQuote.lot.dimensions.weight || 0,
+    lotLength: Number(safeQuote.lot.dimensions.length) || 0,
+    lotWidth: Number(safeQuote.lot.dimensions.width) || 0,
+    lotHeight: Number(safeQuote.lot.dimensions.height) || 0,
+    lotWeight: Number(safeQuote.lot.dimensions.weight) || 0,
     // Prix
-    packagingPrice: safeQuote.options.packagingPrice || 0,
-    shippingPrice: safeQuote.options.shippingPrice || 0,
-    insuranceAmount: safeQuote.options.insuranceAmount || 0,
+    packagingPrice: Number(safeQuote.options.packagingPrice) || 0,
+    shippingPrice: Number(safeQuote.options.shippingPrice) || 0,
+    insuranceAmount: Number(safeQuote.options.insuranceAmount) || 0,
     insurance: safeQuote.options.insurance || false,
     // Livraison
     deliveryMode: safeQuote.delivery?.mode || 'client',
@@ -2974,6 +2974,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
 
   // État pour le carton sélectionné
   const [selectedCartonId, setSelectedCartonId] = useState<string | null>(quote.cartonId || null);
+  const [selectedCartonRef, setSelectedCartonRef] = useState<string | null>(null);
   const [isCreatingPaymentLink, setIsCreatingPaymentLink] = useState(false);
 
   // Gérer la sélection d'un carton
@@ -2983,17 +2984,18 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
     // Calculer le poids volumétrique
     const volumetricWeight = calculateVolumetricWeight(carton);
     
-    // Mettre à jour les dimensions selon le carton
+    // Mettre à jour les dimensions selon le carton (s'assurer que ce sont des nombres)
     setFormData({
       ...formData,
-      lotLength: carton.inner_length,
-      lotWidth: carton.inner_width,
-      lotHeight: carton.inner_height,
-      lotWeight: volumetricWeight, // Poids volumétrique automatique (modifiable ensuite)
-      packagingPrice: carton.packaging_price,
+      lotLength: Number(carton.inner_length) || 0,
+      lotWidth: Number(carton.inner_width) || 0,
+      lotHeight: Number(carton.inner_height) || 0,
+      lotWeight: Number(volumetricWeight) || 0, // Poids volumétrique automatique (modifiable ensuite)
+      packagingPrice: Number(carton.packaging_price) || 0,
     });
     
     setSelectedCartonId(carton.id);
+    setSelectedCartonRef(carton.carton_ref);
     
     toast.success(`Carton ${carton.carton_ref} sélectionné. Dimensions et prix mis à jour.`);
   };
@@ -3095,6 +3097,25 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
     const newTotal = calculateTotal();
     const oldTotal = quote.totalAmount;
     
+    // Construire l'objet carton recommandé pour l'auctionSheet
+    const recommendedCarton = selectedCartonRef ? {
+      id: selectedCartonId || undefined,
+      ref: selectedCartonRef,
+      inner_length: formData.lotLength,
+      inner_width: formData.lotWidth,
+      inner_height: formData.lotHeight,
+      price: formData.packagingPrice,
+      priceTTC: formData.packagingPrice,
+    } : (quote.auctionSheet?.recommendedCarton || undefined);
+
+    // Construire l'objet auctionSheet mis à jour
+    const updatedAuctionSheet = quote.auctionSheet || selectedCartonRef ? {
+      ...(quote.auctionSheet || {}),
+      recommendedCarton,
+      totalLots: quote.auctionSheet?.totalLots || 1,
+      totalObjects: quote.auctionSheet?.totalObjects || 1,
+    } : undefined;
+
     const updatedQuote: Quote = {
       ...quote,
       client: {
@@ -3141,6 +3162,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
           country: formData.deliveryAddressCountry || undefined,
         },
       },
+      auctionSheet: updatedAuctionSheet,
       totalAmount: newTotal,
       cartonId: selectedCartonId || undefined,
     };
