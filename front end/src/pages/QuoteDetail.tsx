@@ -3353,7 +3353,9 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     try {
       setIsCreatingPaymentLink(true);
       
-      const newTotal = calculateTotal();
+      // Utiliser le total depuis updatedQuote au lieu de calculateTotal()
+      // car formData peut contenir des valeurs anciennes
+      const newTotal = updatedQuote.totalAmount;
       
       console.log('[EditQuote] 🔄 Création nouveau paiement principal:', {
         quoteId: updatedQuote.id,
