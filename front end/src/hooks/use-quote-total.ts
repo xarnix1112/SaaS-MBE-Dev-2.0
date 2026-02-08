@@ -21,7 +21,14 @@ export function useQuoteTotal(quote: Quote | undefined) {
         setIsLoading(true);
         
         // Calculer le total de base du devis
-        const packagingPrice = quote.options?.packagingPrice || 0;
+        // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+        // Sinon utiliser quote.options.packagingPrice comme fallback
+        const cartonPrice = quote.auctionSheet?.recommendedCarton?.price || 
+                            (quote.auctionSheet?.recommendedCarton as any)?.priceTTC || 
+                            null;
+        const packagingPrice = cartonPrice !== null && cartonPrice !== undefined 
+          ? cartonPrice 
+          : (quote.options?.packagingPrice || 0);
         const shippingPrice = quote.options?.shippingPrice || 0;
         
         // Calculer l'assurance
@@ -58,12 +65,24 @@ export function useQuoteTotal(quote: Quote | undefined) {
         try {
           const paiements = await getPaiements(quote.id);
           
-          // Ajouter les surcoûts (paiements SURCOUT non annulés)
-          const surchargeAmount = paiements
-            .filter((p) => p.type === 'SURCOUT' && p.status !== 'CANCELLED')
-            .reduce((sum, p) => sum + p.amount, 0);
+          // Vérifier s'il existe un paiement principal en attente
+          // Si oui, utiliser son montant comme total (c'est le montant réel à payer)
+          const pendingPrincipalPayment = paiements.find(
+            (p) => p.type === 'PRINCIPAL' && p.status === 'PENDING'
+          );
           
-          setTotalWithSurcharge(baseTotal + surchargeAmount);
+          if (pendingPrincipalPayment) {
+            // Utiliser le montant du paiement principal en attente
+            // C'est le montant réel qui correspond au total des paiements
+            setTotalWithSurcharge(pendingPrincipalPayment.amount);
+          } else {
+            // Sinon, calculer le total avec les surcoûts
+            const surchargeAmount = paiements
+              .filter((p) => p.type === 'SURCOUT' && p.status !== 'CANCELLED')
+              .reduce((sum, p) => sum + p.amount, 0);
+            
+            setTotalWithSurcharge(baseTotal + surchargeAmount);
+          }
         } catch (error) {
           // Si erreur de chargement des paiements, utiliser le total de base
           console.warn('[useQuoteTotal] Erreur chargement paiements, utilisation total de base:', error);
