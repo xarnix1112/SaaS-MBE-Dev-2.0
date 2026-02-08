@@ -3098,8 +3098,23 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
   const handleCartonSelect = async (carton: any) => {
     console.log('[EditQuote] Carton sélectionné:', carton);
     
-    // Calculer le poids volumétrique
-    const volumetricWeight = calculateVolumetricWeight(carton);
+    // Vérifier que les dimensions sont valides avant de calculer le poids volumétrique
+    const length = Number(carton.inner_length) || 0;
+    const width = Number(carton.inner_width) || 0;
+    const height = Number(carton.inner_height) || 0;
+    
+    if (!length || !width || !height) {
+      console.error('[EditQuote] ❌ Dimensions invalides pour le carton:', { length, width, height });
+      toast.error('Dimensions du carton invalides');
+      return;
+    }
+    
+    // Calculer le poids volumétrique avec les dimensions validées
+    const volumetricWeight = calculateVolumetricWeight({
+      inner_length: length,
+      inner_width: width,
+      inner_height: height,
+    } as any);
     
     // Extraire le code pays pour le calcul du prix d'expédition
     let countryCode = '';
@@ -3244,7 +3259,12 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       
       const newTotal = calculateTotal();
       
-      console.log('[EditQuote] Création du nouveau paiement principal pour un montant de', newTotal, '€');
+      console.log('[EditQuote] 🔄 Création nouveau paiement principal:', {
+        quoteId: updatedQuote.id,
+        reference: updatedQuote.reference,
+        amount: newTotal,
+        totalAmount: updatedQuote.totalAmount,
+      });
       
       // Créer le paiement via l'API Stripe Connect (même système que QuotePaiements)
       const response = await createPaiement(updatedQuote.id, {
@@ -3253,7 +3273,11 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
         description: `Paiement principal du devis ${updatedQuote.reference || updatedQuote.id}`,
       });
       
-      console.log('[EditQuote] Nouveau paiement principal créé:', response.url);
+      console.log('[EditQuote] ✅ Nouveau paiement principal créé:', {
+        id: response.id,
+        url: response.url,
+        amount: newTotal,
+      });
       
       return {
         id: response.id,
@@ -3261,7 +3285,12 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
         amount: newTotal,
       };
     } catch (error) {
-      console.error('[EditQuote] Erreur lors de la création du paiement:', error);
+      console.error('[EditQuote] ❌ Erreur lors de la création du paiement:', error);
+      console.error('[EditQuote] ❌ Détails erreur:', {
+        message: (error as any)?.message,
+        response: (error as any)?.response?.data,
+        stack: (error as any)?.stack,
+      });
       throw error;
     } finally {
       setIsCreatingPaymentLink(false);
@@ -3346,35 +3375,59 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     };
 
     try {
+      console.log('[EditQuote] 📊 Comparaison totaux:', { oldTotal, newTotal, changed: newTotal !== oldTotal });
+      
       // Sauvegarder les modifications
       await onSave(updatedQuote);
       
-      // Si le total a changé, invalider l'ancien lien et créer un nouveau
-      if (newTotal !== oldTotal) {
-        console.log('[EditQuote] Le total a changé de', oldTotal, '€ à', newTotal, '€');
+      // Toujours invalider les anciens paiements et créer un nouveau si le total a changé
+      const totalChanged = Math.abs((newTotal || 0) - (oldTotal || 0)) > 0.01;
+      
+      console.log('[EditQuote] 🔄 Vérification mise à jour paiements:', {
+        totalChanged,
+        oldTotal,
+        newTotal,
+        difference: Math.abs((newTotal || 0) - (oldTotal || 0)),
+      });
+      
+      if (totalChanged) {
+        console.log('[EditQuote] 🔄 Début mise à jour des paiements...');
         
         try {
           // Invalider les anciens liens
+          console.log('[EditQuote] 🔄 Annulation des anciens paiements...');
           const invalidatedCount = await invalidateActivePaymentLinks(quote.id);
           
+          console.log('[EditQuote] ✅', invalidatedCount, 'paiement(s) annulé(s)');
+          
           if (invalidatedCount > 0) {
-            toast.info(`${invalidatedCount} ancien(s) lien(s) de paiement invalidé(s)`);
+            toast.info(`${invalidatedCount} ancien(s) paiement(s) annulé(s)`);
           }
           
           // Créer un nouveau lien
+          console.log('[EditQuote] 🔄 Création nouveau paiement pour', newTotal, '€...');
           const newLink = await createNewPaymentLink(updatedQuote);
+          
+          console.log('[EditQuote] ✅ Nouveau paiement créé:', newLink);
           
           if (newLink) {
             toast.success('Nouveau lien de paiement créé avec succès !');
+            // Attendre un peu pour que le paiement soit bien enregistré
+            await new Promise(resolve => setTimeout(resolve, 1000));
             // Notifier le parent pour forcer le rechargement des paiements
             if (onPaymentLinkCreated) {
+              console.log('[EditQuote] 🔄 Notification parent pour rechargement paiements');
               onPaymentLinkCreated();
             }
+          } else {
+            console.warn('[EditQuote] ⚠️ Aucun lien créé (newLink est null/undefined)');
           }
         } catch (error) {
-          console.error('[EditQuote] Erreur lors de la gestion des liens de paiement:', error);
+          console.error('[EditQuote] ❌ Erreur lors de la gestion des liens de paiement:', error);
           toast.error('Devis sauvegardé, mais erreur lors de la création du nouveau lien de paiement');
         }
+      } else {
+        console.log('[EditQuote] ℹ️ Aucune mise à jour des paiements nécessaire');
       }
     } catch (error) {
       console.error('[EditQuote] Erreur lors de la sauvegarde:', error);

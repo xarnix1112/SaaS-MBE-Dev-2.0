@@ -138,7 +138,12 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   const loadPaiements = async () => {
     try {
       setIsLoading(true);
+      console.log('[QuotePaiements] 🔄 Chargement paiements pour devis:', devisId);
       const data = await getPaiements(devisId);
+      console.log('[QuotePaiements] ✅ Paiements chargés:', {
+        count: data.length,
+        paiements: data.map(p => ({ id: p.id, amount: p.amount, type: p.type, status: p.status })),
+      });
       setPaiements(data);
     } catch (error: any) {
       console.error('[QuotePaiements] Erreur chargement:', error);
@@ -170,9 +175,36 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   const autoGeneratePrincipalPayment = async () => {
     if (!quote || isAutoGenerating) return;
     
-    // Vérifier s'il existe déjà un paiement principal
-    const hasPrincipalPayment = paiements.some(p => p.type === 'PRINCIPAL');
-    if (hasPrincipalPayment) return;
+    // Vérifier s'il existe déjà un paiement principal EN ATTENTE
+    // On permet la création d'un nouveau paiement si le total a changé
+    const hasPendingPrincipalPayment = paiements.some(
+      p => p.type === 'PRINCIPAL' && p.status === 'PENDING'
+    );
+    
+    // Calculer le total actuel du devis
+    const currentQuoteTotal = calculateQuoteTotal();
+    
+    // Vérifier si le montant du paiement principal correspond au total du devis
+    const principalPayment = paiements.find(p => p.type === 'PRINCIPAL' && p.status === 'PENDING');
+    const paymentMatchesTotal = principalPayment 
+      ? Math.abs(principalPayment.amount - currentQuoteTotal) < 0.01
+      : false;
+    
+    // Ne pas créer de nouveau paiement si un paiement principal en attente existe ET correspond au total
+    if (hasPendingPrincipalPayment && paymentMatchesTotal) {
+      console.log('[QuotePaiements] ℹ️ Paiement principal existe déjà avec le bon montant:', {
+        paymentAmount: principalPayment?.amount,
+        quoteTotal: currentQuoteTotal,
+      });
+      return;
+    }
+    
+    console.log('[QuotePaiements] 🔄 Génération paiement principal nécessaire:', {
+      hasPendingPrincipalPayment,
+      paymentMatchesTotal,
+      currentQuoteTotal,
+      principalPaymentAmount: principalPayment?.amount,
+    });
     
     // Calculer le total
     const total = calculateQuoteTotal();
@@ -216,14 +248,26 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
 
     const interval = setInterval(loadPaiements, 10000); // 10 secondes au lieu de 30
     return () => clearInterval(interval);
-  }, [devisId, refreshKey]); // Recharger aussi quand refreshKey change
+  }, [devisId]); // Ne pas inclure refreshKey ici pour éviter les rechargements infinis
+  
+  // Recharger immédiatement quand refreshKey change
+  useEffect(() => {
+    if (refreshKey !== undefined && refreshKey > 0) {
+      console.log('[QuotePaiements] 🔄 Rechargement forcé des paiements (refreshKey:', refreshKey, ')');
+      loadPaiements();
+    }
+  }, [refreshKey]);
 
   // Générer automatiquement le paiement principal après le chargement
   useEffect(() => {
     if (!isLoading && quote && paiements.length >= 0) {
-      autoGeneratePrincipalPayment();
+      // Attendre un peu pour laisser le temps aux paiements d'être chargés
+      const timer = setTimeout(() => {
+        autoGeneratePrincipalPayment();
+      }, 500);
+      return () => clearTimeout(timer);
     }
-  }, [isLoading, quote, paiements.length]);
+  }, [isLoading, quote, paiements.length, refreshKey]); // Ajouter refreshKey pour forcer la vérification
 
   // Créer un nouveau paiement
   const handleCreatePaiement = async () => {
@@ -317,6 +361,18 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   const paidAmount = activePaiements
     .filter((p) => p.status === 'PAID')
     .reduce((sum, p) => sum + p.amount, 0);
+  
+  // Logs pour déboguer
+  useEffect(() => {
+    console.log('[QuotePaiements] 📊 État paiements:', {
+      paiementsCount: paiements.length,
+      activePaiementsCount: activePaiements.length,
+      totalAmount,
+      quoteTotal,
+      quoteId: devisId,
+      refreshKey,
+    });
+  }, [paiements, totalAmount, quoteTotal, devisId, refreshKey]);
 
   // Récupérer les surcoûts pour l'affichage (paiements SURCOUT non annulés)
   const surchargePaiements = paiements.filter(
