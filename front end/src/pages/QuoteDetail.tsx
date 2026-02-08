@@ -3201,7 +3201,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     }
     
     // Mettre à jour les dimensions selon le carton (s'assurer que ce sont des nombres)
-    setFormData({
+    const newFormData = {
       ...formData,
       lotLength: Number(carton.inner_length) || 0,
       lotWidth: Number(carton.inner_width) || 0,
@@ -3209,12 +3209,108 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       lotWeight: Number(volumetricWeight) || 0, // Poids volumétrique automatique (modifiable ensuite)
       packagingPrice: Number(carton.packaging_price) || 0,
       shippingPrice: newShippingPrice, // Mettre à jour le prix d'expédition
-    });
+    };
     
+    setFormData(newFormData);
     setSelectedCartonId(carton.id);
     setSelectedCartonRef(carton.carton_ref);
     
-    toast.success(`Carton ${carton.carton_ref} sélectionné. Dimensions, prix d'emballage et prix d'expédition mis à jour.`);
+    // Calculer le nouveau total
+    const newTotal = newFormData.packagingPrice + newFormData.shippingPrice + (newFormData.insurance ? (newFormData.insuranceAmount || 0) : 0);
+    const oldTotal = quote.totalAmount;
+    
+    // Construire le carton recommandé pour auctionSheet
+    const recommendedCarton = {
+      id: carton.id || undefined,
+      ref: carton.carton_ref,
+      inner_length: newFormData.lotLength,
+      inner_width: newFormData.lotWidth,
+      inner_height: newFormData.lotHeight,
+      price: newFormData.packagingPrice,
+      priceTTC: newFormData.packagingPrice,
+    };
+    
+    // Construire l'objet devis mis à jour
+    const updatedQuote: Quote = {
+      ...quote,
+      lot: {
+        ...quote.lot,
+        dimensions: {
+          length: newFormData.lotLength,
+          width: newFormData.lotWidth,
+          height: newFormData.lotHeight,
+          weight: newFormData.lotWeight,
+          estimated: quote.lot.dimensions.estimated || false,
+        },
+        volumetricWeight: newFormData.lotWeight,
+      },
+      options: {
+        ...quote.options,
+        packagingPrice: newFormData.packagingPrice,
+        shippingPrice: newFormData.shippingPrice,
+      },
+      auctionSheet: {
+        ...(quote.auctionSheet || {}),
+        recommendedCarton,
+      },
+      totalAmount: newTotal,
+      cartonId: carton.id || undefined,
+    };
+    
+    toast.success(`Carton ${carton.carton_ref} sélectionné. Sauvegarde en cours...`);
+    
+    try {
+      // Sauvegarder dans Firestore
+      await onSave(updatedQuote);
+      
+      console.log('[EditQuote] 📊 Comparaison totaux après sélection carton:', { oldTotal, newTotal, changed: newTotal !== oldTotal });
+      
+      // Si le total a changé, créer un nouveau paiement
+      const totalChanged = Math.abs((newTotal || 0) - (oldTotal || 0)) > 0.01;
+      
+      if (totalChanged) {
+        console.log('[EditQuote] 🔄 Début mise à jour des paiements...');
+        
+        try {
+          // Invalider les anciens liens
+          console.log('[EditQuote] 🔄 Annulation des anciens paiements...');
+          const invalidatedCount = await invalidateActivePaymentLinks(quote.id);
+          
+          console.log('[EditQuote] ✅', invalidatedCount, 'paiement(s) annulé(s)');
+          
+          if (invalidatedCount > 0) {
+            toast.info(`${invalidatedCount} ancien(s) paiement(s) annulé(s)`);
+          }
+          
+          // Créer un nouveau lien
+          console.log('[EditQuote] 🔄 Création nouveau paiement pour', newTotal, '€...');
+          const newLink = await createNewPaymentLink(updatedQuote);
+          
+          console.log('[EditQuote] ✅ Nouveau paiement créé:', newLink);
+          
+          if (newLink) {
+            toast.success('Nouveau lien de paiement créé avec succès !');
+            // Attendre un peu pour que le paiement soit bien enregistré
+            await new Promise(resolve => setTimeout(resolve, 1000));
+            // Notifier le parent pour forcer le rechargement des paiements
+            if (onPaymentLinkCreated) {
+              console.log('[EditQuote] 🔄 Notification parent pour rechargement paiements');
+              onPaymentLinkCreated();
+            }
+          } else {
+            console.warn('[EditQuote] ⚠️ Aucun lien créé (newLink est null/undefined)');
+          }
+        } catch (error) {
+          console.error('[EditQuote] ❌ Erreur lors de la gestion des liens de paiement:', error);
+          toast.error('Devis sauvegardé, mais erreur lors de la création du nouveau lien de paiement');
+        }
+      } else {
+        console.log('[EditQuote] ℹ️ Aucune mise à jour des paiements nécessaire (total inchangé)');
+      }
+    } catch (error) {
+      console.error('[EditQuote] ❌ Erreur lors de la sauvegarde automatique:', error);
+      toast.error('Erreur lors de la sauvegarde automatique. Veuillez cliquer sur Enregistrer manuellement.');
+    }
   };
 
   // Calculer le total du devis
