@@ -4,7 +4,7 @@
  * Affiche les paiements d'un devis et permet d'en créer de nouveaux
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -108,8 +108,8 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
     }
   }, [initialQuote]);
 
-  // Calcul du total du devis (incluant les surcoûts)
-  const calculateQuoteTotal = () => {
+  // Calcul du total du devis (incluant les surcoûts) - mémorisé avec useCallback
+  const calculateQuoteTotal = useCallback(() => {
     if (!quote) return 0;
     
     // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
@@ -132,10 +132,10 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       .reduce((sum, p) => sum + p.amount, 0);
     
     return packagingPrice + shippingPrice + insuranceAmount + surchargeAmount;
-  };
+  }, [quote, paiements]);
 
-  // Charger les paiements
-  const loadPaiements = async () => {
+  // Charger les paiements (mémorisé avec useCallback pour éviter les problèmes de dépendances)
+  const loadPaiements = useCallback(async () => {
     try {
       setIsLoading(true);
       console.log('[QuotePaiements] 🔄 Chargement paiements pour devis:', devisId);
@@ -169,10 +169,10 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [devisId]);
 
-  // Générer automatiquement le paiement principal si nécessaire
-  const autoGeneratePrincipalPayment = async () => {
+  // Générer automatiquement le paiement principal si nécessaire (mémorisé avec useCallback)
+  const autoGeneratePrincipalPayment = useCallback(async () => {
     if (!quote || isAutoGenerating) return;
     
     // Vérifier s'il existe déjà un paiement principal EN ATTENTE
@@ -240,7 +240,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
     } finally {
       setIsAutoGenerating(false);
     }
-  };
+  }, [quote, isAutoGenerating, paiements, devisId, loadPaiements, calculateQuoteTotal]);
 
   // Polling automatique toutes les 10 secondes (plus fréquent pour détecter les paiements rapidement)
   useEffect(() => {
@@ -248,7 +248,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
 
     const interval = setInterval(loadPaiements, 10000); // 10 secondes au lieu de 30
     return () => clearInterval(interval);
-  }, [devisId]); // Ne pas inclure refreshKey ici pour éviter les rechargements infinis
+  }, [loadPaiements]); // Utiliser loadPaiements dans les dépendances maintenant qu'il est mémorisé
   
   // Recharger immédiatement quand refreshKey change
   useEffect(() => {
@@ -256,7 +256,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       console.log('[QuotePaiements] 🔄 Rechargement forcé des paiements (refreshKey:', refreshKey, ')');
       loadPaiements();
     }
-  }, [refreshKey]);
+  }, [refreshKey, loadPaiements]);
 
   // Générer automatiquement le paiement principal après le chargement
   useEffect(() => {
@@ -267,7 +267,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       }, 500);
       return () => clearTimeout(timer);
     }
-  }, [isLoading, quote, paiements.length, refreshKey]); // Ajouter refreshKey pour forcer la vérification
+  }, [isLoading, quote, paiements.length, refreshKey, autoGeneratePrincipalPayment]); // Inclure autoGeneratePrincipalPayment dans les dépendances
 
   // Créer un nouveau paiement
   const handleCreatePaiement = async () => {
@@ -372,7 +372,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       quoteId: devisId,
       refreshKey,
     });
-  }, [paiements, totalAmount, quoteTotal, devisId, refreshKey]);
+  }, [paiements, totalAmount, quoteTotal, devisId, refreshKey, activePaiements.length]);
 
   // Récupérer les surcoûts pour l'affichage (paiements SURCOUT non annulés)
   const surchargePaiements = paiements.filter(
