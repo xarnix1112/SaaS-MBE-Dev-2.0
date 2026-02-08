@@ -4150,7 +4150,12 @@ app.post('/api/send-quote-email', async (req, res) => {
     const auctionHouse = quote.auctionSheet?.auctionHouse || 'Non précisée';
     
     // Extraction des coûts détaillés depuis quote.options (calculés dans QuoteDetail.tsx)
-    const packagingPrice = quote.options?.packagingPrice || 0;
+    // Utiliser le prix du carton depuis auctionSheet.recommendedCarton si disponible
+    // Sinon utiliser quote.options.packagingPrice comme fallback
+    const cartonPrice = quote.auctionSheet?.recommendedCarton?.price || 
+                        quote.auctionSheet?.recommendedCarton?.priceTTC || 
+                        null;
+    const packagingPrice = cartonPrice !== null && cartonPrice !== undefined ? cartonPrice : (quote.options?.packagingPrice || 0);
     const shippingPrice = quote.options?.shippingPrice || 0;
     const insuranceEnabled = quote.options?.insurance || false;
     const insuranceAmount = quote.options?.insuranceAmount || 0;
