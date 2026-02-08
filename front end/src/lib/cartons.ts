@@ -105,7 +105,7 @@ function findBestCartonForItem(
  * @param carton - Carton
  * @param coefficient - Coefficient de conversion (par défaut 5000 pour la plupart des transporteurs)
  */
-function calculateVolumetricWeight(carton: Carton, coefficient: number = 5000): number {
+export function calculateVolumetricWeight(carton: Carton, coefficient: number = 5000): number {
   return (carton.inner_length * carton.inner_width * carton.inner_height) / coefficient;
 }
 

@@ -5,6 +5,7 @@ import { QuoteTimeline } from '@/components/quotes/QuoteTimeline';
 import { StatusBadge } from '@/components/quotes/StatusBadge';
 import { AttachAuctionSheet } from '@/components/quotes/AttachAuctionSheet';
 import { QuotePaiements } from '@/components/quotes/QuotePaiements';
+import { CartonSelector } from '@/components/quotes/CartonSelector';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
@@ -20,7 +21,7 @@ import {
 import { useQuotes } from "@/hooks/use-quotes";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
-import { Quote, DeliveryMode, DeliveryInfo } from '@/types/quote';
+import { Quote, DeliveryMode, DeliveryInfo, PaymentLink } from '@/types/quote';
 import { toast } from 'sonner';
 import { useShipmentGrouping } from '@/hooks/useShipmentGrouping';
 import { GroupingSuggestion } from '@/components/shipment/GroupingSuggestion';
@@ -57,6 +58,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
+import { calculateVolumetricWeight } from '@/lib/cartons';
+import { createStripeLink } from '@/lib/stripe';
 
 /**
  * Nettoie un objet pour Firestore en remplaçant undefined par null ou en omettant les champs
@@ -2969,8 +2972,128 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
     deliveryAddressCountry: safeQuote.delivery.address.country || '',
   });
 
+  // État pour le carton sélectionné
+  const [selectedCartonId, setSelectedCartonId] = useState<string | null>(quote.cartonId || null);
+  const [isCreatingPaymentLink, setIsCreatingPaymentLink] = useState(false);
+
+  // Gérer la sélection d'un carton
+  const handleCartonSelect = (carton: any) => {
+    console.log('[EditQuote] Carton sélectionné:', carton);
+    
+    // Calculer le poids volumétrique
+    const volumetricWeight = calculateVolumetricWeight(carton);
+    
+    // Mettre à jour les dimensions selon le carton
+    setFormData({
+      ...formData,
+      lotLength: carton.inner_length,
+      lotWidth: carton.inner_width,
+      lotHeight: carton.inner_height,
+      lotWeight: volumetricWeight, // Poids volumétrique automatique (modifiable ensuite)
+      packagingPrice: carton.packaging_price,
+    });
+    
+    setSelectedCartonId(carton.id);
+    
+    toast.success(`Carton ${carton.carton_ref} sélectionné. Dimensions et prix mis à jour.`);
+  };
+
+  // Calculer le total du devis
+  const calculateTotal = () => {
+    const packagingPrice = formData.packagingPrice || 0;
+    const shippingPrice = formData.shippingPrice || 0;
+    const insuranceAmount = formData.insurance ? (formData.insuranceAmount || 0) : 0;
+    return packagingPrice + shippingPrice + insuranceAmount;
+  };
+
+  // Invalider tous les liens de paiement actifs
+  const invalidateActivePaymentLinks = async (quoteId: string) => {
+    try {
+      const { collection, getDocs, query, where, updateDoc, doc, getFirestore } = await import('firebase/firestore');
+      const firestore = getFirestore();
+      
+      // Récupérer tous les liens de paiement actifs pour ce devis
+      const paymentLinksRef = collection(firestore, 'paymentLinks');
+      const q = query(
+        paymentLinksRef,
+        where('quoteId', '==', quoteId),
+        where('status', '==', 'active')
+      );
+      
+      const snapshot = await getDocs(q);
+      
+      // Invalider chaque lien actif
+      const invalidatePromises = snapshot.docs.map(docSnapshot => 
+        updateDoc(doc(firestore, 'paymentLinks', docSnapshot.id), {
+          status: 'expired',
+          expiredAt: new Date(),
+          expiredReason: 'Devis modifié - nouveau lien généré'
+        })
+      );
+      
+      await Promise.all(invalidatePromises);
+      
+      console.log(`[EditQuote] ${snapshot.docs.length} lien(s) de paiement invalidé(s)`);
+      
+      return snapshot.docs.length;
+    } catch (error) {
+      console.error('[EditQuote] Erreur lors de l\'invalidation des liens:', error);
+      throw error;
+    }
+  };
+
+  // Créer un nouveau lien de paiement
+  const createNewPaymentLink = async (updatedQuote: Quote) => {
+    try {
+      setIsCreatingPaymentLink(true);
+      
+      const newTotal = calculateTotal();
+      
+      console.log('[EditQuote] Création du nouveau lien de paiement pour un montant de', newTotal, '€');
+      
+      // Créer le lien de paiement via l'API Stripe
+      const { url, id } = await createStripeLink({
+        quote: updatedQuote,
+        amount: newTotal,
+        currency: 'EUR',
+      });
+      
+      // Enregistrer le lien dans Firestore
+      const { collection, addDoc, getFirestore } = await import('firebase/firestore');
+      const firestore = getFirestore();
+      
+      const newPaymentLink: Partial<PaymentLink> = {
+        id: id || crypto.randomUUID(),
+        url,
+        amount: newTotal,
+        createdAt: new Date(),
+        status: 'active',
+      };
+      
+      await addDoc(collection(firestore, 'paymentLinks'), {
+        ...newPaymentLink,
+        quoteId: updatedQuote.id,
+        quoteReference: updatedQuote.reference,
+        createdBy: 'system',
+      });
+      
+      console.log('[EditQuote] Nouveau lien de paiement créé:', url);
+      
+      return newPaymentLink;
+    } catch (error) {
+      console.error('[EditQuote] Erreur lors de la création du lien de paiement:', error);
+      throw error;
+    } finally {
+      setIsCreatingPaymentLink(false);
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    
+    // Calculer le nouveau total
+    const newTotal = calculateTotal();
+    const oldTotal = quote.totalAmount;
     
     const updatedQuote: Quote = {
       ...quote,
@@ -2994,6 +3117,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
           weight: formData.lotWeight,
           estimated: safeQuote.lot.dimensions.estimated || false,
         },
+        volumetricWeight: formData.lotWeight, // Mettre à jour le poids volumétrique
       },
       options: {
         ...quote.options,
@@ -3017,9 +3141,41 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
           country: formData.deliveryAddressCountry || undefined,
         },
       },
+      totalAmount: newTotal,
+      cartonId: selectedCartonId || undefined,
     };
 
-    await onSave(updatedQuote);
+    try {
+      // Sauvegarder les modifications
+      await onSave(updatedQuote);
+      
+      // Si le total a changé, invalider l'ancien lien et créer un nouveau
+      if (newTotal !== oldTotal) {
+        console.log('[EditQuote] Le total a changé de', oldTotal, '€ à', newTotal, '€');
+        
+        try {
+          // Invalider les anciens liens
+          const invalidatedCount = await invalidateActivePaymentLinks(quote.id);
+          
+          if (invalidatedCount > 0) {
+            toast.info(`${invalidatedCount} ancien(s) lien(s) de paiement invalidé(s)`);
+          }
+          
+          // Créer un nouveau lien
+          const newLink = await createNewPaymentLink(updatedQuote);
+          
+          if (newLink) {
+            toast.success('Nouveau lien de paiement créé avec succès !');
+          }
+        } catch (error) {
+          console.error('[EditQuote] Erreur lors de la gestion des liens de paiement:', error);
+          toast.error('Devis sauvegardé, mais erreur lors de la création du nouveau lien de paiement');
+        }
+      }
+    } catch (error) {
+      console.error('[EditQuote] Erreur lors de la sauvegarde:', error);
+      throw error;
+    }
   };
 
   return (
@@ -3125,18 +3281,34 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
 
               <Separator />
 
+              {/* Sélecteur de carton */}
+              <div className="space-y-4">
+                <CartonSelector
+                  selectedCartonId={selectedCartonId}
+                  onCartonSelect={handleCartonSelect}
+                  disabled={isSaving}
+                />
+              </div>
+
+              <Separator />
+
+              {/* Dimensions du carton (lecture seule) */}
               <div className="space-y-2">
-                <Label className="text-sm font-medium">Dimensions (cm)</Label>
-                <div className="grid grid-cols-4 gap-4">
+                <div className="flex items-center justify-between">
+                  <Label className="text-sm font-medium">Dimensions du carton (cm)</Label>
+                  <Badge variant="secondary" className="text-xs">
+                    Définies par le carton sélectionné
+                  </Badge>
+                </div>
+                <div className="grid grid-cols-3 gap-4">
                   <div className="space-y-2">
                     <Label htmlFor="lotLength" className="text-xs">Longueur</Label>
                     <Input
                       id="lotLength"
                       type="number"
-                      step="0.1"
-                      min="0"
                       value={formData.lotLength}
-                      onChange={(e) => setFormData({ ...formData, lotLength: parseFloat(e.target.value) || 0 })}
+                      disabled
+                      className="bg-muted"
                     />
                   </div>
                   <div className="space-y-2">
@@ -3144,10 +3316,9 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
                     <Input
                       id="lotWidth"
                       type="number"
-                      step="0.1"
-                      min="0"
                       value={formData.lotWidth}
-                      onChange={(e) => setFormData({ ...formData, lotWidth: parseFloat(e.target.value) || 0 })}
+                      disabled
+                      className="bg-muted"
                     />
                   </div>
                   <div className="space-y-2">
@@ -3155,24 +3326,37 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
                     <Input
                       id="lotHeight"
                       type="number"
-                      step="0.1"
-                      min="0"
                       value={formData.lotHeight}
-                      onChange={(e) => setFormData({ ...formData, lotHeight: parseFloat(e.target.value) || 0 })}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="lotWeight" className="text-xs">Poids (kg)</Label>
-                    <Input
-                      id="lotWeight"
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      value={formData.lotWeight}
-                      onChange={(e) => setFormData({ ...formData, lotWeight: parseFloat(e.target.value) || 0 })}
+                      disabled
+                      className="bg-muted"
                     />
                   </div>
                 </div>
+              </div>
+
+              {/* Poids modifiable manuellement */}
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="lotWeight" className="text-sm font-medium">
+                    Poids volumétrique (kg)
+                  </Label>
+                  <Badge variant="outline" className="text-xs">
+                    Modifiable manuellement
+                  </Badge>
+                </div>
+                <Input
+                  id="lotWeight"
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={formData.lotWeight}
+                  onChange={(e) => setFormData({ ...formData, lotWeight: parseFloat(e.target.value) || 0 })}
+                  disabled={isSaving}
+                  placeholder="Poids en kg"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Le poids volumétrique est calculé automatiquement à partir du carton, mais vous pouvez le modifier si nécessaire.
+                </p>
               </div>
             </CardContent>
           </Card>
@@ -3284,15 +3468,24 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
             <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label htmlFor="packagingPrice">Prix d'emballage (€)</Label>
+                  <div className="flex items-center justify-between mb-1">
+                    <Label htmlFor="packagingPrice">Prix d'emballage (€)</Label>
+                    <Badge variant="secondary" className="text-xs">
+                      Depuis le carton
+                    </Badge>
+                  </div>
                   <Input
                     id="packagingPrice"
                     type="number"
                     step="0.01"
                     min="0"
                     value={formData.packagingPrice}
-                    onChange={(e) => setFormData({ ...formData, packagingPrice: parseFloat(e.target.value) || 0 })}
+                    disabled
+                    className="bg-muted"
                   />
+                  <p className="text-xs text-muted-foreground">
+                    Le prix est défini par le carton sélectionné
+                  </p>
                 </div>
                 <div className="space-y-2">
                   <Label htmlFor="shippingPrice">Prix d'expédition (€)</Label>
@@ -3332,17 +3525,62 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving }: EditQuoteFormProps
                 )}
               </div>
               <Separator />
-              <div className="flex justify-between font-semibold text-base">
-                <span>Total</span>
-                <span>
-                  {(
-                    formData.packagingPrice +
-                    formData.shippingPrice +
-                    (formData.insurance
-                      ? computeInsuranceAmount(formData.lotValue, true, formData.insuranceAmount)
-                      : 0)
-                  ).toFixed(2)}€
-                </span>
+              
+              {/* Affichage du total recalculé */}
+              <div className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <div className="flex items-center gap-2">
+                    <span className="font-semibold text-base">Total du devis</span>
+                    {calculateTotal() !== quote.totalAmount && (
+                      <Badge variant="default" className="text-xs">
+                        Modifié
+                      </Badge>
+                    )}
+                  </div>
+                  <span className="font-bold text-lg text-primary">
+                    {calculateTotal().toFixed(2)}€
+                  </span>
+                </div>
+                
+                {/* Alerte de changement de total */}
+                {calculateTotal() !== quote.totalAmount && (
+                  <div className="p-3 bg-blue-50 dark:bg-blue-950/20 border border-blue-200 dark:border-blue-800 rounded-lg">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle className="w-4 h-4 text-blue-600 dark:text-blue-400 flex-shrink-0 mt-0.5" />
+                      <div className="text-sm space-y-1">
+                        <p className="font-medium text-blue-900 dark:text-blue-100">
+                          Le total a changé
+                        </p>
+                        <div className="text-blue-800 dark:text-blue-200 space-y-0.5">
+                          <p>Ancien total: <span className="line-through">{quote.totalAmount.toFixed(2)}€</span></p>
+                          <p>Nouveau total: <strong>{calculateTotal().toFixed(2)}€</strong></p>
+                          <p className="text-xs mt-2 flex items-center gap-1">
+                            <RefreshCw className="w-3 h-3" />
+                            Les anciens liens de paiement seront invalidés et un nouveau lien sera créé automatiquement
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Détail des composants du total */}
+                <div className="text-xs text-muted-foreground space-y-1 pt-2 border-t">
+                  <div className="flex justify-between">
+                    <span>Emballage:</span>
+                    <span>{formData.packagingPrice.toFixed(2)}€</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>Expédition:</span>
+                    <span>{formData.shippingPrice.toFixed(2)}€</span>
+                  </div>
+                  {formData.insurance && (
+                    <div className="flex justify-between">
+                      <span>Assurance:</span>
+                      <span>{formData.insuranceAmount.toFixed(2)}€</span>
+                    </div>
+                  )}
+                </div>
               </div>
             </CardContent>
           </Card>
