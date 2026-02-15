@@ -23,7 +23,9 @@ front end/server/.stripe_secret_key
 
 # Secrets & Credentials
 firebase-credentials.json
-**/firebase-credentials.json
+firebase-credentials-dev.json
+firebase-credentials-staging.json
+**/firebase-credentials*.json
 *-credentials.json
 
 # Debug files that may contain secrets
