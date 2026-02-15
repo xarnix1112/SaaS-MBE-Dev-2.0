@@ -1,0 +1,77 @@
+# Exemple de règles Firestore pour l'environnement Staging
+
+> Ce fichier montre un exemple de règles de sécurité Firestore. À adapter selon ton schéma de données.
+
+---
+
+## C'est quoi les règles Firestore ?
+
+Les règles Firestore définissent **qui peut lire ou écrire** dans ta base de données.  
+Elles s'exécutent côté Google, avant que la donnée soit lue ou modifiée.
+
+**Pourquoi c'est important :** Sans bonnes règles, quelqu'un pourrait accéder ou modifier des données auxquelles il n'a pas le droit.
+
+---
+
+## Où configurer ces règles ?
+
+1. Va sur [console.firebase.google.com](https://console.firebase.google.com)
+2. Sélectionne ton projet **staging** (ex. saas-mbe-sdv-staging)
+3. Menu de gauche : **Firestore Database**
+4. Onglet **Règles** (Rules)
+5. Tu verras un éditeur avec du code
+6. Remplace le contenu par tes règles (voir exemple ci-dessous)
+7. Clique sur **Publier** (Publish)
+
+---
+
+## Exemple de règles (à adapter)
+
+```javascript
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // Exemple : saasAccounts - lecture/écriture si utilisateur connecté
+    match /saasAccounts/{accountId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Exemple : users - chaque utilisateur peut lire/écrire uniquement son propre document
+    match /users/{userId} {
+      allow read, write: if request.auth != null && request.auth.uid == userId;
+    }
+    
+    // Exemple : quotes - accessible si connecté
+    match /quotes/{quoteId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Exemple : paiements
+    match /paiements/{paiementId} {
+      allow read, write: if request.auth != null;
+    }
+    
+    // Ajoute ici les règles pour tes autres collections...
+  }
+}
+```
+
+---
+
+## Explication des lignes importantes
+
+- **`request.auth != null`** : l'utilisateur doit être connecté (Firebase Auth)
+- **`request.auth.uid == userId`** : l'utilisateur ne peut accéder qu'à son propre document (ex. `/users/abc123` seulement si son uid est `abc123`)
+- **`allow read, write`** : autorise lecture et écriture
+- Tu peux séparer : `allow read: if ...` et `allow write: if ...`
+
+---
+
+## Différence dev / staging / production
+
+- **Dev** : règles souvent plus permissives pour faciliter le développement
+- **Staging** : règles identiques ou très proches de la production (pour tester le vrai comportement)
+- **Production** : règles strictes, proches de celles que tu utiliseras en staging
+
+Adapte ce fichier en fonction de tes collections (noms, structure, conditions d'accès).
