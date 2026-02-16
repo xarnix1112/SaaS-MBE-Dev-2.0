@@ -1,5 +1,5 @@
 import { initializeApp } from "firebase/app";
-import { getFirestore } from "firebase/firestore";
+import { initializeFirestore } from "firebase/firestore";
 import { getAnalytics, isSupported } from "firebase/analytics";
 import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail } from "firebase/auth";
 
@@ -62,8 +62,11 @@ console.info("[firebase] env status", {
 
 const app = initializeApp(firebaseConfig);
 
-// Firestore (principal)
-export const db = getFirestore(app);
+// Firestore (principal) - experimentalForceLongPolling contourne les erreurs "client is offline"
+// sur certains réseaux où WebSocket échoue (proxy, pare-feu, etc.)
+export const db = initializeFirestore(app, {
+  experimentalForceLongPolling: true,
+});
 
 // Auth (anonyme) pour passer les règles Firestore/Storage par défaut
 export const auth = getAuth(app);
