@@ -9311,8 +9311,9 @@ console.log('[AI Proxy] Routes attendues:', expectedRoutes.join(', '));
 // Confirmer que toutes les routes sont définies
 console.log('[AI Proxy] ✅ Toutes les routes sont définies, démarrage du serveur...');
 
-app.listen(PORT, () => {
-  console.log(`[AI Proxy] ✅ Serveur démarré sur http://localhost:${PORT}`);
+const HOST = process.env.HOST || '0.0.0.0'; // 0.0.0.0 requis pour Railway/Docker
+app.listen(PORT, HOST, () => {
+  console.log(`[AI Proxy] ✅ Serveur démarré sur ${HOST}:${PORT}`);
   console.log(`[AI Proxy] Routes disponibles:`);
   console.log(`[AI Proxy]   - GET  http://localhost:${PORT}/api/health`);
   console.log(`[AI Proxy]   - POST http://localhost:${PORT}/api/analyze-auction-sheet`);

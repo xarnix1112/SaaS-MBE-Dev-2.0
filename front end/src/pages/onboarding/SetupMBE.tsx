@@ -112,8 +112,18 @@ export default function SetupMBE() {
       });
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
-        throw new Error(errorData.error || 'Erreur lors de la création du compte MBE');
+        const text = await response.text();
+        let errorMsg = 'Erreur lors de la création du compte MBE';
+        try {
+          const errorData = JSON.parse(text);
+          errorMsg = errorData.error || errorMsg;
+        } catch {
+          // Réponse HTML (404, page d'erreur) = backend inaccessible ou URL incorrecte
+          if (text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<!')) {
+            errorMsg = "Le serveur backend ne répond pas. Vérifiez que VITE_API_BASE_URL pointe vers l'URL de votre backend (Railway) dans les variables Vercel.";
+          }
+        }
+        throw new Error(errorMsg);
       }
 
       const data = await response.json();

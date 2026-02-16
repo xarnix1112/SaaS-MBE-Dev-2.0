@@ -261,7 +261,7 @@ Tu peux utiliser **Railway** (gratuit au début) ou **Render** (gratuit aussi). 
 1. Dans **Settings** (roue dentée), cherche **Root Directory** ou **Build**
 2. Mets **Root Directory** : `front end` (pour que Railway travaille dans le bon dossier)
 3. **Build Command** : `npm run build`
-4. **Start Command** : `node server/index.js`
+4. **Start Command** : `node server/ai-proxy.js` (contient saas-account, cartons, shipping, Stripe — **pas** `index.js` qui est minimal)
 5. **Save**
 
 ---
@@ -332,7 +332,7 @@ Chaque service a son propre jeu de variables, complètement indépendant. Tu ne 
 **Étape 1.** Dans ton projet Railway, clique sur « + New » ou « Add Service »  
 **Étape 2.** Choisis « GitHub Repo » (même dépôt)
 
-**Étape 3.** Configure : Root Directory `front end`, Build `npm run build`, Start `node server/index.js`
+**Étape 3.** Configure : Root Directory `front end`, Build `npm run build`, Start `node server/ai-proxy.js`
 
 **Étape 4.** Settings → Source → branche `staging` (ce service déploie uniquement quand tu push sur staging)
 
@@ -466,6 +466,7 @@ Après déploiement, les règles autorisent notamment :
 | "Variable non définie" | Variable manquante ou mal orthographiée | Vérifier le nom exact (sensible à la casse) |
 | Firebase ne se connecte pas | Mauvais projet (ex. dev au lieu de prod) | Vérifier `FIREBASE_PROJECT_ID` et `VITE_FIREBASE_PROJECT_ID` |
 | "client is offline" / unavailable | Règles Firestore bloquent tout (`if false`) ou APIs non activées | Déployer `firestore.rules` avec `firebase deploy --only firestore:rules` ; activer Cloud Firestore API + Identity Toolkit API |
+| "Erreur inconnue" / réponse HTML au lieu de JSON | Backend inaccessible : Railway utilise `index.js` au lieu de `ai-proxy.js`, ou `VITE_API_BASE_URL` incorrect | Start Command Railway : `node server/ai-proxy.js` ; `VITE_API_BASE_URL` (Vercel) = URL Railway (ex. `https://xxx.up.railway.app`) |
 | Stripe renvoie une erreur en prod | Clé test en production | Utiliser les clés live pour Production |
 | Les changements de variables ne s’appliquent pas | Cache du déploiement | Redéployer (nouveau commit ou "Redeploy" dans Vercel) |
 

@@ -14,6 +14,7 @@
     "stripe:proxy": "node server/stripe-proxy.js",
     "ai:proxy": "node server/ai-proxy.js",
     "serve": "node server/index.js",
+    "serve:api": "node server/ai-proxy.js",
     "start": "npm run build && npm run serve",
     "stripe:check": "node scripts/check-stripe-config.mjs",
     "stripe:init": "node scripts/init-firestore-stripe.mjs",

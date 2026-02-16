@@ -103,18 +103,24 @@ export async function loadCartonPrices(gid?: string, forceReload: boolean = fals
     // Charger les cartons depuis l'API
     const response = await authenticatedFetch('/api/cartons');
     
+    const responseText = await response.text();
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[pricing] Erreur ${response.status} lors du chargement des cartons: ${errorText}`);
-      // En cas d'erreur, retourner le cache si disponible
+      console.error(`[pricing] Erreur ${response.status} lors du chargement des cartons: ${responseText.slice(0, 200)}`);
       if (cartonPricesCache) {
         console.warn('[pricing] Utilisation du cache en cas d\'erreur');
         return cartonPricesCache;
       }
       return prices;
     }
-    
-    const data = await response.json();
+
+    // Détecter réponse HTML (backend inaccessible ou VITE_API_BASE_URL incorrect)
+    if (responseText.trim().toLowerCase().startsWith('<!doctype') || responseText.trim().startsWith('<!')) {
+      console.error('[pricing] Backend inaccessible (réponse HTML). Vérifiez VITE_API_BASE_URL dans Vercel.');
+      if (cartonPricesCache) return cartonPricesCache;
+      return prices;
+    }
+
+    const data = JSON.parse(responseText) as { cartons?: unknown[] };
     const cartons = data.cartons || [];
     
     console.log(`[pricing] ✅ ${cartons.length} carton(s) chargé(s) depuis Firestore`);
@@ -192,18 +198,24 @@ export async function loadShippingRates(gid?: string, forceReload: boolean = fal
     // Charger la grille complète depuis l'API
     const response = await authenticatedFetch('/api/shipping/grid');
     
+    const responseText = await response.text();
     if (!response.ok) {
-      const errorText = await response.text();
-      console.error(`[pricing] Erreur ${response.status} lors du chargement de la grille tarifaire: ${errorText}`);
-      // En cas d'erreur, retourner le cache si disponible
+      console.error(`[pricing] Erreur ${response.status} lors du chargement de la grille tarifaire: ${responseText.slice(0, 200)}`);
       if (shippingRatesCache) {
         console.warn('[pricing] Utilisation du cache en cas d\'erreur');
         return shippingRatesCache;
       }
       return zones;
     }
-    
-    const gridData: ShippingGridData = await response.json();
+
+    // Détecter réponse HTML (backend inaccessible ou VITE_API_BASE_URL incorrect)
+    if (responseText.trim().toLowerCase().startsWith('<!doctype') || responseText.trim().startsWith('<!')) {
+      console.error('[pricing] Backend inaccessible (réponse HTML). Vérifiez VITE_API_BASE_URL dans Vercel.');
+      if (shippingRatesCache) return shippingRatesCache;
+      return zones;
+    }
+
+    const gridData = JSON.parse(responseText) as ShippingGridData;
     console.log(`[pricing] ✅ Grille tarifaire chargée: ${gridData.zones.length} zones, ${gridData.services.length} services, ${gridData.weightBrackets.length} tranches`);
     
     // Trouver le service EXPRESS
