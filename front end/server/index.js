@@ -67,28 +67,40 @@ try {
   const firebaseConfig = {
     projectId: process.env.FIREBASE_PROJECT_ID || "sdv-automation-mbe",
   };
-  
-  // Si on a un fichier de credentials, l'utiliser
+
+  let serviceAccount = null;
+
+  // 1) Fichier firebase-credentials.json
   const credentialsPath = path.join(__dirname, "..", "firebase-credentials.json");
   if (fs.existsSync(credentialsPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+    serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
+  }
+  // 2) Variable FIREBASE_CREDENTIALS_BASE64 (recommandé pour Railway, Render, etc.)
+  else if (process.env.FIREBASE_CREDENTIALS_BASE64) {
+    const decoded = Buffer.from(process.env.FIREBASE_CREDENTIALS_BASE64.trim(), "base64").toString("utf8");
+    serviceAccount = JSON.parse(decoded);
+  }
+
+  if (serviceAccount) {
     initializeApp({
       credential: cert(serviceAccount),
       projectId: firebaseConfig.projectId,
     });
   } else {
-    // Sinon, utiliser Application Default Credentials (pour production)
-    initializeApp({
-      projectId: firebaseConfig.projectId,
-    });
+    initializeApp({ projectId: firebaseConfig.projectId });
   }
-  
+
   firestore = getFirestore();
   console.log("[server] ✅ Firebase Admin initialisé");
 } catch (err) {
   console.warn("[server] ⚠️  Firebase Admin non initialisé:", err.message);
   console.warn("[server] Les webhooks ne pourront pas mettre à jour Firestore");
 }
+
+// Route de santé (pour vérifier le déploiement)
+app.get("/api/health", (req, res) => {
+  res.json({ ok: true, service: "api" });
+});
 
 // Mémoire légère pour suivre les statuts récents (pas persistant)
 const paymentStatus = new Map();
@@ -561,7 +573,8 @@ app.use((req, res, next) => {
 });
 
 const port = process.env.PORT || 8080;
-app.listen(port, () => {
-  console.log(`[server] listening on port ${port}`);
+const host = process.env.HOST || "0.0.0.0"; // 0.0.0.0 requis pour Railway/Docker
+app.listen(port, host, () => {
+  console.log(`[server] listening on ${host}:${port}`);
 });
 
