@@ -6,9 +6,30 @@
 
 import { useState, useEffect } from 'react';
 import { User, onAuthStateChanged } from 'firebase/auth';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, DocumentReference, DocumentSnapshot } from 'firebase/firestore';
 import { auth, db } from '@/lib/firebase';
 import type { SaasAccount, UserDoc } from '@/types/auth';
+
+/** Retry getDoc sur erreur "unavailable" (client offline) avec backoff exponentiel */
+async function getDocWithRetry(
+  ref: DocumentReference,
+  maxRetries = 3
+): Promise<DocumentSnapshot> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await getDoc(ref);
+    } catch (err: any) {
+      lastError = err;
+      const isOffline = err?.code === 'unavailable' || err?.message?.includes('client is offline');
+      if (!isOffline || attempt === maxRetries) throw err;
+      const delay = Math.pow(2, attempt) * 1000; // 1s, 2s, 4s
+      console.warn(`[useAuth] Tentative ${attempt + 1}/${maxRetries + 1} échouée (unavailable), retry dans ${delay}ms`);
+      await new Promise((r) => setTimeout(r, delay));
+    }
+  }
+  throw lastError;
+}
 
 interface AuthState {
   user: User | null;
@@ -48,9 +69,9 @@ export function useAuth() {
           projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
         });
         
-        // Charger le document user
+        // Charger le document user (avec retry sur erreur "unavailable")
         const userDocRef = doc(db, 'users', user.uid);
-        const userDocSnap = await getDoc(userDocRef);
+        const userDocSnap = await getDocWithRetry(userDocRef);
 
         if (!userDocSnap.exists()) {
           // User existe mais pas de document user → utilisateur vient de se connecter mais n'a pas encore complété le setup MBE
@@ -81,9 +102,9 @@ export function useAuth() {
           return;
         }
 
-        // Charger le saasAccount
+        // Charger le saasAccount (avec retry sur erreur "unavailable")
         const saasAccountRef = doc(db, 'saasAccounts', saasAccountId);
-        const saasAccountSnap = await getDoc(saasAccountRef);
+        const saasAccountSnap = await getDocWithRetry(saasAccountRef);
 
         if (!saasAccountSnap.exists()) {
           // saasAccountId existe mais le document n'existe pas → erreur
@@ -117,6 +138,8 @@ export function useAuth() {
         // 1. Les règles Firestore ne sont pas déployées correctement
         // 2. Les restrictions de la clé API Firebase bloquent Cloud Firestore API
         // 3. Le document user n'existe vraiment pas
+        const isUnavailable = error?.code === 'unavailable' || error?.message?.includes('client is offline');
+
         if (error?.code === 'permission-denied') {
           console.error('[useAuth] ⚠️ ERREUR DE PERMISSIONS FIRESTORE');
           console.error('[useAuth] Vérifiez que:');
@@ -124,8 +147,17 @@ export function useAuth() {
           console.error('[useAuth] 2. Les restrictions API incluent "Cloud Firestore API"');
           console.error('[useAuth] 3. Le document users/' + user?.uid + ' existe dans Firestore');
           
-          // Pour l'instant, considérer comme connecté mais setup non terminé
-          // Cela permettra à l'utilisateur d'accéder à /setup-mbe pour créer son compte
+          setAuthState({
+            user,
+            saasAccount: null,
+            userDoc: null,
+            isLoading: false,
+            isSetupComplete: false,
+          });
+        } else if (isUnavailable) {
+          // Firestore injoignable (réseau, proxy, etc.) — garder l'utilisateur connecté
+          // pour qu'il puisse rafraîchir ou accéder à /setup-mbe
+          console.warn('[useAuth] ⚠️ Firestore injoignable après retries. L\'utilisateur reste connecté.');
           setAuthState({
             user,
             saasAccount: null,
@@ -134,7 +166,6 @@ export function useAuth() {
             isSetupComplete: false,
           });
         } else {
-          // Pour les autres erreurs, considérer comme non connecté
           setAuthState({
             user: null,
             saasAccount: null,
