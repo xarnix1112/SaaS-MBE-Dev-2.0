@@ -1,7 +1,6 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { authenticatedFetch } from '@/lib/api';
 import { CartonInfo } from '@/types/quote';
-
-const API_BASE_URL = '/api';
 
 interface Carton {
   id: string;
@@ -22,9 +21,7 @@ export function useCartons() {
   return useQuery<Carton[]>({
     queryKey: ['cartons'],
     queryFn: async () => {
-      const response = await fetch(`${API_BASE_URL}/cartons`, {
-        credentials: 'include',
-      });
+      const response = await authenticatedFetch('/api/cartons');
 
       if (!response.ok) {
         throw new Error('Erreur lors de la récupération des cartons');
@@ -42,12 +39,8 @@ export function useUpdateQuoteCarton() {
 
   return useMutation({
     mutationFn: async ({ quoteId, cartonId }: { quoteId: string; cartonId: string }) => {
-      const response = await fetch(`${API_BASE_URL}/devis/${quoteId}/carton`, {
+      const response = await authenticatedFetch(`/api/devis/${quoteId}/carton`, {
         method: 'PUT',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        credentials: 'include',
         body: JSON.stringify({ cartonId }),
       });
 

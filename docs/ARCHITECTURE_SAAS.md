@@ -126,7 +126,7 @@ Dans ce cas : fais tes modifications, puis `git add .` → `git commit -m "..."`
 2. Clique sur **"Pull requests"**
 3. Clique sur **"New pull request"**
 4. **Base** : `staging`, **Compare** : `feature/ma-nouvelle-fonctionnalite`
-5. Si des différences s'affichent, clique sur **"Create pull request"**
+5. Si des différences s'affichent, clique sur **"Create pull request"** 
 
 ---
 
@@ -154,12 +154,12 @@ Après fusion de la PR dans `staging`, Vercel déploie automatiquement sur stagi
 ### Branche de production
 
 1. Clique sur **"Settings"** (en haut)
-2. Dans le menu de gauche, clique sur **"Git"**
-3. Trouve **"Production Branch"**
-4. Mets **main** dans le champ
-5. Clique sur **"Save"** si le bouton apparaît
+2. Dans le menu de gauche, clique sur **"Environments"** (et non pas "Git")
+3. Trouve le champ **"Production Branch"**
+4. Mets **master** dans le champ (ou `main` si c’est ta branche principale)
+5. Clique sur **"Save"**
 
-Pourquoi : Vercel déploie automatiquement sur ton domaine principal à chaque push sur `main`.
+Pourquoi : Vercel déploie automatiquement sur ton domaine principal à chaque push sur cette branche.
 
 ### Variables d’environnement : où les mettre
 
@@ -171,21 +171,40 @@ Tu verras un tableau avec :
 - **Value** : sa valeur (ex. `saas-mbe-sdv-production`)
 - **Environments** : Production, Preview, Development
 
-**Production** = déploiements depuis `main`  
+**Production** = déploiements depuis `master` (ou ta branche de prod)  
 **Preview** = déploiements depuis `staging` ou `feature/*`  
 **Development** = uniquement en local avec `vercel dev`
 
 ### Ajouter une variable (étape par étape)
 
-1. Clique sur **"Add New"** ou **"Add"**
-2. **Key** : tape par exemple `FIREBASE_PROJECT_ID`
-3. **Value** : tape ta valeur (ex. `saas-mbe-sdv-production`)
-4. Coche **Production** si c’est pour la prod, **Preview** pour staging et features
+**Cas simple** (une seule valeur pour tout, ex. `STRIPE_SECRET_KEY`) :
+1. Clique sur **"Add New"** (ou **"Add"**)
+2. **Key** : le nom de la variable (ex. `FIREBASE_PROJECT_ID`)
+3. **Value** : sa valeur
+4. Coche **Production** et/ou **Preview** selon tes besoins
 5. Clique sur **"Save"**
 
-Pour une même variable (ex. `FIREBASE_PROJECT_ID`), crée **deux entrées** :
-- une pour **Production** avec le projet prod
-- une pour **Preview** avec le projet staging
+---
+
+**Cas Firebase** (tu as 2 projets Firebase différents : prod et staging) :
+
+Dans la fenêtre « Add Environment Variable », la sélection Environnements (Production / Preview / Development) s'applique à **toutes** les variables de la fenêtre. Tu dois donc faire **deux enregistrements séparés**, avec le **même nom** mais des **valeurs différentes** selon l’environnement. Vercel choisira automatiquement la bonne selon que le déploiement soit en Production ou en Preview.
+
+**1ᵉʳ enregistrement – pour la production :** (une seule variable, une seule fenêtre)
+1. Clique sur **"Add New"** (n'utilise pas « + Add Another » dans la fenêtre)
+2. **Key** : `FIREBASE_PROJECT_ID`
+3. **Value** : l’ID de ton projet Firebase **prod** (ex. `saas-mbe-sdv-production`)
+4. Coche **uniquement Production** (décoche Preview et Development)
+5. **Save** puis ferme. Ouvre une **nouvelle** fenêtre pour le staging.
+
+**2ᵉ enregistrement – pour le staging :**
+1. Clique à nouveau sur **"Add New"** (une nouvelle fenêtre)
+2. **Key** : `FIREBASE_PROJECT_ID` (le même nom qu’avant)
+3. **Value** : l’ID de ton projet Firebase **staging** (ex. `saas-mbe-sdv-staging`)
+4. Coche **uniquement Preview** (décoche Production et Development)
+5. **Save**
+
+Résultat : dans le tableau, deux lignes `FIREBASE_PROJECT_ID`, chacune avec son environnement. Vercel injecte la bonne au déploiement.
 
 ### Domaine staging
 
