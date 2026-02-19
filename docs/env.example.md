@@ -467,6 +467,7 @@ Après déploiement, les règles autorisent notamment :
 | Firebase ne se connecte pas | Mauvais projet (ex. dev au lieu de prod) | Vérifier `FIREBASE_PROJECT_ID` et `VITE_FIREBASE_PROJECT_ID` |
 | "client is offline" / unavailable | Règles Firestore bloquent tout (`if false`) ou APIs non activées | Déployer `firestore.rules` avec `firebase deploy --only firestore:rules` ; activer Cloud Firestore API + Identity Toolkit API |
 | "Erreur inconnue" / réponse HTML / "Erreur lors de la création du compte MBE" | `VITE_API_BASE_URL` pointe vers Vercel (staging.mbe-sdv.fr) au lieu de Railway | **Vercel → Settings → Environment Variables** : pour **Preview**, `VITE_API_BASE_URL` = URL Railway staging (ex. `https://xxx.up.railway.app`) — **jamais** l’URL du frontend |
+| 401 "Authentication Required" / Erreur HTML sur `/api/cartons` ou `/api/shipping/grid` | `VITE_API_BASE_URL` sans `https://` (ex. `xxx.up.railway.app`) | Toujours inclure le protocole : `VITE_API_BASE_URL` = `https://focused-light-production.up.railway.app` (le code ajoute `https://` automatiquement si absent, mais mieux vaut le mettre dans Vercel) |
 | Stripe renvoie une erreur en prod | Clé test en production | Utiliser les clés live pour Production |
 | Les changements de variables ne s’appliquent pas | Cache du déploiement | Redéployer (nouveau commit ou "Redeploy" dans Vercel) |
 

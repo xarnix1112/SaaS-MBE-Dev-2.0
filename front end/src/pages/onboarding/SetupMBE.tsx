@@ -8,6 +8,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '@/lib/firebase';
+import { getApiBaseUrl } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -92,8 +93,7 @@ export default function SetupMBE() {
 
     setIsLoading(true);
     try {
-      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
-      const url = `${API_BASE.replace(/\/$/, '')}/api/saas-account/create`;
+      const url = `${getApiBaseUrl()}/api/saas-account/create`;
       const domain = url.match(/^https?:\/\/([^/]+)/)?.[1] || url;
       console.log('[SetupMBE] Appel API:', domain, '(Preview doit utiliser le service Railway STAGING, pas Production)');
       const response = await fetch(url, {
