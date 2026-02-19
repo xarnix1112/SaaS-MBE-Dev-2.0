@@ -92,9 +92,10 @@ export default function SetupMBE() {
 
     setIsLoading(true);
     try {
-      // Appeler l'API backend pour créer le saasAccount
       const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
-      const response = await fetch(`${API_BASE}/api/saas-account/create`, {
+      const url = `${API_BASE.replace(/\/$/, '')}/api/saas-account/create`;
+      console.log('[SetupMBE] Appel API:', url.replace(/(^https?:\/\/[^/]+)/, '$1')); // Log domaine pour debug
+      const response = await fetch(url, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -111,22 +112,29 @@ export default function SetupMBE() {
         }),
       });
 
+      const text = await response.text();
+      const isHtml = text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<!');
+
       if (!response.ok) {
-        const text = await response.text();
         let errorMsg = 'Erreur lors de la création du compte MBE';
-        try {
-          const errorData = JSON.parse(text);
-          errorMsg = errorData.error || errorMsg;
-        } catch {
-          // Réponse HTML (404, page d'erreur) = backend inaccessible ou URL incorrecte
-          if (text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<!')) {
-            errorMsg = "Le serveur backend ne répond pas. Vérifiez que VITE_API_BASE_URL pointe vers l'URL de votre backend (Railway) dans les variables Vercel.";
+        if (isHtml) {
+          errorMsg = "Backend inaccessible (réponse HTML). VITE_API_BASE_URL doit pointer vers l'URL Railway (ex: https://xxx.up.railway.app), pas vers staging.mbe-sdv.fr. Vercel → Settings → Environment Variables → Preview.";
+        } else {
+          try {
+            const errorData = JSON.parse(text);
+            errorMsg = errorData.error || errorMsg;
+          } catch {
+            errorMsg = text.slice(0, 200) || errorMsg;
           }
         }
         throw new Error(errorMsg);
       }
 
-      const data = await response.json();
+      if (isHtml) {
+        throw new Error("Backend inaccessible (réponse HTML au lieu de JSON). Vérifiez VITE_API_BASE_URL dans Vercel → Preview.");
+      }
+
+      const data = JSON.parse(text);
       console.log('[SetupMBE] Compte MBE créé:', data);
 
       toast.success('Configuration terminée avec succès !');
@@ -138,7 +146,10 @@ export default function SetupMBE() {
       });
     } catch (err: any) {
       console.error('[SetupMBE] Erreur:', err);
-      const errorMessage = err.message || 'Erreur lors de la configuration';
+      let errorMessage = err.message || 'Erreur lors de la configuration';
+      if (err.message?.includes('Failed to fetch') || err.name === 'TypeError') {
+        errorMessage = "Impossible de joindre le backend. Vérifiez VITE_API_BASE_URL (URL Railway) dans Vercel et que le backend Railway est démarré.";
+      }
       setError(errorMessage);
       toast.error(errorMessage);
     } finally {

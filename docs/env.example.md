@@ -466,7 +466,7 @@ Après déploiement, les règles autorisent notamment :
 | "Variable non définie" | Variable manquante ou mal orthographiée | Vérifier le nom exact (sensible à la casse) |
 | Firebase ne se connecte pas | Mauvais projet (ex. dev au lieu de prod) | Vérifier `FIREBASE_PROJECT_ID` et `VITE_FIREBASE_PROJECT_ID` |
 | "client is offline" / unavailable | Règles Firestore bloquent tout (`if false`) ou APIs non activées | Déployer `firestore.rules` avec `firebase deploy --only firestore:rules` ; activer Cloud Firestore API + Identity Toolkit API |
-| "Erreur inconnue" / réponse HTML au lieu de JSON | Backend inaccessible : Railway utilise `index.js` au lieu de `ai-proxy.js`, ou `VITE_API_BASE_URL` incorrect | Start Command Railway : `node server/ai-proxy.js` ; `VITE_API_BASE_URL` (Vercel) = URL Railway (ex. `https://xxx.up.railway.app`) |
+| "Erreur inconnue" / réponse HTML / "Erreur lors de la création du compte MBE" | `VITE_API_BASE_URL` pointe vers Vercel (staging.mbe-sdv.fr) au lieu de Railway | **Vercel → Settings → Environment Variables** : pour **Preview**, `VITE_API_BASE_URL` = URL Railway staging (ex. `https://xxx.up.railway.app`) — **jamais** l’URL du frontend |
 | Stripe renvoie une erreur en prod | Clé test en production | Utiliser les clés live pour Production |
 | Les changements de variables ne s’appliquent pas | Cache du déploiement | Redéployer (nouveau commit ou "Redeploy" dans Vercel) |
 
