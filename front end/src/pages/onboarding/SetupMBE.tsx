@@ -94,7 +94,8 @@ export default function SetupMBE() {
     try {
       const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
       const url = `${API_BASE.replace(/\/$/, '')}/api/saas-account/create`;
-      console.log('[SetupMBE] Appel API:', url.replace(/(^https?:\/\/[^/]+)/, '$1')); // Log domaine pour debug
+      const domain = url.match(/^https?:\/\/([^/]+)/)?.[1] || url;
+      console.log('[SetupMBE] Appel API:', domain, '(Preview doit utiliser le service Railway STAGING, pas Production)');
       const response = await fetch(url, {
         method: 'POST',
         headers: {
@@ -115,9 +116,16 @@ export default function SetupMBE() {
       const text = await response.text();
       const isHtml = text.trim().toLowerCase().startsWith('<!doctype') || text.trim().startsWith('<!');
 
+      // Debug: log statut et début de la réponse pour diagnostiquer
+      console.log('[SetupMBE] Réponse:', response.status, '| Début body:', text.slice(0, 150));
+
       if (!response.ok) {
         let errorMsg = 'Erreur lors de la création du compte MBE';
-        if (isHtml) {
+        const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || '';
+        const wrongBackend = projectId.includes('staging') && domain.toLowerCase().includes('production');
+        if (wrongBackend) {
+          errorMsg = "Incohérence : le frontend utilise Firebase Staging mais VITE_API_BASE_URL pointe vers le backend Production. Pour Preview, utilisez l'URL du service Railway STAGING (pas Production).";
+        } else if (isHtml) {
           errorMsg = "Backend inaccessible (réponse HTML). VITE_API_BASE_URL doit pointer vers l'URL Railway (ex: https://xxx.up.railway.app), pas vers staging.mbe-sdv.fr. Vercel → Settings → Environment Variables → Preview.";
         } else {
           try {
