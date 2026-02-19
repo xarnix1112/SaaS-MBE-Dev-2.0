@@ -8570,7 +8570,13 @@ async function requireAuth(req, res, next) {
 
     // Vérifier le token avec Firebase Admin
     const auth = getAuth();
-    const decodedToken = await auth.verifyIdToken(token);
+    let decodedToken;
+    try {
+      decodedToken = await auth.verifyIdToken(token);
+    } catch (verifyErr) {
+      console.error('[requireAuth] verifyIdToken échoué:', verifyErr.code || verifyErr.message, '| detail:', JSON.stringify(verifyErr));
+      return res.status(401).json({ error: verifyErr.message || 'Token invalide ou expiré' });
+    }
     
     req.uid = decodedToken.uid;
     req.user = decodedToken;
@@ -8669,6 +8675,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
     }
 
     // Vérifier l'unicité du numéro MBE
+    console.log('[AI Proxy] Étape 1/5: Vérification unicité MBE...');
     const existingSaasAccounts = await firestore
       .collection('saasAccounts')
       .where('mbeNumber', '==', mbeNumber)
@@ -8679,6 +8686,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
     }
 
     // Vérifier si l'utilisateur a déjà un compte SaaS
+    console.log('[AI Proxy] Étape 2/5: Vérification user existant...');
     const existingUser = await firestore.collection('users').doc(uid).get();
     if (existingUser.exists && existingUser.data().saasAccountId) {
       return res.status(400).json({ error: 'Vous avez déjà un compte SaaS' });
@@ -8705,6 +8713,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       plan: 'free',
     };
 
+    console.log('[AI Proxy] Étape 3/5: Création saasAccount...');
     await saasAccountRef.set(saasAccountData);
     const saasAccountId = saasAccountRef.id;
 
@@ -8716,9 +8725,10 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       createdAt: Timestamp.now(),
     };
 
+    console.log('[AI Proxy] Étape 4/5: Création document user...');
     await firestore.collection('users').doc(uid).set(userData, { merge: true });
 
-    console.log('[AI Proxy] ✅ Compte SaaS créé:', saasAccountId);
+    console.log('[AI Proxy] Étape 5/5: Initialisation grille tarifaire...');
 
     // Initialiser la grille tarifaire d'expédition
     try {
@@ -8736,7 +8746,9 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       message: 'Compte SaaS créé avec succès',
     });
   } catch (error) {
-    console.error('[AI Proxy] ❌ Erreur création compte SaaS:', error);
+    console.error('[AI Proxy] ❌ Erreur création compte SaaS:', error.message);
+    console.error('[AI Proxy] ❌ Détail (code/status):', error.code, error.status, error.details);
+    console.error('[AI Proxy] ❌ Stack:', error.stack);
     return res.status(500).json({ error: error.message || 'Erreur lors de la création du compte' });
   }
 });

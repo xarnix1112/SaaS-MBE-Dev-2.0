@@ -723,6 +723,10 @@ export async function handleGetGrid(req, res, firestore) {
   try {
     const saasAccountId = req.saasAccountId;
 
+    if (!saasAccountId || typeof saasAccountId !== 'string' || saasAccountId.trim() === '') {
+      return res.status(400).json({ error: 'Compte SaaS non configuré' });
+    }
+
     // Récupérer toutes les données en parallèle
     const [zonesSnapshot, servicesSnapshot, bracketsSnapshot, ratesSnapshot, settingsDoc] = await Promise.all([
       firestore.collection("shippingZones").where("saasAccountId", "==", saasAccountId).orderBy("name", "asc").get(),
