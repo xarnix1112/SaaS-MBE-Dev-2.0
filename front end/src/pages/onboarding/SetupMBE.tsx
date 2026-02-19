@@ -121,11 +121,7 @@ export default function SetupMBE() {
 
       if (!response.ok) {
         let errorMsg = 'Erreur lors de la création du compte MBE';
-        const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID || '';
-        const wrongBackend = projectId.includes('staging') && domain.toLowerCase().includes('production');
-        if (wrongBackend) {
-          errorMsg = "Incohérence : le frontend utilise Firebase Staging mais VITE_API_BASE_URL pointe vers le backend Production. Pour Preview, utilisez l'URL du service Railway STAGING (pas Production).";
-        } else if (isHtml) {
+        if (isHtml) {
           errorMsg = "Backend inaccessible (réponse HTML). VITE_API_BASE_URL doit pointer vers l'URL Railway (ex: https://xxx.up.railway.app), pas vers staging.mbe-sdv.fr. Vercel → Settings → Environment Variables → Preview.";
         } else {
           try {
