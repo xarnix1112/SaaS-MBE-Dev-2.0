@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { QuoteTimeline } from '@/components/quotes/QuoteTimeline';
@@ -197,29 +197,40 @@ export default function QuoteDetail() {
 
   const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
   const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
+  const [bordereauPollingTimedOut, setBordereauPollingTimedOut] = useState(false);
+  
+  const triggerBordereauProcess = useCallback(async () => {
+    if (!id) return;
+    try {
+      setBordereauPollingTimedOut(false);
+      setBordereauProcessingTriggered(true);
+      const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, { method: 'POST' });
+      const data = await res.json().catch(() => ({}));
+      if (res.ok && data.success) {
+        if (!data.alreadyProcessed) {
+          toast.info('Analyse du bordereau en cours...', { duration: 5000 });
+          setBordereauPollingActive(true);
+        }
+        queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      } else {
+        setBordereauProcessingTriggered(false);
+        toast.error(data?.error || 'Impossible de lancer l\'analyse du bordereau');
+      }
+    } catch (e) {
+      setBordereauProcessingTriggered(false);
+      console.warn('[QuoteDetail] Échec déclenchement traitement bordereau:', e);
+      toast.error('Connexion à l\'API impossible. Vérifiez votre connexion ou réessayez plus tard.');
+    }
+  }, [id, queryClient]);
+
   useEffect(() => {
     const q = foundQuote || quote;
     if (!id || !q || isLoading || bordereauProcessingTriggered) return;
     const bordereauLink = (q as Quote & { bordereauLink?: string }).bordereauLink;
     if (!bordereauLink || typeof bordereauLink !== 'string') return;
     if (q.auctionSheet?.lots && q.auctionSheet.lots.length > 0) return;
-    const trigger = async () => {
-      try {
-        setBordereauProcessingTriggered(true);
-        const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, { method: 'POST' });
-        const data = await res.json();
-        if (data.success && !data.alreadyProcessed) {
-          toast.info('Analyse du bordereau en cours...', { duration: 5000 });
-          setBordereauPollingActive(true);
-          queryClient.invalidateQueries({ queryKey: ['quotes'] });
-        }
-      } catch (e) {
-        setBordereauProcessingTriggered(false);
-        console.warn('[QuoteDetail] Échec déclenchement traitement bordereau:', e);
-      }
-    };
-    trigger();
-  }, [id, foundQuote?.id, quote?.id, isLoading, bordereauProcessingTriggered, queryClient]);
+    triggerBordereauProcess();
+  }, [id, foundQuote?.id, quote?.id, isLoading, bordereauProcessingTriggered, triggerBordereauProcess]);
 
   // Polling: rafraîchir les données tant que l'analyse OCR est en cours et que les lots ne sont pas remplis
   useEffect(() => {
@@ -227,6 +238,7 @@ export default function QuoteDetail() {
     const q = foundQuote || quote;
     if (q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0) {
       setBordereauPollingActive(false);
+      setBordereauPollingTimedOut(false);
       toast.success('Bordereau analysé avec succès !');
       return;
     }
@@ -236,6 +248,9 @@ export default function QuoteDetail() {
     const timeout = setTimeout(() => {
       clearInterval(interval);
       setBordereauPollingActive(false);
+      setBordereauPollingTimedOut(true);
+      setBordereauProcessingTriggered(false);
+      toast.warning('L\'analyse a pris plus de temps que prévu. Cliquez sur « Relancer l\'analyse » pour réessayer.');
     }, 120000);
     return () => {
       clearInterval(interval);
@@ -1830,6 +1845,25 @@ export default function QuoteDetail() {
                 Les informations du lot, le carton recommandé, les tarifs et le lien de paiement seront mis à jour automatiquement.
               </p>
             </div>
+          </div>
+        )}
+
+        {bordereauPollingTimedOut && (() => {
+          const q = foundQuote || quote;
+          return q && (q as Quote & { bordereauLink?: string }).bordereauLink && !q.auctionSheet?.lots?.length;
+        })() && (
+          <div className="flex items-center gap-3 p-4 mb-6 rounded-lg bg-amber-500/10 border border-amber-500/20">
+            <AlertTriangle className="w-5 h-5 text-amber-600 flex-shrink-0" />
+            <div className="flex-1">
+              <p className="font-medium">L'analyse n'a pas abouti</p>
+              <p className="text-sm text-muted-foreground">
+                Les informations du lot n'ont pas été extraites. L'API peut être temporairement indisponible ou le token Google Sheets expiré. Réessayez ou reconnectez Google Sheets dans Paramètres.
+              </p>
+            </div>
+            <Button variant="outline" size="sm" onClick={() => triggerBordereauProcess()} className="gap-1">
+              <RefreshCw className="w-4 h-4" />
+              Relancer l'analyse
+            </Button>
           </div>
         )}
 

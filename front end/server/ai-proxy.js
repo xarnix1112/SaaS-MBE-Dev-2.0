@@ -252,11 +252,14 @@ app.use((req, res, next) => {
 // Puis appliquer express.json() pour toutes les autres routes
 app.use(express.json());
 
-// CORS pour permettre les requêtes depuis le frontend
+// CORS pour permettre les requêtes depuis le frontend (toujours envoyer, même en erreur)
+const corsHeaders = (res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+};
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  corsHeaders(res);
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -7361,8 +7364,18 @@ async function syncAllGoogleSheets() {
 
       // Double vérification (normalement toujours true grâce au where)
       if (googleSheetsIntegration && googleSheetsIntegration.connected) {
-        await syncSheetForAccount(doc.id, googleSheetsIntegration);
-        syncCount++;
+        try {
+          await syncSheetForAccount(doc.id, googleSheetsIntegration);
+          syncCount++;
+        } catch (accountError) {
+          // invalid_grant = token expiré/révoqué → l'utilisateur doit reconnecter Google Sheets
+          const msg = accountError?.message || String(accountError);
+          if (msg.includes('invalid_grant') || msg.includes('Token has been expired')) {
+            console.warn(`[Google Sheets Sync] ⚠️  Token expiré pour ${doc.id} - Reconnectez Google Sheets dans Paramètres`);
+          } else {
+            console.error(`[Google Sheets Sync] Erreur sync compte ${doc.id}:`, accountError);
+          }
+        }
       }
     }
 
@@ -9256,6 +9269,15 @@ console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
 // FIN ROUTES STRIPE CONNECT
 // ==========================================
 
+// Handler global d'erreurs: garantir CORS même en cas d'erreur 5xx (évite "Origin not allowed" en 503)
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  corsHeaders(res);
+  console.error('[AI Proxy] Erreur non gérée:', err?.message || err);
+  const status = err?.status || err?.statusCode || 500;
+  res.status(status).json({ error: err?.message || 'Erreur interne du serveur' });
+});
+
 // IMPORTANT: Le middleware catch-all DOIT être défini APRÈS toutes les routes
 // Express vérifie les routes spécifiques (app.get, app.post) AVANT les middlewares app.use()
 // Donc le catch-all ne devrait pas intercepter les routes définies avant
@@ -9279,6 +9301,7 @@ if (process.env.SENTRY_DSN) {
 
 // Mais pour être sûr, on le définit juste avant app.listen()
 app.use((req, res) => {
+  corsHeaders(res);
   console.log('[AI Proxy] ❌ Route non trouvée (catch-all):', req.method, req.url);
   res.status(404).json({ error: `Route non trouvée: ${req.method} ${req.url}` });
 });
