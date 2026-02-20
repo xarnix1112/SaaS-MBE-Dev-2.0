@@ -6694,8 +6694,14 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
     if (!bordereauLink || typeof bordereauLink !== 'string') return res.status(400).json({ error: 'Ce devis n\'a pas de lien bordereau (bordereauLink)' });
     if (devis.bordereauId) {
       const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
-      if (bordereauDoc.exists && bordereauDoc.data().ocrStatus === 'completed') {
-        return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true });
+      if (bordereauDoc.exists) {
+        const bData = bordereauDoc.data();
+        if (bData.ocrStatus === 'completed') {
+          return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true });
+        }
+        if (bData.ocrStatus === 'processing') {
+          return res.json({ success: true, message: 'OCR déjà en cours', alreadyProcessed: false });
+        }
       }
     }
     const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink);
@@ -6714,7 +6720,7 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
         description: 'Bordereau traité depuis le lien (Typeform/URL)'
       })
     });
-    triggerOCRForBordereau(bordereauRef.id, req.saasAccountId).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
+    triggerOCRForBordereau(bordereauRef.id, req.saasAccountId, { preDownloadedBuffer: buffer, mimeType: mimeType || 'application/pdf' }).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
     res.json({ success: true, message: 'Bordereau téléchargé et analyse OCR lancée', bordereauId: bordereauRef.id });
   } catch (error) {
     console.error('[API] Erreur traitement bordereau depuis lien:', error);
@@ -7600,16 +7606,22 @@ async function downloadFileFromDrive(drive, fileId) {
 
 /**
  * Déclenche l'OCR pour un bordereau et calcule le devis (Drive ou URL)
+ * @param {string} bordereauId - ID du bordereau
+ * @param {string} saasAccountId - ID du compte SaaS
+ * @param {object} [opts] - Options: { preDownloadedBuffer, mimeType } pour éviter un second téléchargement
  */
-async function triggerOCRForBordereau(bordereauId, saasAccountId) {
+async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
   if (!firestore) return;
   try {
     const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
     if (!bordereauDoc.exists) { console.error('[OCR] Bordereau introuvable:', bordereauId); return; }
     const bordereau = bordereauDoc.data();
     await firestore.collection('bordereaux').doc(bordereauId).update({ ocrStatus: 'processing', updatedAt: Timestamp.now() });
-    let fileBuffer, mimeType = bordereau.mimeType || 'application/pdf';
-    if (bordereau.sourceUrl) {
+    let fileBuffer, mimeType = opts.mimeType || bordereau.mimeType || 'application/pdf';
+    if (opts.preDownloadedBuffer && Buffer.isBuffer(opts.preDownloadedBuffer)) {
+      fileBuffer = opts.preDownloadedBuffer;
+      console.log('[OCR] Utilisation du buffer pré-téléchargé (évite second fetch)');
+    } else if (bordereau.sourceUrl) {
       const d = await downloadFileFromUrl(bordereau.sourceUrl);
       fileBuffer = d.buffer; mimeType = d.mimeType;
     } else if (bordereau.driveFileId) {
@@ -8138,12 +8150,12 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ⚖️ Poids réel: ${totalWeight.toFixed(2)}kg, Poids volumétrique: ${volumetricWeight.toFixed(2)}kg, Poids final: ${finalWeight.toFixed(2)}kg`);
     
     // Si une destination est renseignée, calculer le prix d'expédition
-    if (devis.destination?.country) {
+    // Support: destination.country (legacy) ou delivery.address.country (quote Google Sheets)
+    const destCountry = devis.destination?.country || devis.delivery?.address?.country;
+    if (destCountry) {
       try {
-        // Charger les zones de tarification depuis Firestore (grille tarifaire du compte SaaS)
-        console.log(`[Calcul] 🔍 Recherche de la zone pour ${devis.destination.country} dans la grille tarifaire du compte ${saasAccountId}`);
-        
-        const countryCode = devis.destination.country.toUpperCase();
+        const countryCode = (typeof destCountry === 'string' ? destCountry : String(destCountry)).toUpperCase();
+        console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
         
         // 1. Trouver la zone qui contient ce pays
         const zonesSnapshot = await firestore
@@ -8405,7 +8417,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
               );
               
               // Sauvegarder le paiement dans Firestore
-              const paiementId = await firestore.collection('paiements').add({
+              const paiementRef = await firestore.collection('paiements').add({
                 devisId,
                 stripeSessionId: session.id,
                 stripeAccountId,
@@ -8418,10 +8430,21 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
                 updatedAt: Timestamp.now(),
               });
               
-              console.log(`[Calcul] ✅ Lien de paiement auto-généré: ${session.url} (ID: ${paiementId.id})`);
+              console.log(`[Calcul] ✅ Lien de paiement auto-généré: ${session.url} (ID: ${paiementRef.id})`);
               
-              // Ajouter un événement à la timeline
+              // Mettre à jour paymentLinks du devis (comme stripe-connect)
+              const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+              const existingLinks = devisDoc.exists ? (devisDoc.data().paymentLinks || []) : [];
+              const newPaymentLink = {
+                id: paiementRef.id,
+                url: session.url,
+                amount: totalAmount,
+                createdAt: new Date().toISOString(),
+                status: 'active',
+              };
               await firestore.collection('quotes').doc(devisId).update({
+                paymentLinks: [...existingLinks, newPaymentLink],
+                status: 'awaiting_payment',
                 timeline: FieldValue.arrayUnion({
                   id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                   date: Timestamp.now(),

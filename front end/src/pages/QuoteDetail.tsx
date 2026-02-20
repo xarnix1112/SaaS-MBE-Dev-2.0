@@ -55,6 +55,7 @@ import {
   XCircle,
   RefreshCw,
   CheckCircle2,
+  Loader2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -195,6 +196,7 @@ export default function QuoteDetail() {
   });
 
   const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
+  const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
   useEffect(() => {
     const q = foundQuote || quote;
     if (!id || !q || isLoading || bordereauProcessingTriggered) return;
@@ -208,6 +210,7 @@ export default function QuoteDetail() {
         const data = await res.json();
         if (data.success && !data.alreadyProcessed) {
           toast.info('Analyse du bordereau en cours...', { duration: 5000 });
+          setBordereauPollingActive(true);
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         }
       } catch (e) {
@@ -217,6 +220,28 @@ export default function QuoteDetail() {
     };
     trigger();
   }, [id, foundQuote?.id, quote?.id, isLoading, bordereauProcessingTriggered, queryClient]);
+
+  // Polling: rafraîchir les données tant que l'analyse OCR est en cours et que les lots ne sont pas remplis
+  useEffect(() => {
+    if (!bordereauPollingActive || !id) return;
+    const q = foundQuote || quote;
+    if (q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0) {
+      setBordereauPollingActive(false);
+      toast.success('Bordereau analysé avec succès !');
+      return;
+    }
+    const interval = setInterval(() => {
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+    }, 5000);
+    const timeout = setTimeout(() => {
+      clearInterval(interval);
+      setBordereauPollingActive(false);
+    }, 120000);
+    return () => {
+      clearInterval(interval);
+      clearTimeout(timeout);
+    };
+  }, [bordereauPollingActive, id, foundQuote?.auctionSheet?.lots, quote?.auctionSheet?.lots, queryClient]);
 
   // Test de connectivité au backend au chargement
   useEffect(() => {
@@ -1792,6 +1817,18 @@ export default function QuoteDetail() {
                 <LinkIcon className="w-4 h-4" />
                 Nouveau lien
               </Button>
+            </div>
+          </div>
+        )}
+
+        {bordereauPollingActive && (
+          <div className="flex items-center gap-3 p-4 mb-6 rounded-lg bg-primary/10 border border-primary/20">
+            <Loader2 className="w-5 h-5 text-primary animate-spin flex-shrink-0" />
+            <div className="flex-1">
+              <p className="font-medium">Analyse du bordereau en cours...</p>
+              <p className="text-sm text-muted-foreground">
+                Les informations du lot, le carton recommandé, les tarifs et le lien de paiement seront mis à jour automatiquement.
+              </p>
             </div>
           </div>
         )}
