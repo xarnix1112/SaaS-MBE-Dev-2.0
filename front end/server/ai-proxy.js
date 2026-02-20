@@ -6680,6 +6680,69 @@ app.post('/api/devis/:id/search-bordereau', requireAuth, async (req, res) => {
   }
 });
 
+// Route: Traiter un bordereau depuis son lien (Typeform, Drive, ou URL directe)
+app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const devisId = req.params.id;
+  try {
+    const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const devis = devisDoc.data();
+    if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    const bordereauLink = devis.bordereauLink;
+    if (!bordereauLink || typeof bordereauLink !== 'string') return res.status(400).json({ error: 'Ce devis n\'a pas de lien bordereau (bordereauLink)' });
+    if (devis.bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
+      if (bordereauDoc.exists && bordereauDoc.data().ocrStatus === 'completed') {
+        return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true });
+      }
+    }
+    const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink);
+    const fileName = devis.bordereauFileName || bordereauLink.split('/').pop() || 'bordereau.pdf';
+    const bordereauRef = await firestore.collection('bordereaux').add({
+      saasAccountId: req.saasAccountId, devisId, sourceType: 'url', sourceUrl: bordereauLink,
+      driveFileId: null, driveFileName: fileName, mimeType: mimeType || 'application/pdf',
+      linkedAt: Timestamp.now(), linkedBy: 'url_fetch', linkMethod: 'url', ocrStatus: 'pending',
+      createdAt: Timestamp.now(), updatedAt: Timestamp.now()
+    });
+    await firestore.collection('quotes').doc(devisId).update({
+      bordereauId: bordereauRef.id, status: 'bordereau_linked', updatedAt: Timestamp.now(),
+      timeline: FieldValue.arrayUnion({
+        id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+        date: Timestamp.now(), status: 'bordereau_linked',
+        description: 'Bordereau traité depuis le lien (Typeform/URL)'
+      })
+    });
+    triggerOCRForBordereau(bordereauRef.id, req.saasAccountId).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
+    res.json({ success: true, message: 'Bordereau téléchargé et analyse OCR lancée', bordereauId: bordereauRef.id });
+  } catch (error) {
+    console.error('[API] Erreur traitement bordereau depuis lien:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function downloadFileFromUrl(url) {
+  if (!url || !url.startsWith('http')) throw new Error('URL invalide');
+  let fetchUrl = url;
+  if (url.includes('drive.google.com/file/d/')) {
+    const m = url.match(/\/file\/d\/([^\/]+)/);
+    if (m) fetchUrl = `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  } else if (url.includes('drive.google.com/open?id=')) {
+    const m = url.match(/[?&]id=([^&]+)/);
+    if (m) fetchUrl = `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  }
+  const headers = {};
+  if (fetchUrl.includes('api.typeform.com') && process.env.TYPEFORM_ACCESS_TOKEN) headers['Authorization'] = `Bearer ${process.env.TYPEFORM_ACCESS_TOKEN}`;
+  const response = await fetch(fetchUrl, { headers });
+  if (!response.ok) throw new Error(`Échec téléchargement (${response.status}): ${response.statusText}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  let mimeType = response.headers.get('content-type') || 'application/pdf';
+  if (mimeType.includes(';')) mimeType = mimeType.split(';')[0].trim();
+  if (buffer.length < 100) throw new Error('Fichier téléchargé trop petit ou vide');
+  return { buffer, mimeType };
+}
+
 // Route: Re-calculer un devis à partir de son bordereau existant
 app.post('/api/devis/:id/recalculate', requireAuth, async (req, res) => {
   if (!firestore) {
@@ -7536,72 +7599,37 @@ async function downloadFileFromDrive(drive, fileId) {
 }
 
 /**
- * Déclenche l'OCR pour un bordereau et calcule le devis
+ * Déclenche l'OCR pour un bordereau et calcule le devis (Drive ou URL)
  */
 async function triggerOCRForBordereau(bordereauId, saasAccountId) {
   if (!firestore) return;
-
   try {
-    // 1. Récupérer le bordereau
     const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
-    if (!bordereauDoc.exists) {
-      console.error('[OCR] Bordereau introuvable:', bordereauId);
-      return;
-    }
-
+    if (!bordereauDoc.exists) { console.error('[OCR] Bordereau introuvable:', bordereauId); return; }
     const bordereau = bordereauDoc.data();
-
-    // 2. Mettre à jour le statut OCR
-    await firestore.collection('bordereaux').doc(bordereauId).update({
-      ocrStatus: 'processing',
-      updatedAt: Timestamp.now()
-    });
-
-    // 3. Récupérer les tokens Google Drive
-    const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
-    if (!saasAccountDoc.exists) {
-      throw new Error('Compte SaaS introuvable');
-    }
-
-    const saasAccountData = saasAccountDoc.data();
-    const googleSheetsIntegration = saasAccountData.integrations?.googleSheets;
-
-    if (!googleSheetsIntegration || !googleSheetsIntegration.accessToken) {
-      throw new Error('OAuth Google non configuré');
-    }
-
-    // 4. Créer client Drive
-    let expiryDate = null;
-    if (googleSheetsIntegration.expiresAt) {
-      if (googleSheetsIntegration.expiresAt instanceof Timestamp) {
-        expiryDate = googleSheetsIntegration.expiresAt.toDate().getTime();
-      } else if (googleSheetsIntegration.expiresAt.toDate) {
-        expiryDate = googleSheetsIntegration.expiresAt.toDate().getTime();
-      } else if (googleSheetsIntegration.expiresAt instanceof Date) {
-        expiryDate = googleSheetsIntegration.expiresAt.getTime();
-      } else {
-        expiryDate = new Date(googleSheetsIntegration.expiresAt).getTime();
+    await firestore.collection('bordereaux').doc(bordereauId).update({ ocrStatus: 'processing', updatedAt: Timestamp.now() });
+    let fileBuffer, mimeType = bordereau.mimeType || 'application/pdf';
+    if (bordereau.sourceUrl) {
+      const d = await downloadFileFromUrl(bordereau.sourceUrl);
+      fileBuffer = d.buffer; mimeType = d.mimeType;
+    } else if (bordereau.driveFileId) {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      if (!saasAccountDoc.exists) throw new Error('Compte SaaS introuvable');
+      const gs = saasAccountDoc.data().integrations?.googleSheets;
+      if (!gs || !gs.accessToken) throw new Error('OAuth Google non configuré');
+      let expiryDate = null;
+      if (gs.expiresAt) {
+        if (gs.expiresAt instanceof Timestamp) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt.toDate) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt instanceof Date) expiryDate = gs.expiresAt.getTime();
+        else expiryDate = new Date(gs.expiresAt).getTime();
       }
-    }
-
-    const auth = new google.auth.OAuth2(
-      GOOGLE_SHEETS_CLIENT_ID,
-      GOOGLE_SHEETS_CLIENT_SECRET,
-      GOOGLE_SHEETS_REDIRECT_URI
-    );
-    auth.setCredentials({
-      access_token: googleSheetsIntegration.accessToken,
-      refresh_token: googleSheetsIntegration.refreshToken,
-      expiry_date: expiryDate
-    });
-
-    const drive = google.drive({ version: 'v3', auth });
-
-    // 5. Télécharger le fichier depuis Drive
-    const fileBuffer = await downloadFileFromDrive(drive, bordereau.driveFileId);
-
-    // 6. Lancer l'OCR (fonction existante)
-    const { result: ocrResult } = await extractBordereauFromFile(fileBuffer, bordereau.mimeType);
+      const auth = new google.auth.OAuth2(GOOGLE_SHEETS_CLIENT_ID, GOOGLE_SHEETS_CLIENT_SECRET, GOOGLE_SHEETS_REDIRECT_URI);
+      auth.setCredentials({ access_token: gs.accessToken, refresh_token: gs.refreshToken, expiry_date: expiryDate });
+      const drive = google.drive({ version: 'v3', auth });
+      fileBuffer = await downloadFileFromDrive(drive, bordereau.driveFileId);
+    } else throw new Error('Bordereau sans source (ni sourceUrl ni driveFileId)');
+    const { result: ocrResult } = await extractBordereauFromFile(fileBuffer, mimeType);
 
     // 7. Sauvegarder le résultat OCR
     await firestore.collection('bordereaux').doc(bordereauId).update({
@@ -9271,6 +9299,7 @@ const expectedRoutes = [
   'GET /api/google-drive/status',
   'DELETE /api/google-drive/disconnect',
   'POST /api/devis/:id/search-bordereau',
+  'POST /api/devis/:id/process-bordereau-from-link',
   'POST /api/devis/:id/recalculate',
   'GET /api/email-accounts',
   'DELETE /api/email-accounts/:accountId',

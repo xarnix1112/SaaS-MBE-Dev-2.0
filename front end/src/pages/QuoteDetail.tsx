@@ -194,6 +194,30 @@ export default function QuoteDetail() {
     },
   });
 
+  const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
+  useEffect(() => {
+    const q = foundQuote || quote;
+    if (!id || !q || isLoading || bordereauProcessingTriggered) return;
+    const bordereauLink = (q as Quote & { bordereauLink?: string }).bordereauLink;
+    if (!bordereauLink || typeof bordereauLink !== 'string') return;
+    if (q.auctionSheet?.lots && q.auctionSheet.lots.length > 0) return;
+    const trigger = async () => {
+      try {
+        setBordereauProcessingTriggered(true);
+        const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, { method: 'POST' });
+        const data = await res.json();
+        if (data.success && !data.alreadyProcessed) {
+          toast.info('Analyse du bordereau en cours...', { duration: 5000 });
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+        }
+      } catch (e) {
+        setBordereauProcessingTriggered(false);
+        console.warn('[QuoteDetail] Échec déclenchement traitement bordereau:', e);
+      }
+    };
+    trigger();
+  }, [id, foundQuote?.id, quote?.id, isLoading, bordereauProcessingTriggered, queryClient]);
+
   // Test de connectivité au backend au chargement
   useEffect(() => {
     const testBackendConnection = async () => {
