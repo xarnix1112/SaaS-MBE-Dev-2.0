@@ -207,14 +207,24 @@ export default function QuoteDetail() {
       const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, { method: 'POST' });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
-        if (!data.alreadyProcessed) {
-          toast.info('Analyse du bordereau en cours...', { duration: 5000 });
+        if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0) {
+          // Vraiment déjà traité avec des lots → rafraîchir et ne pas relancer
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+        } else {
+          // OCR en cours ou complété avec 0 lots → lancer le polling
+          if (!data.alreadyProcessed) {
+            toast.info('Analyse du bordereau en cours...', { duration: 5000 });
+          } else {
+            toast.info('Relance de l\'analyse du bordereau...', { duration: 5000 });
+          }
           setBordereauPollingActive(true);
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
         }
-        queryClient.invalidateQueries({ queryKey: ['quotes'] });
       } else {
         setBordereauProcessingTriggered(false);
-        toast.error(data?.error || 'Impossible de lancer l\'analyse du bordereau');
+        const errMsg = data?.error || 'Impossible de lancer l\'analyse du bordereau';
+        console.warn('[QuoteDetail] Erreur process-bordereau-from-link:', errMsg);
+        toast.error(errMsg);
       }
     } catch (e) {
       setBordereauProcessingTriggered(false);
@@ -228,7 +238,12 @@ export default function QuoteDetail() {
     if (!id || !q || isLoading || bordereauProcessingTriggered) return;
     const bordereauLink = (q as Quote & { bordereauLink?: string }).bordereauLink;
     if (!bordereauLink || typeof bordereauLink !== 'string') return;
-    if (q.auctionSheet?.lots && q.auctionSheet.lots.length > 0) return;
+    // Ne pas déclencher si des lots RÉELS sont déjà présents (pas le lot par défaut "Lot détecté")
+    const hasRealLots = q.auctionSheet?.lots && q.auctionSheet.lots.length > 0 &&
+      (q.auctionSheet.lots as Array<{ lotNumber?: string | null; description?: string }>).some(l =>
+        l.lotNumber !== null || (l.description && l.description !== 'Lot détecté' && l.description !== 'Description non disponible')
+      );
+    if (hasRealLots) return;
     triggerBordereauProcess();
   }, [id, foundQuote?.id, quote?.id, isLoading, bordereauProcessingTriggered, triggerBordereauProcess]);
 
@@ -236,7 +251,12 @@ export default function QuoteDetail() {
   useEffect(() => {
     if (!bordereauPollingActive || !id) return;
     const q = foundQuote || quote;
-    if (q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0) {
+    // Considérer comme réussi seulement si au moins un lot a un numéro ou une description réelle (pas le lot par défaut)
+    const hasRealLots = q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0 &&
+      q.auctionSheet.lots.some((l: { lotNumber?: string | null; description?: string }) =>
+        l.lotNumber !== null || (l.description && l.description !== 'Lot détecté' && l.description !== 'Description non disponible')
+      );
+    if (hasRealLots) {
       setBordereauPollingActive(false);
       setBordereauPollingTimedOut(false);
       toast.success('Bordereau analysé avec succès !');

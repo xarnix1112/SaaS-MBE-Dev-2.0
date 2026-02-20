@@ -6700,11 +6700,18 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
       if (bordereauDoc.exists) {
         const bData = bordereauDoc.data();
         if (bData.ocrStatus === 'completed') {
-          return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true });
+          const lotsCount = bData.ocrResult?.lots?.length || 0;
+          if (lotsCount > 0) {
+            // OCR terminé avec des lots → vraiment déjà traité
+            return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true, lotsCount });
+          }
+          // OCR terminé mais 0 lots → on va relancer avec le fallback Groq
+          console.log(`[API] Bordereau ${devis.bordereauId} complété mais 0 lots extraits, relance avec fallback...`);
         }
         if (bData.ocrStatus === 'processing') {
-          return res.json({ success: true, message: 'OCR déjà en cours', alreadyProcessed: false });
+          return res.json({ success: true, message: 'OCR déjà en cours', alreadyProcessed: false, lotsCount: 0 });
         }
+        // Pour 'failed' ou 'completed' avec 0 lots: on crée un nouveau bordereau et on re-tente
       }
     }
     const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink);
@@ -6743,12 +6750,42 @@ async function downloadFileFromUrl(url) {
   }
   const headers = {};
   if (fetchUrl.includes('api.typeform.com') && process.env.TYPEFORM_ACCESS_TOKEN) headers['Authorization'] = `Bearer ${process.env.TYPEFORM_ACCESS_TOKEN}`;
-  const response = await fetch(fetchUrl, { headers });
-  if (!response.ok) throw new Error(`Échec téléchargement (${response.status}): ${response.statusText}`);
+  console.log(`[Download] Téléchargement depuis: ${fetchUrl.substring(0, 100)}...`);
+  const response = await fetch(fetchUrl, { headers, redirect: 'follow' });
+  if (!response.ok) throw new Error(`Échec téléchargement (${response.status}): ${response.statusText} - URL: ${fetchUrl.substring(0, 100)}`);
   const buffer = Buffer.from(await response.arrayBuffer());
-  let mimeType = response.headers.get('content-type') || 'application/pdf';
+  let mimeType = response.headers.get('content-type') || 'application/octet-stream';
   if (mimeType.includes(';')) mimeType = mimeType.split(';')[0].trim();
-  if (buffer.length < 100) throw new Error('Fichier téléchargé trop petit ou vide');
+  if (buffer.length < 100) throw new Error(`Fichier téléchargé trop petit ou vide (${buffer.length} bytes)`);
+
+  // Vérifier la signature (magic bytes) du fichier pour détecter le vrai type
+  const magic = buffer.slice(0, 8).toString('hex');
+  const firstBytes = buffer.slice(0, 5).toString('ascii');
+  console.log(`[Download] Fichier reçu: ${buffer.length} bytes, mimeType: ${mimeType}, magic: ${magic}`);
+
+  // Si le serveur dit que c'est du HTML ou si les magic bytes ne sont pas PDF/image, rejeter
+  if (mimeType.startsWith('text/html') || mimeType.startsWith('application/xhtml')) {
+    throw new Error(`Le fichier téléchargé est du HTML, pas un PDF. URL potentiellement expirée ou authentification requise. (URL: ${fetchUrl.substring(0, 100)})`);
+  }
+
+  // Vérifier les magic bytes PDF (%PDF) ou image (JPEG: ffd8ff, PNG: 89504e47, GIF: 47494638)
+  const isPdf = firstBytes.startsWith('%PDF');
+  const isJpeg = magic.startsWith('ffd8ff');
+  const isPng = magic.startsWith('89504e47');
+  const isGif = magic.startsWith('47494638');
+
+  if (!isPdf && !isJpeg && !isPng && !isGif) {
+    console.error(`[Download] ⚠️ Contenu non reconnu: magic=${magic}, mimeType=${mimeType}, taille=${buffer.length}`);
+    throw new Error(`Format de fichier non reconnu (magic: ${magic}, type: ${mimeType}). Le fichier n'est pas un PDF ou une image valide.`);
+  }
+
+  // Corriger le mimeType si nécessaire selon les magic bytes réels
+  if (isPdf && !mimeType.includes('pdf')) mimeType = 'application/pdf';
+  else if (isJpeg && !mimeType.startsWith('image/')) mimeType = 'image/jpeg';
+  else if (isPng && !mimeType.startsWith('image/')) mimeType = 'image/png';
+  else if (isGif && !mimeType.startsWith('image/')) mimeType = 'image/gif';
+
+  console.log(`[Download] ✅ Fichier validé: ${buffer.length} bytes, type final: ${mimeType}`);
   return { buffer, mimeType };
 }
 
@@ -7602,6 +7639,75 @@ async function linkBordereauToDevis(devisId, bordereauFile, linkMethod, saasAcco
 }
 
 /**
+ * Extraction des lots via Groq LLM (fallback quand Tesseract OCR retourne 0 lots)
+ * Utilise le texte brut OCR pour extraire intelligemment les informations du bordereau
+ */
+async function extractLotsWithGroq(ocrRawText) {
+  if (!process.env.GROQ_API_KEY || !ocrRawText) return {};
+  try {
+    console.log('[OCR Groq] 🤖 Extraction lots via Groq (fallback)...');
+    const truncatedText = ocrRawText.slice(0, 5000);
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'Tu es un expert en analyse de bordereaux de ventes aux enchères françaises (Millon, Sotheby\'s, Christie\'s, Drouot, etc.). Tu extrais les données structurées en JSON strict.'
+          },
+          {
+            role: 'user',
+            content: `Analyse ce texte OCR extrait d\'un bordereau de vente aux enchères et extrait toutes les informations.
+
+Réponds UNIQUEMENT avec du JSON valide (pas de markdown, pas d\'explication), format exact:
+{
+  "lots": [
+    {"numero_lot": "1", "description": "Description complète de l\'objet", "prix_marteau": 150}
+  ],
+  "salle_vente": "Nom de la maison de vente",
+  "date": "YYYY-MM-DD",
+  "numero_bordereau": "numéro",
+  "total": 500
+}
+
+Si une valeur est introuvable, utilise null. Le prix marteau est le prix d\'adjudication hors frais.
+
+Texte OCR du bordereau:
+---
+${truncatedText}
+---`
+          }
+        ],
+        temperature: 0.05,
+        max_tokens: 3000
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Groq API error ${response.status}: ${errText.slice(0, 200)}`);
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) return {};
+    // Extraire le JSON même si entouré de markdown
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return {};
+    const parsed = JSON.parse(jsonMatch[0]);
+    const lotsCount = parsed.lots?.length || 0;
+    console.log(`[OCR Groq] ✅ Groq a extrait: ${lotsCount} lots, salle: ${parsed.salle_vente}, total: ${parsed.total}`);
+    return parsed;
+  } catch (e) {
+    console.warn('[OCR Groq] ❌ Erreur extraction Groq:', e.message);
+    return {};
+  }
+}
+
+/**
  * Télécharge un fichier depuis Google Drive
  */
 async function downloadFileFromDrive(drive, fileId) {
@@ -7654,7 +7760,25 @@ async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
       const drive = google.drive({ version: 'v3', auth });
       fileBuffer = await downloadFileFromDrive(drive, bordereau.driveFileId);
     } else throw new Error('Bordereau sans source (ni sourceUrl ni driveFileId)');
-    const { result: ocrResult } = await extractBordereauFromFile(fileBuffer, mimeType);
+    const { result: ocrResult, ocrRawText } = await extractBordereauFromFile(fileBuffer, mimeType);
+
+    console.log(`[OCR] Résultat extraction Tesseract: ${ocrResult.lots?.length || 0} lots, salle: ${ocrResult.salle_vente}, total: ${ocrResult.total}`);
+
+    // Fallback Groq si l'extraction Tesseract n'a pas trouvé de lots
+    if ((!ocrResult.lots || ocrResult.lots.length === 0) && ocrRawText && process.env.GROQ_API_KEY) {
+      console.log('[OCR] 🤖 Tesseract n\'a pas extrait de lots, tentative avec Groq...');
+      const groqResult = await extractLotsWithGroq(ocrRawText);
+      if (groqResult.lots && groqResult.lots.length > 0) {
+        ocrResult.lots = groqResult.lots;
+        if (!ocrResult.salle_vente && groqResult.salle_vente) ocrResult.salle_vente = groqResult.salle_vente;
+        if (!ocrResult.date && groqResult.date) ocrResult.date = groqResult.date;
+        if (!ocrResult.numero_bordereau && groqResult.numero_bordereau) ocrResult.numero_bordereau = groqResult.numero_bordereau;
+        if (!ocrResult.total && groqResult.total) ocrResult.total = groqResult.total;
+        console.log(`[OCR] ✅ Groq a complété l'extraction: ${ocrResult.lots.length} lots`);
+      } else {
+        console.warn('[OCR] ⚠️ Groq n\'a pas non plus extrait de lots - le PDF est peut-être illisible ou format non standard');
+      }
+    }
 
     // 7. Sauvegarder le résultat OCR
     await firestore.collection('bordereaux').doc(bordereauId).update({
@@ -7666,11 +7790,12 @@ async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
         date: ocrResult.date || null,
         numero_bordereau: ocrResult.numero_bordereau || null
       },
+      ocrRawText: ocrRawText ? ocrRawText.slice(0, 10000) : null,
       ocrCompletedAt: Timestamp.now(),
       updatedAt: Timestamp.now()
     });
 
-    console.log(`[OCR] ✅ OCR terminé pour bordereau ${bordereauId}`);
+    console.log(`[OCR] ✅ OCR terminé pour bordereau ${bordereauId}: ${ocrResult.lots?.length || 0} lots extraits`);
 
     // 8. Déclencher le calcul du devis
     await calculateDevisFromOCR(bordereau.devisId, ocrResult, saasAccountId);
