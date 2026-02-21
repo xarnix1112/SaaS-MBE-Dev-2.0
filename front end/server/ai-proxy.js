@@ -2113,30 +2113,71 @@ async function extractBordereauFromFile(fileBuffer, mimeType) {
     throw new Error("Format non supporté. Utilisez une image (PNG/JPG) ou un PDF.");
   }
 
-  // Champs header depuis page 0 uniquement
-  const first = pages[0];
-  const salle_vente = first ? extractSalleVenteFromHeader(first.lines) : null;
-  const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
+  // Agréger tous les mots (pour extractLotsFromOcrWords - extraction spatiale plus fiable)
+  const allWords = pages.flatMap((p) => (p.words || []));
 
-  // Total: chercher en priorité sur la dernière page (footer)
-  const last = pages[pages.length - 1];
-  const total = last ? extractTotalFromLines(last.lines) : null;
-
-  // Lots: concat lots de toutes les pages (1..n), mais éviter duplications simples
-  const lotsAll = [];
-  for (const p of pages) {
-    const lots = extractLotsFromTable(p.lines);
-    for (const l of lots) lotsAll.push(l);
+  // Lots: cascade d'extraction (priorité extraction bbox > texte brut > table)
+  let lotsAll = [];
+  if (allWords.length > 0) {
+    const fromWords = extractLotsFromOcrWords(allWords);
+    if (fromWords.length > 0) {
+      lotsAll = fromWords.map((l) => ({
+        numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: (l.description || "").trim(),
+        prix_marteau: typeof l.value === "number" ? l.value : null,
+        total: typeof l.value === "number" ? Math.round(l.value * 1.20 * 100) / 100 : null,
+      }));
+      console.log(`[OCR][Bordereau] ${lotsAll.length} lot(s) extraits via extractLotsFromOcrWords (bbox)`);
+    }
   }
-  // dédoublonnage par numero_lot + préfixe description
+  if (lotsAll.length === 0) {
+    const fromText = extractLotsFromOcrText(ocrRawText);
+    if (fromText.length > 0) {
+      lotsAll = fromText.map((l) => ({
+        numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: (l.description || "").trim(),
+        prix_marteau: typeof l.value === "number" ? l.value : null,
+        total: typeof l.value === "number" ? Math.round(l.value * 1.20 * 100) / 100 : null,
+      }));
+      console.log(`[OCR][Bordereau] ${lotsAll.length} lot(s) extraits via extractLotsFromOcrText`);
+    }
+  }
+  if (lotsAll.length === 0) {
+    for (const p of pages) {
+      const tableLots = extractLotsFromTable(p.lines);
+      for (const l of tableLots) lotsAll.push(l);
+    }
+    if (lotsAll.length > 0) console.log(`[OCR][Bordereau] ${lotsAll.length} lot(s) extraits via extractLotsFromTable`);
+  }
+
+  // dédoublonnage et ajout de total (prix+frais ~20%) si manquant
   const seen = new Set();
   const lots = [];
   for (const l of lotsAll) {
-    const key = `${l.numero_lot}::${l.description.slice(0, 30)}`;
+    const desc = (l.description || "").slice(0, 30);
+    const key = `${l.numero_lot}::${desc}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    lots.push(l);
+    const prix = l.prix_marteau != null ? l.prix_marteau : 0;
+    const totalVal = l.total != null ? l.total : (prix > 0 ? Math.round(prix * 1.20 * 100) / 100 : null);
+    lots.push({ ...l, total: totalVal });
   }
+
+  console.log(`[OCR][Bordereau] Résultat: ${lots.length} lot(s), salle: ${salle_vente || 'non détectée'}, total: ${total !== null ? total : 'non détecté'}`);
+
+  // Champs header: cascade extraction salle des ventes
+  const first = pages[0];
+  const salle_vente = (allWords.length > 0 ? extractAuctionHouseFromOcrWords(allWords) : null) ||
+    extractAuctionHouseFromOcrText(ocrRawText) ||
+    (first ? extractSalleVenteFromHeader(first.lines) : null);
+  const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
+
+  // Total: priorité footer (lines), fallback extraction depuis texte brut
+  const last = pages[pages.length - 1];
+  const totalFromLines = last ? extractTotalFromLines(last.lines) : null;
+  const totalFromText = extractInvoiceTotalFromOcrText(ocrRawText);
+  const total = (typeof totalFromLines === 'number' && totalFromLines > 0 ? totalFromLines : null) ??
+    (typeof totalFromText?.value === 'number' && totalFromText.value > 0 ? totalFromText.value : null);
 
   const result = {
     salle_vente: salle_vente || null,
@@ -8398,10 +8439,14 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         cartonInfo = {
           id: optimalCarton.id,
           ref: optimalCarton.carton_ref,
+          label: optimalCarton.carton_ref,
           inner_length: optimalCarton.inner_length,
           inner_width: optimalCarton.inner_width,
           inner_height: optimalCarton.inner_height,
-          price: optimalCarton.packaging_price
+          inner: { length: optimalCarton.inner_length, width: optimalCarton.inner_width, height: optimalCarton.inner_height },
+          required: { length: optimalCarton.inner_length, width: optimalCarton.inner_width, height: optimalCarton.inner_height },
+          price: optimalCarton.packaging_price,
+          priceTTC: optimalCarton.packaging_price
         };
         cartonsInfo = [cartonInfo];
         packagingStrategy = 'single_carton';
@@ -8420,13 +8465,18 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
       
       // Pour compatibilité, utiliser le premier carton comme cartonInfo principal
       if (cartonsInfo.length > 0) {
+        const c0 = cartonsInfo[0];
         cartonInfo = {
-          id: cartonsInfo[0].id,
-          ref: cartonsInfo[0].carton_ref,
-          inner_length: cartonsInfo[0].inner_length,
-          inner_width: cartonsInfo[0].inner_width,
-          inner_height: cartonsInfo[0].inner_height,
-          price: cartonsInfo[0].packaging_price
+          id: c0.id,
+          ref: c0.carton_ref,
+          label: c0.carton_ref,
+          inner_length: c0.inner_length,
+          inner_width: c0.inner_width,
+          inner_height: c0.inner_height,
+          inner: { length: c0.inner_length, width: c0.inner_width, height: c0.inner_height },
+          required: { length: c0.inner_length, width: c0.inner_width, height: c0.inner_height },
+          price: c0.packaging_price,
+          priceTTC: c0.packaging_price
         };
       }
       
@@ -8599,6 +8649,8 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         bordereauNumber: ocrResult.numero_bordereau || null,
         date: ocrResult.date || null,
         totalValue: ocrResult.total || 0,
+        totalLots: mappedLots.length,
+        totalObjects: mappedLots.length, // Par défaut 1 objet par lot, à affiner si besoin
         lots: mappedLots,
         // Ajouter le carton recommandé si trouvé
         recommendedCarton: cartonInfo || null,
