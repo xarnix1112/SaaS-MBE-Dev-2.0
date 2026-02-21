@@ -269,7 +269,6 @@ export default function QuoteDetail() {
       clearInterval(interval);
       setBordereauPollingActive(false);
       setBordereauPollingTimedOut(true);
-      setBordereauProcessingTriggered(false);
       toast.warning('L\'analyse a pris plus de temps que prévu. Cliquez sur « Relancer l\'analyse » pour réessayer.');
     }, 120000);
     return () => {
@@ -2723,6 +2722,7 @@ export default function QuoteDetail() {
             }}
             existingAnalysis={auctionSheetAnalysis || undefined}
             fileName={safeQuote.auctionSheet?.fileName || (safeQuote.auctionSheet ? 'Bordereau attaché' : undefined)}
+            bordereauFileName={(safeQuote as { bordereauFileName?: string }).bordereauFileName}
             bordereauId={safeQuote.bordereauId}
           />
         </DialogContent>

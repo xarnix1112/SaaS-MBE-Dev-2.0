@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
@@ -63,6 +63,15 @@ export default function Settings() {
   const [availableFolders, setAvailableFolders] = useState<GoogleDriveFolder[]>([]);
   const [isLoadingFoldersList, setIsLoadingFoldersList] = useState(false);
   const [showFolderSelector, setShowFolderSelector] = useState(false);
+  
+  // État Typeform
+  interface TypeformStatus {
+    connected: boolean;
+    connectedAt: string | null;
+  }
+  const [typeformStatus, setTypeformStatus] = useState<TypeformStatus | null>(null);
+  const [isLoadingTypeform, setIsLoadingTypeform] = useState(false);
+  const [settingsTab, setSettingsTab] = useState('emails');
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -179,8 +188,12 @@ export default function Settings() {
         // OAuth réussi, mais pas de sheet sélectionné - afficher le sélecteur
         toast.success('Autorisation Google réussie. Sélectionnez un Google Sheet.');
         setShowSheetSelector(true);
-        // Charger le statut qui va déclencher le chargement des sheets
         loadGoogleSheetsStatus();
+        window.history.replaceState({}, '', '/settings');
+      } else if (oauthSuccess === 'true' && source === 'typeform') {
+        toast.success('Compte Typeform connecté avec succès');
+        setSettingsTab('typeform');
+        loadTypeformStatus();
         window.history.replaceState({}, '', '/settings');
       } else if (error) {
         const errorMessage = decodeURIComponent(error);
@@ -243,6 +256,7 @@ export default function Settings() {
     loadStripeStatus();
     loadGoogleSheetsStatus();
     loadGoogleDriveStatus();
+    loadTypeformStatus();
   }, []);
 
   const handleConnectGmail = async () => {
@@ -519,6 +533,61 @@ export default function Settings() {
     }
   };
 
+  // Charger le statut Typeform
+  const loadTypeformStatus = async () => {
+    try {
+      setIsLoadingTypeform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/typeform/status');
+      if (!response.ok) {
+        setTypeformStatus({ connected: false, connectedAt: null });
+        return;
+      }
+      const status = await response.json();
+      setTypeformStatus(status);
+    } catch {
+      setTypeformStatus({ connected: false, connectedAt: null });
+    } finally {
+      setIsLoadingTypeform(false);
+    }
+  };
+
+  const handleConnectTypeform = async () => {
+    try {
+      setIsLoadingTypeform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/auth/typeform/start', { method: 'GET' });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la connexion Typeform');
+      }
+      const data = await response.json();
+      if (data.url) {
+        window.location.href = data.url;
+      } else {
+        throw new Error('URL de redirection non trouvée');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur connexion Typeform');
+      setIsLoadingTypeform(false);
+    }
+  };
+
+  const handleDisconnectTypeform = async () => {
+    try {
+      setIsLoadingTypeform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/typeform/disconnect', { method: 'DELETE' });
+      if (!response.ok) throw new Error('Erreur déconnexion');
+      toast.success('Typeform déconnecté');
+      await loadTypeformStatus();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur déconnexion');
+    } finally {
+      setIsLoadingTypeform(false);
+    }
+  };
+
   // Limiter à 1 seul compte (le premier actif)
   const activeAccount = emailAccounts.find(acc => acc.isActive) || emailAccounts[0];
 
@@ -548,11 +617,15 @@ export default function Settings() {
           </p>
         </div>
 
-        <Tabs defaultValue="emails" className="space-y-6">
+        <Tabs value={settingsTab} onValueChange={setSettingsTab} className="space-y-6">
           <TabsList>
             <TabsTrigger value="emails">Comptes Email</TabsTrigger>
             <TabsTrigger value="google-sheets">Google Sheets</TabsTrigger>
             <TabsTrigger value="google-drive">Google Drive</TabsTrigger>
+            <TabsTrigger value="typeform" className="gap-2">
+              <FormInput className="w-4 h-4" />
+              Typeform
+            </TabsTrigger>
             <TabsTrigger value="cartons">
               <Package className="w-4 h-4 mr-2" />
               Cartons
@@ -958,6 +1031,124 @@ export default function Settings() {
                         </div>
                       </>
                     )}
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="typeform" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <FormInput className="w-5 h-5" />
+                  Connexion Typeform
+                </CardTitle>
+                <CardDescription>
+                  Connectez votre compte Typeform pour télécharger les bordereaux depuis vos formulaires (liens dans les réponses Typeform / Google Sheets)
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {isLoadingTypeform ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
+                    Chargement...
+                  </div>
+                ) : typeformStatus?.connected ? (
+                  <>
+                    <div className="flex items-center justify-between mb-4">
+                      <div className="flex-1">
+                        <p className="text-sm text-muted-foreground mb-2">
+                          Compte Typeform connecté
+                        </p>
+                      </div>
+                      <Button
+                        onClick={handleConnectTypeform}
+                        variant="outline"
+                        className="gap-2"
+                        disabled={isLoadingTypeform}
+                      >
+                        <FormInput className="w-4 h-4" />
+                        Changer de compte
+                      </Button>
+                    </div>
+                    <Card className="p-4">
+                      <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-3 flex-1">
+                          <CheckCircle2 className="w-5 h-5 text-success flex-shrink-0" />
+                          <div>
+                            <div className="flex items-center gap-2 mb-1">
+                              <span className="font-medium">Typeform</span>
+                              <Badge variant="default" className="gap-1">
+                                <CheckCircle2 className="w-3 h-3" />
+                                Connecté
+                              </Badge>
+                            </div>
+                            {typeformStatus.connectedAt && (
+                              <p className="text-sm text-muted-foreground">
+                                Connecté le {new Date(typeformStatus.connectedAt).toLocaleDateString('fr-FR', {
+                                  year: 'numeric',
+                                  month: 'long',
+                                  day: 'numeric'
+                                })}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={loadTypeformStatus}
+                            className="gap-2"
+                            disabled={isLoadingTypeform}
+                          >
+                            <RefreshCw className="w-4 h-4" />
+                            Actualiser
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            onClick={handleDisconnectTypeform}
+                            className="gap-2 text-destructive hover:text-destructive"
+                            disabled={isLoadingTypeform}
+                          >
+                            <LogOut className="w-4 h-4" />
+                            Déconnecter
+                          </Button>
+                        </div>
+                      </div>
+                    </Card>
+                    <p className="text-sm text-muted-foreground">
+                      Les bordereaux PDF des réponses Typeform seront téléchargés automatiquement lors de l'analyse des devis.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      onClick={handleConnectTypeform}
+                      className="gap-2"
+                      disabled={isLoadingTypeform}
+                    >
+                      {isLoadingTypeform ? (
+                        <>
+                          <Loader2 className="w-4 h-4 animate-spin" />
+                          Connexion en cours...
+                        </>
+                      ) : (
+                        <>
+                          <FormInput className="w-4 h-4" />
+                          Connecter Typeform
+                        </>
+                      )}
+                    </Button>
+                    <div className="text-center py-8 text-muted-foreground">
+                      <FormInput className="w-12 h-12 mx-auto mb-4 opacity-50" />
+                      <p>Aucun compte Typeform connecté</p>
+                      <p className="text-sm mt-2">
+                        Connectez votre compte Typeform pour télécharger les bordereaux PDF depuis les liens de vos formulaires. Chaque client SaaS connecte son propre compte.
+                      </p>
+                    </div>
                   </>
                 )}
               </CardContent>

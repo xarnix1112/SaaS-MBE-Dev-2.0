@@ -5194,6 +5194,16 @@ if (GOOGLE_SHEETS_CLIENT_ID && GOOGLE_SHEETS_CLIENT_SECRET) {
   console.warn('[Google Sheets OAuth] ⚠️  GOOGLE_SHEETS_CLIENT_ID ou GOOGLE_SHEETS_CLIENT_SECRET manquant');
 }
 
+// Typeform OAuth (pour télécharger les bordereaux depuis les réponses Typeform)
+const TYPEFORM_CLIENT_ID = process.env.TYPEFORM_CLIENT_ID;
+const TYPEFORM_CLIENT_SECRET = process.env.TYPEFORM_CLIENT_SECRET;
+const TYPEFORM_REDIRECT_URI = process.env.TYPEFORM_REDIRECT_URI || `http://localhost:5174/auth/typeform/callback`;
+if (TYPEFORM_CLIENT_ID && TYPEFORM_CLIENT_SECRET) {
+  console.log('[Typeform OAuth] ✅ Client initialisé');
+} else {
+  console.warn('[Typeform OAuth] ⚠️  TYPEFORM_CLIENT_ID ou TYPEFORM_CLIENT_SECRET manquant - connexion Typeform indisponible');
+}
+
 // Route: Démarrer le flux OAuth Gmail
 // Nécessite authentification pour récupérer saasAccountId
 app.get('/auth/gmail/start', requireAuth, (req, res) => {
@@ -5830,6 +5840,116 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
   } catch (error) {
     console.error('[Google Sheets OAuth] ❌ Erreur lors du callback:', error);
     res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=google-sheets`);
+  }
+});
+
+// ==========================================
+// ROUTES OAUTH TYPEFORM (bordereaux depuis réponses Typeform)
+// ==========================================
+
+// Route: Démarrer le flux OAuth Typeform
+app.get('/auth/typeform/start', requireAuth, (req, res) => {
+  if (!TYPEFORM_CLIENT_ID || !TYPEFORM_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'Typeform OAuth non configuré. Vérifiez TYPEFORM_CLIENT_ID et TYPEFORM_CLIENT_SECRET.' });
+  }
+  if (!req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré.' });
+  }
+  const scopes = ['responses:read', 'offline'];
+  const params = new URLSearchParams({
+    client_id: TYPEFORM_CLIENT_ID,
+    redirect_uri: TYPEFORM_REDIRECT_URI,
+    scope: scopes.join(' '),
+    state: req.saasAccountId
+  });
+  const url = `https://api.typeform.com/oauth/authorize?${params.toString()}`;
+  console.log('[Typeform OAuth] URL générée pour saasAccountId:', req.saasAccountId);
+  res.json({ url });
+});
+
+// Route: Callback OAuth Typeform
+app.get('/auth/typeform/callback', async (req, res) => {
+  if (!firestore || !TYPEFORM_CLIENT_ID || !TYPEFORM_CLIENT_SECRET) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=typeform_not_configured&source=typeform`);
+  }
+  const { code, state: saasAccountId } = req.query;
+  if (!code) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_code&source=typeform`);
+  }
+  if (!saasAccountId) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_saas_account_id&source=typeform`);
+  }
+  try {
+    const tokenRes = await fetch('https://api.typeform.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: TYPEFORM_CLIENT_ID,
+        client_secret: TYPEFORM_CLIENT_SECRET,
+        redirect_uri: TYPEFORM_REDIRECT_URI
+      }).toString()
+    });
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      console.error('[Typeform OAuth] Erreur token:', tokenRes.status, errText);
+      throw new Error(`Typeform token exchange failed: ${tokenRes.status}`);
+    }
+    const tokens = await tokenRes.json();
+    const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasAccountDoc = await saasAccountRef.get();
+    if (!saasAccountDoc.exists) {
+      return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=typeform`);
+    }
+    await saasAccountRef.update({
+      'integrations.typeform': {
+        connected: true,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || null,
+        expiresAt: tokens.expires_in ? Timestamp.fromMillis(Date.now() + tokens.expires_in * 1000) : null,
+        connectedAt: Timestamp.now()
+      }
+    });
+    console.log('[Typeform OAuth] ✅ Compte Typeform connecté pour saasAccountId:', saasAccountId);
+    res.redirect(`${FRONTEND_URL}/settings?oauth_success=true&source=typeform`);
+  } catch (error) {
+    console.error('[Typeform OAuth] ❌ Erreur callback:', error);
+    res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=typeform`);
+  }
+});
+
+// Route: Statut connexion Typeform
+app.get('/api/typeform/status', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ connected: false });
+    const typeform = saasDoc.data()?.integrations?.typeform;
+    res.json({
+      connected: !!(typeform?.connected && typeform?.accessToken),
+      connectedAt: typeform?.connectedAt?.toDate?.()?.toISOString?.() || null
+    });
+  } catch (e) {
+    console.error('[Typeform] Erreur status:', e);
+    res.status(500).json({ connected: false });
+  }
+});
+
+// Route: Déconnecter Typeform
+app.delete('/api/typeform/disconnect', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  try {
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).update({
+      'integrations.typeform': FieldValue.delete()
+    });
+    console.log('[Typeform] Déconnecté pour saasAccountId:', req.saasAccountId);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[Typeform] Erreur déconnexion:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -6701,20 +6821,14 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
         const bData = bordereauDoc.data();
         if (bData.ocrStatus === 'completed') {
           const lotsCount = bData.ocrResult?.lots?.length || 0;
-          if (lotsCount > 0) {
-            // OCR terminé avec des lots → vraiment déjà traité
-            return res.json({ success: true, message: 'Bordereau déjà traité', alreadyProcessed: true, lotsCount });
-          }
-          // OCR terminé mais 0 lots → on va relancer avec le fallback Groq
-          console.log(`[API] Bordereau ${devis.bordereauId} complété mais 0 lots extraits, relance avec fallback...`);
+          return res.json({ success: true, message: lotsCount > 0 ? 'Bordereau déjà traité' : 'Bordereau traité (0 lot extrait)', alreadyProcessed: true, lotsCount });
         }
         if (bData.ocrStatus === 'processing') {
           return res.json({ success: true, message: 'OCR déjà en cours', alreadyProcessed: false, lotsCount: 0 });
         }
-        // Pour 'failed' ou 'completed' avec 0 lots: on crée un nouveau bordereau et on re-tente
       }
     }
-    const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink);
+    const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink, req.saasAccountId);
     const fileName = devis.bordereauFileName || bordereauLink.split('/').pop() || 'bordereau.pdf';
     const bordereauRef = await firestore.collection('bordereaux').add({
       saasAccountId: req.saasAccountId, devisId, sourceType: 'url', sourceUrl: bordereauLink,
@@ -6738,7 +6852,7 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
   }
 });
 
-async function downloadFileFromUrl(url) {
+async function downloadFileFromUrl(url, saasAccountId) {
   if (!url || !url.startsWith('http')) throw new Error('URL invalide');
   let fetchUrl = url;
   if (url.includes('drive.google.com/file/d/')) {
@@ -6749,7 +6863,22 @@ async function downloadFileFromUrl(url) {
     if (m) fetchUrl = `https://drive.google.com/uc?export=download&id=${m[1]}`;
   }
   const headers = {};
-  if (fetchUrl.includes('api.typeform.com') && process.env.TYPEFORM_ACCESS_TOKEN) headers['Authorization'] = `Bearer ${process.env.TYPEFORM_ACCESS_TOKEN}`;
+  if (fetchUrl.includes('api.typeform.com')) {
+    let typeformToken = null;
+    if (saasAccountId && firestore) {
+      const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      const typeform = saasDoc.exists ? saasDoc.data()?.integrations?.typeform : null;
+      typeformToken = typeform?.accessToken || null;
+    }
+    if (!typeformToken && process.env.TYPEFORM_ACCESS_TOKEN) {
+      typeformToken = process.env.TYPEFORM_ACCESS_TOKEN;
+    }
+    if (typeformToken) {
+      headers['Authorization'] = `Bearer ${typeformToken}`;
+    } else {
+      throw new Error('Connectez votre compte Typeform dans Paramètres → Intégrations pour télécharger les bordereaux.');
+    }
+  }
   console.log(`[Download] Téléchargement depuis: ${fetchUrl.substring(0, 100)}...`);
   const response = await fetch(fetchUrl, { headers, redirect: 'follow' });
   if (!response.ok) throw new Error(`Échec téléchargement (${response.status}): ${response.statusText} - URL: ${fetchUrl.substring(0, 100)}`);
@@ -6763,12 +6892,13 @@ async function downloadFileFromUrl(url) {
   const firstBytes = buffer.slice(0, 5).toString('ascii');
   console.log(`[Download] Fichier reçu: ${buffer.length} bytes, mimeType: ${mimeType}, magic: ${magic}`);
 
-  // Si le serveur dit que c'est du HTML ou si les magic bytes ne sont pas PDF/image, rejeter
   if (mimeType.startsWith('text/html') || mimeType.startsWith('application/xhtml')) {
-    throw new Error(`Le fichier téléchargé est du HTML, pas un PDF. URL potentiellement expirée ou authentification requise. (URL: ${fetchUrl.substring(0, 100)})`);
+    const hint = fetchUrl.includes('api.typeform.com')
+      ? ' Connectez votre compte Typeform dans Paramètres → Intégrations si ce n\'est pas déjà fait.'
+      : ' URL potentiellement expirée ou authentification requise.';
+    throw new Error(`Le fichier téléchargé est du HTML, pas un PDF.${hint}`);
   }
 
-  // Vérifier les magic bytes PDF (%PDF) ou image (JPEG: ffd8ff, PNG: 89504e47, GIF: 47494638)
   const isPdf = firstBytes.startsWith('%PDF');
   const isJpeg = magic.startsWith('ffd8ff');
   const isPng = magic.startsWith('89504e47');
@@ -6776,7 +6906,10 @@ async function downloadFileFromUrl(url) {
 
   if (!isPdf && !isJpeg && !isPng && !isGif) {
     console.error(`[Download] ⚠️ Contenu non reconnu: magic=${magic}, mimeType=${mimeType}, taille=${buffer.length}`);
-    throw new Error(`Format de fichier non reconnu (magic: ${magic}, type: ${mimeType}). Le fichier n'est pas un PDF ou une image valide.`);
+    const hint = fetchUrl.includes('api.typeform.com')
+      ? ' Connectez votre compte Typeform dans Paramètres → Intégrations pour télécharger les bordereaux.'
+      : '';
+    throw new Error(`Format de fichier non reconnu. Le fichier n'est pas un PDF ou une image valide.${hint}`);
   }
 
   // Corriger le mimeType si nécessaire selon les magic bytes réels
@@ -7741,7 +7874,7 @@ async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
       fileBuffer = opts.preDownloadedBuffer;
       console.log('[OCR] Utilisation du buffer pré-téléchargé (évite second fetch)');
     } else if (bordereau.sourceUrl) {
-      const d = await downloadFileFromUrl(bordereau.sourceUrl);
+      const d = await downloadFileFromUrl(bordereau.sourceUrl, saasAccountId);
       fileBuffer = d.buffer; mimeType = d.mimeType;
     } else if (bordereau.driveFileId) {
       const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
@@ -9460,6 +9593,10 @@ const expectedRoutes = [
   'GET /auth/gmail/callback',
   'GET /auth/google-sheets/start',
   'GET /auth/google-sheets/callback',
+  'GET /auth/typeform/start',
+  'GET /auth/typeform/callback',
+  'GET /api/typeform/status',
+  'DELETE /api/typeform/disconnect',
   'GET /api/google-sheets/status',
   'GET /api/google-sheets/list',
   'POST /api/google-sheets/select',

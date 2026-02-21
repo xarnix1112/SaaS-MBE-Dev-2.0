@@ -23,6 +23,7 @@ interface AttachAuctionSheetProps {
   onAnalysisComplete: (analysis: AuctionSheetAnalysis, file?: File | null) => void;
   existingAnalysis?: AuctionSheetAnalysis;
   fileName?: string;
+  bordereauFileName?: string; // Nom court du fichier (évite d'afficher l'URL Typeform brute)
   bordereauId?: string; // ID du bordereau dans Firestore
 }
 
@@ -30,6 +31,7 @@ export function AttachAuctionSheet({
   onAnalysisComplete,
   existingAnalysis,
   fileName,
+  bordereauFileName,
   bordereauId
 }: AttachAuctionSheetProps) {
   const [file, setFile] = useState<File | null>(null);
@@ -138,16 +140,23 @@ export function AttachAuctionSheet({
     }, null);
   };
 
-  // Afficher le bordereau si:
-  // 1. Un bordereauId existe (bordereau dans Firestore)
-  // 2. OU si une analyse existe avec des lots
+  const effectiveAnalysis = analysis || existingAnalysis;
+  const hasZeroLots = effectiveAnalysis && (effectiveAnalysis.totalLots ?? 0) === 0;
+  const displayFileName = (bordereauFileName || file?.name || fileName || '').trim();
+  const isUrlLike = displayFileName.startsWith('http://') || displayFileName.startsWith('https://');
+  const safeDisplayName = isUrlLike ? (bordereauFileName || 'Bordereau attaché') : displayFileName || 'Bordereau attaché';
+
   if (hasBordereau || (analysis && analysis.totalLots > 0)) {
+    const isWarningState = hasBordereau && hasZeroLots;
     return (
-      <Card className="border-success/20 bg-success/5 overflow-hidden">
+      <Card className={cn(
+        'overflow-hidden',
+        isWarningState ? 'border-amber-500/30 bg-amber-500/5' : 'border-success/20 bg-success/5'
+      )}>
         <CardHeader className="pb-3">
           <div className="flex items-center justify-between">
             <CardTitle className="text-base flex items-center gap-2">
-              <FileCheck className="w-4 h-4 text-success" />
+              <FileCheck className={cn('w-4 h-4', isWarningState ? 'text-amber-600' : 'text-success')} />
               Bordereau d'adjudication attaché
             </CardTitle>
             {/* Ne pas afficher le bouton de suppression si le bordereau est dans Firestore */}
@@ -165,84 +174,91 @@ export function AttachAuctionSheet({
           </div>
         </CardHeader>
         <CardContent className="space-y-4 overflow-hidden">
-          <div className="flex items-center gap-2 p-3 bg-success/10 border border-success/20 rounded-lg overflow-hidden">
-            <CheckCircle2 className="w-5 h-5 text-success flex-shrink-0" />
+          <div className={cn(
+            'flex items-center gap-2 p-3 rounded-lg overflow-hidden',
+            isWarningState ? 'bg-amber-500/10 border border-amber-500/20' : 'bg-success/10 border border-success/20'
+          )}>
+            <CheckCircle2 className={cn('w-5 h-5 flex-shrink-0', isWarningState ? 'text-amber-600' : 'text-success')} />
             <div className="flex-1 min-w-0 overflow-hidden">
-              <p className="text-sm font-medium">Bordereau analysé avec succès</p>
-              {(file || fileName) && (
-                <p className="text-xs text-muted-foreground mt-1 break-all">{file?.name || fileName}</p>
+              <p className="text-sm font-medium">
+                {isWarningState ? 'Bordereau lié – extraction en attente ou échouée' : 'Bordereau analysé avec succès'}
+              </p>
+              {(file || fileName || bordereauFileName) && (
+                <p className="text-xs text-muted-foreground mt-1 break-all">{safeDisplayName}</p>
               )}
             </div>
           </div>
 
           {/* Résumé de l'analyse */}
+          {effectiveAnalysis && (
           <div className="grid grid-cols-2 gap-3">
             <div className="bg-secondary/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Nombre de lots</p>
               <p className="text-lg font-semibold flex items-center gap-1">
                 <Package className="w-4 h-4" />
-                {analysis.totalLots}
+                {effectiveAnalysis.totalLots ?? 0}
               </p>
             </div>
             <div className="bg-secondary/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Nombre d'objets</p>
-              <p className="text-lg font-semibold">{analysis.totalObjects}</p>
+              <p className="text-lg font-semibold">{effectiveAnalysis.totalObjects ?? 0}</p>
             </div>
           </div>
+          )}
 
-          {analysis.auctionHouse && (
+          {effectiveAnalysis?.auctionHouse && (
             <div className="bg-secondary/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Salle des ventes</p>
-              <p className="font-medium">{analysis.auctionHouse}</p>
+              <p className="font-medium">{effectiveAnalysis.auctionHouse}</p>
             </div>
           )}
 
-          {typeof analysis.invoiceTotal === 'number' && analysis.invoiceTotal > 0 && (
+          {typeof effectiveAnalysis?.invoiceTotal === 'number' && effectiveAnalysis.invoiceTotal > 0 && (
             <div className="bg-secondary/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Total facture (Total invoice)</p>
-              <p className="font-medium">{analysis.invoiceTotal}€</p>
-              {analysis.invoiceTotalRaw && (
+              <p className="font-medium">{effectiveAnalysis.invoiceTotal}€</p>
+              {effectiveAnalysis.invoiceTotalRaw && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Texte OCR: {analysis.invoiceTotalRaw}
+                  Texte OCR: {effectiveAnalysis.invoiceTotalRaw}
                 </p>
               )}
             </div>
           )}
 
-          {analysis.recommendedCarton && (
+          {effectiveAnalysis?.recommendedCarton && (
             <div className="bg-secondary/50 rounded-lg p-3">
               <p className="text-xs text-muted-foreground mb-1">Carton recommandé</p>
               <p className="font-medium">
                 {(() => {
-                  const cleanedRef = cleanCartonRef(analysis.recommendedCarton.ref);
-                  const cleanedLabel = analysis.recommendedCarton.label ? cleanCartonRef(analysis.recommendedCarton.label) : null;
+                  const cleanedRef = cleanCartonRef(effectiveAnalysis.recommendedCarton.ref);
+                  const cleanedLabel = effectiveAnalysis.recommendedCarton.label ? cleanCartonRef(effectiveAnalysis.recommendedCarton.label) : null;
                   return cleanedRef + (cleanedLabel && cleanedLabel !== cleanedRef ? ` — ${cleanedLabel}` : '');
                 })()}
               </p>
-              {analysis.recommendedCarton.inner && (
+              {effectiveAnalysis?.recommendedCarton.inner && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Dimensions internes: {analysis.recommendedCarton.inner.length}×{analysis.recommendedCarton.inner.width}×{analysis.recommendedCarton.inner.height} cm
+                  Dimensions internes: {effectiveAnalysis?.recommendedCarton.inner.length}×{effectiveAnalysis?.recommendedCarton.inner.width}×{effectiveAnalysis?.recommendedCarton.inner.height} cm
                 </p>
               )}
-              {typeof analysis.recommendedCarton.priceTTC === 'number' && (
+              {typeof effectiveAnalysis.recommendedCarton.priceTTC === 'number' && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Prix d’achat TTC: {analysis.recommendedCarton.priceTTC}€
+                  Prix d’achat TTC: {effectiveAnalysis?.recommendedCarton.priceTTC}€
                 </p>
               )}
-              {analysis.recommendedCarton.source && (
+              {effectiveAnalysis?.recommendedCarton.source && (
                 <p className="text-xs text-muted-foreground mt-1">
-                  Source: {analysis.recommendedCarton.source}
+                  Source: {effectiveAnalysis?.recommendedCarton.source}
                 </p>
               )}
             </div>
           )}
 
           {/* Liste des lots */}
-          {analysis.lots.length > 0 && (
+          {effectiveAnalysis?.lots && effectiveAnalysis.lots.length > 0 && (
             <div className="space-y-2">
               <p className="text-sm font-medium">Lots détectés:</p>
               <div className="space-y-2 max-h-48 overflow-y-auto">
-                {analysis.lots.map((lot, index) => (
+                {effectiveAnalysis.lots.map((lot, index) => (
                   <div
                     key={index}
                     className="bg-secondary/50 rounded-lg p-3 border border-border"
@@ -273,13 +289,13 @@ export function AttachAuctionSheet({
           )}
 
           {/* Texte OCR pour vérification (debug utilisateur) */}
-          {analysis.rawText && (
+          {effectiveAnalysis?.rawText && (
             <details className="bg-secondary/50 rounded-lg p-3 border border-border">
               <summary className="text-sm font-medium cursor-pointer select-none">
                 Voir le texte OCR reconnu (pour vérifier)
               </summary>
               <pre className="mt-2 text-xs whitespace-pre-wrap break-words text-muted-foreground max-h-64 overflow-y-auto">
-                {analysis.rawText}
+                {effectiveAnalysis.rawText}
               </pre>
             </details>
           )}
@@ -362,7 +378,7 @@ export function AttachAuctionSheet({
               Voir le texte OCR reconnu (pour vérifier)
             </summary>
             <pre className="mt-2 text-xs whitespace-pre-wrap break-words text-muted-foreground max-h-64 overflow-y-auto">
-              {analysis.rawText}
+              {effectiveAnalysis.rawText}
             </pre>
           </details>
         )}
