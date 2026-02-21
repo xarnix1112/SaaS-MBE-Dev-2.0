@@ -1229,18 +1229,16 @@ let ocrWorkerPromise = null;
 async function getOcrWorker() {
   if (!ocrWorkerPromise) {
     ocrWorkerPromise = (async () => {
-      // tesseract.js v6: la langue est passée à createWorker()
-      const worker = await createWorker("fra+eng", 1, {
+      // tesseract.js v6: fra+eng, OEM 3 (DEFAULT/automatique recommandé), PSM 6 (bloc uniforme documents)
+      const worker = await createWorker("fra+eng", 3, {
         logger: (m) => {
-          // éviter le spam: uniquement les étapes majeures
           if (m?.status && (m.status === "initializing" || m.status === "recognizing text")) {
             console.log("[OCR]", m.status, m.progress ?? "");
           }
         },
       });
       await worker.setParameters({
-        // Bon compromis pour du texte en tableau
-        tessedit_pageseg_mode: "6",
+        tessedit_pageseg_mode: "6", // bloc uniforme (idéal bordereaux)
         preserve_interword_spaces: "1",
       });
       return worker;
@@ -1252,8 +1250,20 @@ async function getOcrWorker() {
 async function runOcrOnImage(buffer) {
   const worker = await getOcrWorker();
 
-  // Double passe OCR: parfois le threshold détruit du texte fin (ou inversement).
+  // Préprocessing: binarisation recommandée pour documents (guide: threshold 150).
+  // Triple passe: threshold 150 (documents), 180, ou sans binarisation (texte fin).
+  const targetWidth = 3000; // ~300 DPI pour page A4
   const variants = [
+    async () =>
+      sharp(buffer)
+        .rotate()
+        .grayscale()
+        .normalize()
+        .threshold(150)
+        .sharpen()
+        .resize({ width: targetWidth, withoutEnlargement: false })
+        .png()
+        .toBuffer(),
     async () =>
       sharp(buffer)
         .rotate()
@@ -1261,7 +1271,7 @@ async function runOcrOnImage(buffer) {
         .normalize()
         .threshold(180)
         .sharpen()
-        .resize({ width: 3000, withoutEnlargement: false })
+        .resize({ width: targetWidth, withoutEnlargement: false })
         .png()
         .toBuffer(),
     async () =>
@@ -1270,7 +1280,7 @@ async function runOcrOnImage(buffer) {
         .grayscale()
         .normalize()
         .sharpen()
-        .resize({ width: 3000, withoutEnlargement: false })
+        .resize({ width: targetWidth, withoutEnlargement: false })
         .png()
         .toBuffer(),
   ];
@@ -1291,7 +1301,7 @@ async function runOcrOnImage(buffer) {
   return { text: best?.text || "", confidence: best?.confidence, words: best?.words || [] };
 }
 
-async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10, scale = 3.0 } = {}) {
+async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10, scale = 4.0 } = {}) {
   // Nouvelle approche: écrire dans un fichier temporaire pour éviter complètement les problèmes de Buffer
   const tempPath = path.join(__dirname, `.temp-pdf-${Date.now()}.pdf`);
   
@@ -2086,7 +2096,7 @@ async function extractBordereauFromFile(fileBuffer, mimeType) {
   if (mimeType === "application/pdf") {
     const { buffers, renderedPages, pageCount } = await renderPdfToPngBuffers(fileBuffer, {
       maxPages: 10,
-      scale: 3.0,
+      scale: 4.0,
     });
     for (let i = 0; i < buffers.length; i++) {
       const r = await runOcrOnImage(buffers[i]);
