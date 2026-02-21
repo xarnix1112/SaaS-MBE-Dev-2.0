@@ -6808,6 +6808,7 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
   if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
   const devisId = req.params.id;
+  const forceRetry = !!(req.body && req.body.forceRetry === true);
   try {
     const devisDoc = await firestore.collection('quotes').doc(devisId).get();
     if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
@@ -6815,7 +6816,8 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
     if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
     const bordereauLink = devis.bordereauLink;
     if (!bordereauLink || typeof bordereauLink !== 'string') return res.status(400).json({ error: 'Ce devis n\'a pas de lien bordereau (bordereauLink)' });
-    if (devis.bordereauId) {
+    // Sauf si forceRetry, ne pas relancer si le bordereau existe déjà et est traité ou en cours
+    if (!forceRetry && devis.bordereauId) {
       const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
       if (bordereauDoc.exists) {
         const bData = bordereauDoc.data();
@@ -6830,22 +6832,46 @@ app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, 
     }
     const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink, req.saasAccountId);
     const fileName = devis.bordereauFileName || bordereauLink.split('/').pop() || 'bordereau.pdf';
-    const bordereauRef = await firestore.collection('bordereaux').add({
-      saasAccountId: req.saasAccountId, devisId, sourceType: 'url', sourceUrl: bordereauLink,
-      driveFileId: null, driveFileName: fileName, mimeType: mimeType || 'application/pdf',
-      linkedAt: Timestamp.now(), linkedBy: 'url_fetch', linkMethod: 'url', ocrStatus: 'pending',
-      createdAt: Timestamp.now(), updatedAt: Timestamp.now()
-    });
-    await firestore.collection('quotes').doc(devisId).update({
-      bordereauId: bordereauRef.id, status: 'bordereau_linked', updatedAt: Timestamp.now(),
-      timeline: FieldValue.arrayUnion({
-        id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        date: Timestamp.now(), status: 'bordereau_linked',
-        description: 'Bordereau traité depuis le lien (Typeform/URL)'
-      })
-    });
-    triggerOCRForBordereau(bordereauRef.id, req.saasAccountId, { preDownloadedBuffer: buffer, mimeType: mimeType || 'application/pdf' }).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
-    res.json({ success: true, message: 'Bordereau téléchargé et analyse OCR lancée', bordereauId: bordereauRef.id });
+    let bordereauId;
+    if (forceRetry && devis.bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
+      if (bordereauDoc.exists) {
+        bordereauId = devis.bordereauId;
+        await firestore.collection('bordereaux').doc(bordereauId).update({
+          ocrStatus: 'pending', ocrResult: null, ocrError: null, ocrRawText: null, ocrCompletedAt: null,
+          mimeType: mimeType || 'application/pdf', updatedAt: Timestamp.now()
+        });
+        console.log(`[API] forceRetry: réutilisation du bordereau ${bordereauId} pour une nouvelle analyse OCR`);
+      }
+    }
+    if (!bordereauId) {
+      const bordereauRef = await firestore.collection('bordereaux').add({
+        saasAccountId: req.saasAccountId, devisId, sourceType: 'url', sourceUrl: bordereauLink,
+        driveFileId: null, driveFileName: fileName, mimeType: mimeType || 'application/pdf',
+        linkedAt: Timestamp.now(), linkedBy: 'url_fetch', linkMethod: 'url', ocrStatus: 'pending',
+        createdAt: Timestamp.now(), updatedAt: Timestamp.now()
+      });
+      bordereauId = bordereauRef.id;
+      await firestore.collection('quotes').doc(devisId).update({
+        bordereauId, status: 'bordereau_linked', updatedAt: Timestamp.now(),
+        timeline: FieldValue.arrayUnion({
+          id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          date: Timestamp.now(), status: 'bordereau_linked',
+          description: 'Bordereau traité depuis le lien (Typeform/URL)'
+        })
+      });
+    } else {
+      await firestore.collection('quotes').doc(devisId).update({
+        status: 'bordereau_linked', updatedAt: Timestamp.now(),
+        timeline: FieldValue.arrayUnion({
+          id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          date: Timestamp.now(), status: 'bordereau_linked',
+          description: 'Relance de l\'analyse du bordereau (forceRetry)'
+        })
+      });
+    }
+    triggerOCRForBordereau(bordereauId, req.saasAccountId, { preDownloadedBuffer: buffer, mimeType: mimeType || 'application/pdf' }).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
+    res.json({ success: true, message: forceRetry ? 'Relance de l\'analyse OCR en cours' : 'Bordereau téléchargé et analyse OCR lancée', bordereauId });
   } catch (error) {
     console.error('[API] Erreur traitement bordereau depuis lien:', error);
     res.status(500).json({ error: error.message });

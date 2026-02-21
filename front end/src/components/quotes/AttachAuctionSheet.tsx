@@ -12,7 +12,8 @@ import {
   Package,
   Ruler,
   X,
-  FileCheck
+  FileCheck,
+  RefreshCw
 } from 'lucide-react';
 import { analyzeAuctionSheet, AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
 import { analyzeAuctionSheetWithAI } from '@/lib/aiAuctionSheetAnalyzer';
@@ -25,6 +26,7 @@ interface AttachAuctionSheetProps {
   fileName?: string;
   bordereauFileName?: string; // Nom court du fichier (évite d'afficher l'URL Typeform brute)
   bordereauId?: string; // ID du bordereau dans Firestore
+  onRetryOCR?: () => void; // Callback pour relancer l'analyse OCR (forceRetry)
 }
 
 export function AttachAuctionSheet({ 
@@ -32,7 +34,8 @@ export function AttachAuctionSheet({
   existingAnalysis,
   fileName,
   bordereauFileName,
-  bordereauId
+  bordereauId,
+  onRetryOCR
 }: AttachAuctionSheetProps) {
   const [file, setFile] = useState<File | null>(null);
   const [isAnalyzing, setIsAnalyzing] = useState(false);
@@ -187,6 +190,12 @@ export function AttachAuctionSheet({
                 <p className="text-xs text-muted-foreground mt-1 break-all">{safeDisplayName}</p>
               )}
             </div>
+            {isWarningState && onRetryOCR && (
+              <Button variant="outline" size="sm" onClick={onRetryOCR} className="gap-1 shrink-0">
+                <RefreshCw className="w-4 h-4" />
+                Relancer l&apos;analyse
+              </Button>
+            )}
           </div>
 
           {/* Résumé de l'analyse */}

@@ -199,12 +199,16 @@ export default function QuoteDetail() {
   const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
   const [bordereauPollingTimedOut, setBordereauPollingTimedOut] = useState(false);
   
-  const triggerBordereauProcess = useCallback(async () => {
+  const triggerBordereauProcess = useCallback(async (forceRetry = false) => {
     if (!id) return;
     try {
       setBordereauPollingTimedOut(false);
       setBordereauProcessingTriggered(true);
-      const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, { method: 'POST' });
+      const res = await authenticatedFetch(`/api/devis/${id}/process-bordereau-from-link`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ forceRetry }),
+      });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
         if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0) {
@@ -1879,7 +1883,7 @@ export default function QuoteDetail() {
                 Les informations du lot n'ont pas été extraites. L'API peut être temporairement indisponible ou le token Google Sheets expiré. Réessayez ou reconnectez Google Sheets dans Paramètres.
               </p>
             </div>
-            <Button variant="outline" size="sm" onClick={() => triggerBordereauProcess()} className="gap-1">
+            <Button variant="outline" size="sm" onClick={() => triggerBordereauProcess(true)} className="gap-1">
               <RefreshCw className="w-4 h-4" />
               Relancer l'analyse
             </Button>
@@ -2724,6 +2728,7 @@ export default function QuoteDetail() {
             fileName={safeQuote.auctionSheet?.fileName || (safeQuote.auctionSheet ? 'Bordereau attaché' : undefined)}
             bordereauFileName={(safeQuote as { bordereauFileName?: string }).bordereauFileName}
             bordereauId={safeQuote.bordereauId}
+            onRetryOCR={() => triggerBordereauProcess(true)}
           />
         </DialogContent>
       </Dialog>
