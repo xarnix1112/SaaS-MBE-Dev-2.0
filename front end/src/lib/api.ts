@@ -3,6 +3,7 @@
  */
 
 import { auth } from './firebase';
+import { getApiBaseUrl } from './api-base';
 
 /**
  * Récupère le token Firebase actuel pour l'authentification
@@ -35,11 +36,13 @@ export async function authenticatedFetch(
   const headers = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
+    ...(import.meta.env.DEV && { 'X-Client-Dev': 'true' }),
     ...options.headers,
   };
 
-  // Si URL relative (commence par /), préfixer avec VITE_API_BASE_URL
-  const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+  // Si URL relative (commence par /) : en dev, utiliser '' pour passer par le proxy Vite (évite CORS)
+  // getApiBaseUrl() détecte staging.mbe-sdv.fr et pointe vers le bon backend
+  const API_BASE = getApiBaseUrl();
   const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
 
   return fetch(fullUrl, {

@@ -1,5 +1,6 @@
 import { useEffect } from 'react';
 import { Loader2 } from 'lucide-react';
+import { getApiBaseUrl } from '@/lib/api-base';
 
 /**
  * Page interceptant la redirection OAuth Typeform quand l'URL de callback
@@ -8,7 +9,7 @@ import { Loader2 } from 'lucide-react';
  */
 export default function TypeformCallback() {
   useEffect(() => {
-    const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+    const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
     const search = window.location.search; // Conserve code, state et eventuals params
     const backendUrl = `${API_BASE}/auth/typeform/callback${search}`;
     window.location.replace(backendUrl);

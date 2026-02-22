@@ -4,78 +4,150 @@
       "collectionGroup": "quotes",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "saasAccountId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "createdAt",
-          "order": "DESCENDING"
-        }
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "quotes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "cartonId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "quotes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "uniqueKey", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "quotes",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "reference", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cartons",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "cartons",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "isDefault", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "shippingZones",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "saasAccountId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "name",
-          "order": "ASCENDING"
-        }
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "shippingZones",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "shippingServices",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "saasAccountId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "order",
-          "order": "ASCENDING"
-        }
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "order", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "shippingServices",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "name", "order": "ASCENDING" },
+        { "fieldPath": "isActive", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "weightBrackets",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "saasAccountId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "order",
-          "order": "ASCENDING"
-        }
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "order", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "weightBrackets",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "minWeight", "order": "ASCENDING" }
       ]
     },
     {
       "collectionGroup": "shippingRates",
       "queryScope": "COLLECTION",
       "fields": [
-        {
-          "fieldPath": "saasAccountId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "zoneId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "serviceId",
-          "order": "ASCENDING"
-        },
-        {
-          "fieldPath": "weightBracketId",
-          "order": "ASCENDING"
-        }
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" },
+        { "fieldPath": "zoneId", "order": "ASCENDING" },
+        { "fieldPath": "serviceId", "order": "ASCENDING" },
+        { "fieldPath": "weightBracketId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "notifications",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "clientSaasId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paiements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "devisId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "paiements",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "devisId", "order": "ASCENDING" },
+        { "fieldPath": "type", "order": "ASCENDING" },
+        { "fieldPath": "status", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "emailMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "gmailMessageId", "order": "ASCENDING" },
+        { "fieldPath": "saasAccountId", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "emailMessages",
+      "queryScope": "COLLECTION",
+      "fields": [
+        { "fieldPath": "userId", "order": "ASCENDING" },
+        { "fieldPath": "devisId", "order": "ASCENDING" },
+        { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]
     }
   ],

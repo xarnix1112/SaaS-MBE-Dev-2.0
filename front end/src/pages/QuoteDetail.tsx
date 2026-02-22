@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback } from 'react';
+import { useEffect, useState, useCallback, useRef } from 'react';
 import { useParams, Link } from 'react-router-dom';
 import { AppHeader } from '@/components/layout/AppHeader';
 import { QuoteTimeline } from '@/components/quotes/QuoteTimeline';
@@ -26,6 +26,7 @@ import { toast } from 'sonner';
 import { useShipmentGrouping } from '@/hooks/useShipmentGrouping';
 import { GroupingSuggestion } from '@/components/shipment/GroupingSuggestion';
 import { GroupBadge } from '@/components/shipment/GroupBadge';
+import { getApiBaseUrl } from '@/lib/api-base';
 import { 
   ArrowLeft,
   User,
@@ -59,7 +60,6 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
-import { calculateVolumetricWeight } from '@/lib/cartons';
 import { createStripeLink } from '@/lib/stripe';
 import { createPaiement, getPaiements, cancelPaiement } from '@/lib/stripeConnect';
 
@@ -112,7 +112,6 @@ function computeInsuranceAmount(
 import { getCartonPrice, calculateShippingPrice, calculateVolumetricWeight, cleanCartonRef } from "@/lib/pricing";
 import { setDoc, doc, Timestamp, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
-import { createStripeLink } from "@/lib/stripe";
 import { createTimelineEvent, addTimelineEvent, getStatusDescription, timelineEventToFirestore } from "@/lib/quoteTimeline";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -120,7 +119,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
-import { getPaiements } from "@/lib/stripeConnect";
 import type { Paiement } from "@/types/stripe";
 
 export default function QuoteDetail() {
@@ -198,9 +196,12 @@ export default function QuoteDetail() {
   const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
   const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
   const [bordereauPollingTimedOut, setBordereauPollingTimedOut] = useState(false);
+  const lastResyncTimeRef = useRef<number>(0);
+  const RESYNC_COOLDOWN_MS = 5000; // Évite la boucle Resync quand le polling rafraîchit toutes les 5s
   
   const triggerBordereauProcess = useCallback(async (forceRetry = false) => {
     if (!id) return;
+    console.log('[QuoteDetail] 🚀 Lancement de l\'analyse OCR du bordereau...', { devisId: id, forceRetry });
     try {
       setBordereauPollingTimedOut(false);
       setBordereauProcessingTriggered(true);
@@ -211,6 +212,12 @@ export default function QuoteDetail() {
       });
       const data = await res.json().catch(() => ({}));
       if (res.ok && data.success) {
+        console.log('[QuoteDetail] ✅ OCR déclenché — voir les logs serveur (terminal) pour le suivi étape par étape', data);
+        if (data.skipped && data.typeformDisabled) {
+          // Typeform désactivé en dev — ne pas boucler, pas d'erreur
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          return;
+        }
         if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0) {
           // Vraiment déjà traité avec des lots → rafraîchir et ne pas relancer
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
@@ -225,7 +232,7 @@ export default function QuoteDetail() {
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         }
       } else {
-        setBordereauProcessingTriggered(false);
+        setBordereauProcessingTriggered(true);
         const errMsg = data?.error || 'Impossible de lancer l\'analyse du bordereau';
         console.warn('[QuoteDetail] Erreur process-bordereau-from-link:', errMsg);
         toast.error(errMsg);
@@ -240,8 +247,13 @@ export default function QuoteDetail() {
   useEffect(() => {
     const q = foundQuote || quote;
     if (!id || !q || isLoading || bordereauProcessingTriggered) return;
-    const bordereauLink = (q as Quote & { bordereauLink?: string }).bordereauLink;
-    if (!bordereauLink || typeof bordereauLink !== 'string') return;
+    const ext = q as Quote & { bordereauLink?: string; bordereauId?: string; driveFileIdFromLink?: string };
+    const hasBordereauSource = (ext.bordereauLink && typeof ext.bordereauLink === 'string') ||
+      ext.bordereauId || ext.driveFileIdFromLink;
+    if (!hasBordereauSource) return;
+    if (import.meta.env.DEV && !ext.bordereauId && !ext.driveFileIdFromLink && ext.bordereauLink?.includes('typeform.com')) {
+      return;
+    }
     // Ne pas déclencher si des lots RÉELS sont déjà présents (pas le lot par défaut "Lot détecté")
     const hasRealLots = q.auctionSheet?.lots && q.auctionSheet.lots.length > 0 &&
       (q.auctionSheet.lots as Array<{ lotNumber?: string | null; description?: string }>).some(l =>
@@ -285,8 +297,7 @@ export default function QuoteDetail() {
   useEffect(() => {
     const testBackendConnection = async () => {
       try {
-        const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
-        const response = await fetch(`${API_BASE}/api/health`);
+        const response = await fetch(`${getApiBaseUrl()}/api/health`);
         if (response.ok) {
           const data = await response.json();
           console.log('[QuoteDetail] ✅ Backend connecté:', data);
@@ -328,6 +339,7 @@ export default function QuoteDetail() {
   // IMPORTANT: la liste de devis (useQuotes) se met à jour après merge Firestore.
   // Sans resync, la page détail peut rester bloquée sur l'ancien état (bordereau invisible).
   // MAIS: Ne pas écraser les modifications locales en cours de sauvegarde
+  // Cooldown: évite le spam "Resync" quand le polling (bordereauPollingActive) invalide toutes les 5s
   useEffect(() => {
     if (!foundQuote) return;
     
@@ -335,6 +347,12 @@ export default function QuoteDetail() {
     if (isSaving) {
       console.log('[QuoteDetail] ⏸️  Resync ignoré (sauvegarde en cours)');
       return;
+    }
+
+    // Cooldown pour éviter la boucle infinie quand le backend ne renvoie rien (OCR cassé)
+    const now = Date.now();
+    if (lastResyncTimeRef.current > 0 && now - lastResyncTimeRef.current < RESYNC_COOLDOWN_MS) {
+      return; // Resync récent, skip silencieusement
     }
     
     // Ne pas écraser les modifications pendant 4 secondes après la sauvegarde
@@ -372,6 +390,7 @@ export default function QuoteDetail() {
       }
     }
     
+    lastResyncTimeRef.current = now;
     console.log('[QuoteDetail] Resync du devis:', {
       quoteId: foundQuote.id,
       paymentLinksCount: foundQuote.paymentLinks?.length || 0,
@@ -2718,6 +2737,7 @@ export default function QuoteDetail() {
             </DialogDescription>
           </DialogHeader>
           <AttachAuctionSheet
+            quoteId={quote?.id}
             onAnalysisComplete={(analysis, file) => {
               handleAuctionSheetAnalysis(analysis, file);
               if (analysis.totalLots > 0) {
@@ -2728,6 +2748,8 @@ export default function QuoteDetail() {
             fileName={safeQuote.auctionSheet?.fileName || (safeQuote.auctionSheet ? 'Bordereau attaché' : undefined)}
             bordereauFileName={(safeQuote as { bordereauFileName?: string }).bordereauFileName}
             bordereauId={safeQuote.bordereauId}
+            bordereauLink={(safeQuote as { bordereauLink?: string }).bordereauLink}
+            driveFileIdFromLink={(safeQuote as { driveFileIdFromLink?: string }).driveFileIdFromLink}
             onRetryOCR={() => triggerBordereauProcess(true)}
           />
         </DialogContent>
@@ -3230,11 +3252,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     }
     
     // Calculer le poids volumétrique avec les dimensions validées
-    const volumetricWeight = calculateVolumetricWeight({
-      inner_length: length,
-      inner_width: width,
-      inner_height: height,
-    } as any);
+    const volumetricWeight = calculateVolumetricWeight(length, width, height);
     
     // Extraire le code pays pour le calcul du prix d'expédition
     let countryCode = '';

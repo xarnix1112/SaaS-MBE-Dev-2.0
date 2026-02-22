@@ -16,6 +16,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { Building2, MapPin, Phone, Mail, FileText, Loader2 } from 'lucide-react';
+import { getApiBaseUrl } from '@/lib/api-base';
 
 // Liste des villes MBE principales
 const MBE_CITIES = [
@@ -92,8 +93,8 @@ export default function SetupMBE() {
 
     setIsLoading(true);
     try {
-      // Appeler l'API backend pour créer le saasAccount
-      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+      // Appeler l'API backend (getApiBaseUrl détecte staging automatiquement)
+      const API_BASE = getApiBaseUrl();
       const response = await fetch(`${API_BASE}/api/saas-account/create`, {
         method: 'POST',
         headers: {

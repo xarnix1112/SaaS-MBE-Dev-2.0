@@ -1,4 +1,4 @@
-import { useState, useRef } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
@@ -13,12 +13,14 @@ import {
   Ruler,
   X,
   FileCheck,
-  RefreshCw
+  RefreshCw,
+  ExternalLink
 } from 'lucide-react';
 import { analyzeAuctionSheet, AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
 import { analyzeAuctionSheetWithAI } from '@/lib/aiAuctionSheetAnalyzer';
 import { cleanCartonRef } from '@/lib/pricing';
 import { cn } from '@/lib/utils';
+import { authenticatedFetch } from '@/lib/api';
 
 interface AttachAuctionSheetProps {
   onAnalysisComplete: (analysis: AuctionSheetAnalysis, file?: File | null) => void;
@@ -26,6 +28,9 @@ interface AttachAuctionSheetProps {
   fileName?: string;
   bordereauFileName?: string; // Nom court du fichier (évite d'afficher l'URL Typeform brute)
   bordereauId?: string; // ID du bordereau dans Firestore
+  bordereauLink?: string;
+  driveFileIdFromLink?: string;
+  quoteId?: string; // ID du devis pour récupérer l'URL de prévisualisation
   onRetryOCR?: () => void; // Callback pour relancer l'analyse OCR (forceRetry)
 }
 
@@ -35,6 +40,9 @@ export function AttachAuctionSheet({
   fileName,
   bordereauFileName,
   bordereauId,
+  bordereauLink,
+  driveFileIdFromLink,
+  quoteId,
   onRetryOCR
 }: AttachAuctionSheetProps) {
   const [file, setFile] = useState<File | null>(null);
@@ -43,8 +51,50 @@ export function AttachAuctionSheet({
   const [error, setError] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // Si un bordereauId existe et qu'on a une analyse, afficher directement le bordereau
+  // Construire l'URL de prévisualisation localement si on a un lien (évite API/CORS/404)
+  const buildLocalPreviewUrl = (): string | null => {
+    if (driveFileIdFromLink) {
+      return `https://drive.google.com/file/d/${driveFileIdFromLink}/preview`;
+    }
+    const link = bordereauLink || (fileName && (fileName.startsWith('http://') || fileName.startsWith('https://')) ? fileName : null);
+    if (link) {
+      if (link.includes('drive.google.com')) {
+        const m = link.match(/\/file\/d\/([^\/]+)/) || link.match(/[?&]id=([^&]+)/);
+        if (m) return `https://drive.google.com/file/d/${m[1]}/preview`;
+      }
+      // Éviter les liens Typeform (nécessitent auth), utiliser uniquement Drive ou liens directs
+      if (!link.includes('typeform.com')) return link;
+    }
+    return null;
+  };
+
+  const localPreviewUrl = buildLocalPreviewUrl();
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
+
+  const hasBordereauSource = !!(bordereauId || bordereauLink || driveFileIdFromLink);
+
+  useEffect(() => {
+    if (!hasBordereauSource) return;
+    // Si on a un lien ou driveFileId, construire l'URL localement (évite l'API et les erreurs CORS/404)
+    if (localPreviewUrl) {
+      setPreviewUrl(localPreviewUrl);
+      setPreviewLoading(false);
+      return;
+    }
+    // Sinon, appeler l'API (cas bordereauId uniquement - document dans Firestore)
+    if (bordereauId && quoteId) {
+      setPreviewLoading(true);
+      authenticatedFetch(`/api/devis/${quoteId}/bordereau-preview`)
+        .then((r) => r.ok ? r.json() : null)
+        .then((data) => {
+          if (data?.url) setPreviewUrl(data.url);
+        })
+        .catch(() => setPreviewUrl(null))
+        .finally(() => setPreviewLoading(false));
+    }
+  }, [hasBordereauSource, bordereauId, quoteId, localPreviewUrl]);
+
   const hasBordereau = !!bordereauId && !!existingAnalysis;
 
   const handleFileSelect = async (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -148,6 +198,89 @@ export function AttachAuctionSheet({
   const displayFileName = (bordereauFileName || file?.name || fileName || '').trim();
   const isUrlLike = displayFileName.startsWith('http://') || displayFileName.startsWith('https://');
   const safeDisplayName = isUrlLike ? (bordereauFileName || 'Bordereau attaché') : displayFileName || 'Bordereau attaché';
+
+  // Affichage du document (sans analyse) en priorité si on a une source bordereau
+  if (hasBordereauSource && quoteId) {
+    return (
+      <Card className="overflow-hidden border-border">
+        <CardHeader className="pb-3">
+          <CardTitle className="text-base flex items-center gap-2">
+            <FileText className="w-4 h-4" />
+            Bordereau lié au devis
+          </CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <p className="text-sm text-muted-foreground">
+            Vérifiez que le bon bordereau est bien lié à ce devis, puis lancez l&apos;analyse OCR si besoin.
+          </p>
+          {previewLoading ? (
+            <div className="flex items-center justify-center py-12 gap-2 text-muted-foreground">
+              <Loader2 className="w-5 h-5 animate-spin" />
+              <span className="text-sm">Chargement du document...</span>
+            </div>
+          ) : previewUrl ? (
+            <div className="space-y-3">
+              <div className="rounded-lg border bg-muted/30 overflow-hidden">
+                <iframe
+                  src={previewUrl}
+                  title="Prévisualisation du bordereau"
+                  className="w-full min-h-[400px] h-[60vh] border-0"
+                  sandbox="allow-same-origin allow-scripts allow-popups"
+                />
+              </div>
+              <div className="flex flex-wrap items-center gap-2">
+                <a
+                  href={previewUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-1 text-sm text-primary hover:underline"
+                >
+                  <ExternalLink className="w-4 h-4" />
+                  Ouvrir dans un nouvel onglet
+                </a>
+                {onRetryOCR && (
+                  <Button variant="default" onClick={onRetryOCR} className="gap-2">
+                    <RefreshCw className="w-4 h-4" />
+                    Lancer l&apos;analyse OCR
+                  </Button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="space-y-3">
+              <div className="flex items-center gap-2 p-3 rounded-lg bg-amber-500/10 border border-amber-500/20 text-amber-800 dark:text-amber-200">
+                <FileText className="w-5 h-5 flex-shrink-0" />
+                <p className="text-sm">Prévisualisation indisponible. Vous pouvez lancer l&apos;analyse OCR pour extraire les données.</p>
+              </div>
+              {onRetryOCR && (
+                <Button variant="default" onClick={onRetryOCR} className="gap-2">
+                  <RefreshCw className="w-4 h-4" />
+                  Lancer l&apos;analyse OCR
+                </Button>
+              )}
+            </div>
+          )}
+          {/* Résultats de l'analyse si déjà présents */}
+          {effectiveAnalysis && (effectiveAnalysis.totalLots ?? 0) > 0 && (
+            <details className="bg-secondary/50 rounded-lg p-3 border border-border">
+              <summary className="text-sm font-medium cursor-pointer select-none">
+                Voir les résultats de l&apos;analyse ({effectiveAnalysis.totalLots} lots)
+              </summary>
+              <div className="mt-3 space-y-2 max-h-48 overflow-y-auto">
+                {effectiveAnalysis.lots?.map((lot, index) => (
+                  <div key={index} className="bg-background rounded p-2 border text-sm">
+                    <Badge variant="secondary" className="mb-1">Lot {lot.lotNumber}</Badge>
+                    <p className="break-words">{lot.description}</p>
+                    {lot.value != null && <p className="text-xs text-muted-foreground mt-1">Prix: {lot.value}€</p>}
+                  </div>
+                ))}
+              </div>
+            </details>
+          )}
+        </CardContent>
+      </Card>
+    );
+  }
 
   if (hasBordereau || (analysis && analysis.totalLots > 0)) {
     const isWarningState = hasBordereau && hasZeroLots;

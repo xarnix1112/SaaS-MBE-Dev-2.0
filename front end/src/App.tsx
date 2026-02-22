@@ -35,7 +35,7 @@ import { useAuth } from "./hooks/useAuth";
 const queryClient = new QueryClient();
 
 const App = () => {
-  const { user, isLoading: authLoading } = useAuth();
+  const { user, isSetupComplete, isLoading: authLoading } = useAuth();
 
   useEffect(() => {
     // Bootstrap Firestore collections (_meta) pour assurer leur existence
@@ -53,6 +53,12 @@ const App = () => {
     // Ne charger que si l'utilisateur est connecté (pas anonyme)
     if (!user || user.isAnonymous) {
       console.log("[App] ⏸️ Utilisateur non connecté, chargement des tarifs différé");
+      return;
+    }
+    
+    // Ne pas charger tarifs/cartons pendant le setup MBE (pas encore de saasAccountId)
+    if (!isSetupComplete) {
+      console.log("[App] ⏸️ Setup en cours, chargement des tarifs différé jusqu'à la finalisation du compte MBE");
       return;
     }
     
@@ -83,7 +89,7 @@ const App = () => {
     }).catch(error => {
       console.error("[App] ❌ Erreur lors du chargement préventif:", error);
     });
-  }, [user, authLoading]);
+  }, [user, isSetupComplete, authLoading]);
 
   return (
     <QueryClientProvider client={queryClient}>
