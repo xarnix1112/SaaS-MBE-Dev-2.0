@@ -8,7 +8,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { auth } from '@/lib/firebase';
-import { getApiBaseUrl } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -17,6 +16,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { Building2, MapPin, Phone, Mail, FileText, Loader2 } from 'lucide-react';
+import { getApiBaseUrl } from '@/lib/api-base';
 
 // Liste des villes MBE principales
 const MBE_CITIES = [
@@ -93,10 +93,9 @@ export default function SetupMBE() {
 
     setIsLoading(true);
     try {
-      const url = `${getApiBaseUrl()}/api/saas-account/create`;
-      const domain = url.match(/^https?:\/\/([^/]+)/)?.[1] || url;
-      console.log('[SetupMBE] Appel API:', domain, '(Preview doit utiliser le service Railway STAGING, pas Production)');
-      const response = await fetch(url, {
+      // Appeler l'API backend (getApiBaseUrl détecte staging automatiquement)
+      const API_BASE = getApiBaseUrl();
+      const response = await fetch(`${API_BASE}/api/saas-account/create`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',

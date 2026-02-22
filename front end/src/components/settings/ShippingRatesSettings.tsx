@@ -109,7 +109,8 @@ export function ShippingRatesSettings() {
         return;
       }
 
-      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+      const { getApiBaseUrl } = await import('@/lib/api-base');
+      const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
       const response = await fetch(`${API_BASE}/api/shipping/force-init`, {
         method: "POST",
         headers: {
@@ -212,7 +213,8 @@ export function ShippingRatesSettings() {
       setIsSaving(true);
       const token = await auth.currentUser?.getIdToken();
       
-      const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+      const { getApiBaseUrl } = await import('@/lib/api-base');
+      const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
       const response = await fetch(`${API_BASE}/api/shipping/force-init`, {
         method: 'POST',
         headers: {

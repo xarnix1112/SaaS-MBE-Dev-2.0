@@ -14,14 +14,14 @@ import type {
 } from "@/types/stripe";
 import { authenticatedFetch } from "./api";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+import { getApiBaseUrl } from './api-base';
 
 /**
  * Génère l'URL OAuth Stripe Connect
  * Le saasAccountId est récupéré automatiquement depuis le token Firebase
  */
 export async function connectStripe(): Promise<string> {
-  const response = await authenticatedFetch(`${API_BASE}/api/stripe/connect`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/stripe/connect`, {
     method: "POST",
   });
 
@@ -39,7 +39,7 @@ export async function connectStripe(): Promise<string> {
  * Le saasAccountId est récupéré automatiquement depuis le token Firebase
  */
 export async function getStripeStatus(): Promise<StripeStatusResponse> {
-  const response = await authenticatedFetch(`${API_BASE}/api/stripe/status`);
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/stripe/status`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: "Erreur inconnue" }));
@@ -54,7 +54,7 @@ export async function getStripeStatus(): Promise<StripeStatusResponse> {
  * Le saasAccountId est récupéré automatiquement depuis le token Firebase
  */
 export async function disconnectStripe(): Promise<void> {
-  const response = await authenticatedFetch(`${API_BASE}/api/stripe/disconnect`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/stripe/disconnect`, {
     method: "POST",
   });
 
@@ -72,7 +72,7 @@ export async function createPaiement(
   devisId: string,
   data: CreatePaiementRequest
 ): Promise<CreatePaiementResponse> {
-  const response = await authenticatedFetch(`${API_BASE}/api/devis/${devisId}/paiement`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/devis/${devisId}/paiement`, {
     method: "POST",
     body: JSON.stringify(data),
   });
@@ -89,7 +89,7 @@ export async function createPaiement(
  * Récupère tous les paiements d'un devis
  */
 export async function getPaiements(devisId: string): Promise<Paiement[]> {
-  const response = await authenticatedFetch(`${API_BASE}/api/devis/${devisId}/paiements`);
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/devis/${devisId}/paiements`);
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: "Erreur inconnue" }));
@@ -154,7 +154,7 @@ import * as React from "react";
  * Annule un paiement
  */
 export async function cancelPaiement(paiementId: string): Promise<void> {
-  const response = await authenticatedFetch(`${API_BASE}/api/paiement/${paiementId}/cancel`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/paiement/${paiementId}/cancel`, {
     method: "POST",
   });
 

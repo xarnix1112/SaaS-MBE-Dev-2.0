@@ -131,6 +131,32 @@ PORT=5174
 
 **Votre clé Groq est déjà configurée !** Il suffit de créer le fichier `.env.local` avec cette configuration.
 
+## 📄 OCR Tesseract (bordereaux PDF)
+
+L'extraction des lots utilise **tesseract.js** (WASM, sans installation système requise en production).
+
+### Configuration actuelle
+
+- **Langues** : `fra+eng`
+- **OEM** : 3 (automatique)
+- **PSM** : 6 (bloc uniforme, idéal documents)
+- **Prétraitement** : binarisation (threshold 150/180), grayscale, sharpen, 3000px largeur
+- **PDF** : scale 4.0 (~300 DPI) avant OCR
+
+### Test local (optionnel) – Tesseract CLI (Mac)
+
+Pour tester Tesseract en ligne de commande (non requis pour l'app) :
+
+```bash
+brew install tesseract tesseract-lang
+tesseract --list-langs   # vérifier que fra est présent
+tesseract bordereau.jpg stdout -l fra --psm 6
+```
+
+### Production (Railway)
+
+Aucune action : tesseract.js embarque son moteur WASM. Pas besoin d'installer tesseract-ocr dans le conteneur.
+
 ## 🐛 Dépannage
 
 **Erreur "OPENAI_API_KEY non configurée"**

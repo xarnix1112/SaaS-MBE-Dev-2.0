@@ -19,9 +19,12 @@ import {
   ShippingRateInput,
   ShippingSettingsInput,
 } from "@/types/shipping";
+import { getApiBaseUrl } from "@/lib/api-base";
 
-const API_BASE_ROOT = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
-const API_BASE = `${API_BASE_ROOT}/api/shipping`;
+function getShippingApiBase(): string {
+  const base = getApiBaseUrl() || 'http://localhost:5174';
+  return `${base}/api/shipping`;
+}
 
 /**
  * Helper pour récupérer le token d'authentification
@@ -42,7 +45,7 @@ async function apiRequest<T>(
   options: RequestInit = {}
 ): Promise<T> {
   const token = await getAuthToken();
-  const response = await fetch(`${API_BASE}${endpoint}`, {
+  const response = await fetch(`${getShippingApiBase()}${endpoint}`, {
     ...options,
     headers: {
       "Content-Type": "application/json",

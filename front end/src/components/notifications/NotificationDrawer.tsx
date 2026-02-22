@@ -158,51 +158,53 @@ export function NotificationDrawer({
           ) : (
             <div className="space-y-2">
               {notifications.map((notification, index) => (
-                <div key={notification.id}>
-                  <button
+                <div key={notification.id} className="group">
+                  <div
+                    role="button"
+                    tabIndex={0}
                     onClick={() => handleNotificationClick(notification)}
-                    className="w-full text-left p-4 hover:bg-accent rounded-lg transition-colors group"
+                    onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleNotificationClick(notification); } }}
+                    className="w-full text-left p-4 hover:bg-accent rounded-lg transition-colors cursor-pointer flex items-start gap-3"
                   >
-                    <div className="flex items-start gap-3">
-                      <div className="flex-shrink-0 mt-1">
-                        {getNotificationIcon(notification.type)}
-                      </div>
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-medium leading-none mb-1">
-                          {notification.title}
-                        </p>
-                        <p className="text-sm text-muted-foreground line-clamp-2">
-                          {notification.message}
-                        </p>
-                        <p className="text-xs text-muted-foreground mt-2">
-                          {formatDistanceToNow(notification.createdAt, {
-                            addSuffix: true,
-                            locale: fr,
-                          })}
-                        </p>
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="icon"
-                        className="opacity-0 group-hover:opacity-100 transition-opacity"
-                        onClick={async (e) => {
-                          e.stopPropagation();
-                          try {
-                            await deleteNotification(notification.id, clientId);
-                            setNotifications((prev) =>
-                              prev.filter((n) => n.id !== notification.id)
-                            );
-                            onNotificationRead?.();
-                            toast.success('Notification supprimée');
-                          } catch (error) {
-                            toast.error('Erreur lors de la suppression');
-                          }
-                        }}
-                      >
-                        <X className="h-4 w-4" />
-                      </Button>
+                    <div className="flex-shrink-0 mt-1">
+                      {getNotificationIcon(notification.type)}
                     </div>
-                  </button>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium leading-none mb-1">
+                        {notification.title}
+                      </p>
+                      <p className="text-sm text-muted-foreground line-clamp-2">
+                        {notification.message}
+                      </p>
+                      <p className="text-xs text-muted-foreground mt-2">
+                        {formatDistanceToNow(notification.createdAt, {
+                          addSuffix: true,
+                          locale: fr,
+                        })}
+                      </p>
+                    </div>
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      className="opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0"
+                      onClick={async (e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        try {
+                          await deleteNotification(notification.id, clientId);
+                          setNotifications((prev) =>
+                            prev.filter((n) => n.id !== notification.id)
+                          );
+                          onNotificationRead?.();
+                          toast.success('Notification supprimée');
+                        } catch (error) {
+                          toast.error('Erreur lors de la suppression');
+                        }
+                      }}
+                    >
+                      <X className="h-4 w-4" />
+                    </Button>
+                  </div>
                   {index < notifications.length - 1 && <Separator />}
                 </div>
               ))}

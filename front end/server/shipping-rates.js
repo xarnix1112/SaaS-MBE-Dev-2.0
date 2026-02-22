@@ -724,7 +724,7 @@ export async function handleGetGrid(req, res, firestore) {
     const saasAccountId = req.saasAccountId;
 
     if (!saasAccountId || typeof saasAccountId !== 'string' || saasAccountId.trim() === '') {
-      return res.status(400).json({ error: 'Compte SaaS non configuré' });
+      return res.status(400).json({ error: 'Compte SaaS non configuré. Veuillez finaliser le setup MBE.' });
     }
 
     // Récupérer toutes les données en parallèle

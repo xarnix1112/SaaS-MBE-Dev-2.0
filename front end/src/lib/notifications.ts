@@ -6,7 +6,7 @@
 import type { Notification, NotificationResponse } from '@/types/notification';
 import { authenticatedFetch } from './api';
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+import { getApiBaseUrl } from './api-base';
 
 /**
  * Récupère toutes les notifications d'un client
@@ -16,8 +16,8 @@ export async function getNotifications(clientId?: string): Promise<Notification[
   // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
   // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
   const url = clientId 
-    ? `${API_BASE}/api/notifications?clientId=${clientId}`
-    : `${API_BASE}/api/notifications`;
+    ? `${getApiBaseUrl()}/api/notifications?clientId=${clientId}`
+    : `${getApiBaseUrl()}/api/notifications`;
   
   const response = await authenticatedFetch(url);
 
@@ -43,8 +43,8 @@ export async function getNotificationsCount(clientId?: string): Promise<number> 
   // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
   // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
   const url = clientId
-    ? `${API_BASE}/api/notifications/count?clientId=${clientId}`
-    : `${API_BASE}/api/notifications/count`;
+    ? `${getApiBaseUrl()}/api/notifications/count?clientId=${clientId}`
+    : `${getApiBaseUrl()}/api/notifications/count`;
   
   const response = await authenticatedFetch(url);
 
@@ -68,8 +68,8 @@ export async function deleteNotification(
   // Le clientId n'est plus nécessaire dans l'URL car récupéré depuis le token
   // On le garde pour compatibilité mais le backend utilisera req.saasAccountId
   const url = clientId
-    ? `${API_BASE}/api/notifications/${notificationId}?clientId=${clientId}`
-    : `${API_BASE}/api/notifications/${notificationId}`;
+    ? `${getApiBaseUrl()}/api/notifications/${notificationId}?clientId=${clientId}`
+    : `${getApiBaseUrl()}/api/notifications/${notificationId}`;
   
   const response = await authenticatedFetch(url, {
     method: 'DELETE',

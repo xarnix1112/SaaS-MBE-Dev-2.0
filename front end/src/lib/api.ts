@@ -3,19 +3,7 @@
  */
 
 import { auth } from './firebase';
-
-/**
- * Récupère l'URL de base de l'API (VITE_API_BASE_URL) en s'assurant qu'elle contient https://.
- * Sans protocole, fetch() résout en URL relative et les requêtes partent vers le frontend Vercel
- * au lieu du backend Railway → 401 "Authentication Required".
- */
-export function getApiBaseUrl(): string {
-  let base = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
-  if (base && !base.startsWith('http://') && !base.startsWith('https://')) {
-    base = 'https://' + base.replace(/^\/*/, '');
-  }
-  return base.replace(/\/+$/, '');
-}
+import { getApiBaseUrl } from './api-base';
 
 /**
  * Récupère le token Firebase actuel pour l'authentification
@@ -48,9 +36,11 @@ export async function authenticatedFetch(
   const headers = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
+    ...(import.meta.env.DEV && { 'X-Client-Dev': 'true' }),
     ...options.headers,
   };
 
+  // getApiBaseUrl() détecte staging et pointe vers le bon backend
   const API_BASE = getApiBaseUrl();
   const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
 

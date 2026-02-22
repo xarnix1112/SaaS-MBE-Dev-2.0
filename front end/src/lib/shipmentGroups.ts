@@ -4,8 +4,7 @@
 
 import type { ShipmentGroup, GroupSuggestion, GroupableQuote } from '@/types/shipmentGroup';
 import { authenticatedFetch } from './api';
-
-const API_BASE = import.meta.env.VITE_API_BASE_URL || 'http://localhost:5174';
+import { getApiBaseUrl } from './api-base';
 
 /**
  * Récupère les devis groupables pour un devis donné
@@ -17,7 +16,7 @@ export async function getGroupableQuotes(devisId: string): Promise<{
   groupableQuotes: GroupableQuote[];
   suggestion: GroupSuggestion | null;
 }> {
-  const response = await authenticatedFetch(`${API_BASE}/api/devis/${devisId}/groupable-quotes`);
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/devis/${devisId}/groupable-quotes`);
   
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
@@ -55,7 +54,7 @@ export async function createShipmentGroup(
   devisIds: string[],
   clientSaasId: string
 ): Promise<ShipmentGroup> {
-  const response = await authenticatedFetch(`${API_BASE}/api/shipment-groups`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/shipment-groups`, {
     method: 'POST',
     body: JSON.stringify({ devisIds, clientSaasId }),
   });
@@ -91,7 +90,7 @@ export async function createShipmentGroup(
  * @returns Le groupement
  */
 export async function getShipmentGroup(groupId: string): Promise<ShipmentGroup> {
-  const response = await authenticatedFetch(`${API_BASE}/api/shipment-groups/${groupId}`);
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/shipment-groups/${groupId}`);
   
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
@@ -117,7 +116,7 @@ export async function getShipmentGroup(groupId: string): Promise<ShipmentGroup> 
  * @param groupId - ID du groupement à dissoudre
  */
 export async function deleteShipmentGroup(groupId: string): Promise<void> {
-  const response = await authenticatedFetch(`${API_BASE}/api/shipment-groups/${groupId}`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/shipment-groups/${groupId}`, {
     method: 'DELETE',
   });
   
@@ -143,7 +142,7 @@ export async function createGroupPayment(
   sessionId: string;
   amount: number;
 }> {
-  const response = await authenticatedFetch(`${API_BASE}/api/shipment-groups/${groupId}/paiement`, {
+  const response = await authenticatedFetch(`${getApiBaseUrl()}/api/shipment-groups/${groupId}/paiement`, {
     method: 'POST',
     body: JSON.stringify({ description }),
   });

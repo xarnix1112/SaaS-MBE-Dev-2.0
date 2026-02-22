@@ -13,8 +13,10 @@ import sharp from "sharp";
 import { createWorker } from "tesseract.js";
 import Stripe from "stripe";
 import fs from "fs";
-import * as pdfjsLib from "pdfjs-dist/legacy/build/pdf.mjs";
-import { createCanvas } from "@napi-rs/canvas";
+import { spawn } from "child_process";
+import { createRequire } from "module";
+const require = createRequire(import.meta.url);
+// pdfjs+canvas chargés uniquement dans ocr-pdf-worker.mjs (process séparé) pour éviter conflit sharp/canvas
 import XLSX from "xlsx";
 import { Resend } from "resend";
 import { initializeApp, cert } from "firebase-admin/app";
@@ -121,6 +123,14 @@ console.log('[Config] Chargement .env depuis:', {
   envExists: fs.existsSync(envPath),
   envLocalExists: fs.existsSync(envLocalPath)
 });
+
+// Typeform désactivé en dev — évite les 500 sur bordereaux Typeform
+const TYPEFORM_DISABLED_IN_DEV = process.env.DISABLE_TYPEFORM === 'true' || 
+  !process.env.NODE_ENV || 
+  process.env.NODE_ENV === 'development';
+if (TYPEFORM_DISABLED_IN_DEV) {
+  console.log('[Config] Typeform désactivé en dev (DISABLE_TYPEFORM ou NODE_ENV)');
+}
 
 // Configuration Resend Email API
 // Obtiens ta clé API sur https://resend.com/api-keys
@@ -252,11 +262,14 @@ app.use((req, res, next) => {
 // Puis appliquer express.json() pour toutes les autres routes
 app.use(express.json());
 
-// CORS pour permettre les requêtes depuis le frontend
+// CORS pour permettre les requêtes depuis le frontend (toujours envoyer, même en erreur)
+const corsHeaders = (res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Dev');
+};
 app.use((req, res, next) => {
-  res.header('Access-Control-Allow-Origin', '*');
-  res.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  corsHeaders(res);
   if (req.method === 'OPTIONS') {
     return res.sendStatus(200);
   }
@@ -648,13 +661,28 @@ try {
     projectId: process.env.FIREBASE_PROJECT_ID || "sdv-automation-mbe",
   };
   
-  // 1) Fichier de credentials (dev / CI)
-  const credentialsPath = path.join(__dirname, "..", "firebase-credentials.json");
-  console.log("[ai-proxy] 🔍 Recherche du fichier Firebase credentials:", credentialsPath);
-  console.log("[ai-proxy] Fichier existe:", fs.existsSync(credentialsPath));
+  // 1) Fichier de credentials — priorité selon NODE_ENV pour isoler dev/staging/prod
+  const credsDir = path.join(__dirname, "..");
+  const env = process.env.NODE_ENV || "development";
+  const credFilesByEnv = {
+    production: ["firebase-credentials-prod.json", "firebase-credentials.json"],
+    staging: ["firebase-credentials-staging.json", "firebase-credentials.json"],
+    development: ["firebase-credentials-dev.json", "firebase-credentials.json"],
+  };
+  const credFiles = credFilesByEnv[env] || credFilesByEnv.development;
+  let credentialsPath = null;
+  for (const f of credFiles) {
+    const p = path.join(credsDir, f);
+    if (fs.existsSync(p)) {
+      credentialsPath = p;
+      break;
+    }
+  }
+  console.log("[ai-proxy] 🔍 Environnement:", env, "| Recherche credentials dans:", credsDir);
+  console.log("[ai-proxy] Fichier trouvé:", credentialsPath || "aucun");
 
   let serviceAccount = null;
-  if (fs.existsSync(credentialsPath)) {
+  if (credentialsPath && fs.existsSync(credentialsPath)) {
     console.log("[ai-proxy] 📄 Lecture du fichier Firebase credentials...");
     serviceAccount = JSON.parse(fs.readFileSync(credentialsPath, "utf8"));
     console.log("[ai-proxy] ✅ Fichier Firebase credentials chargé, project_id:", serviceAccount.project_id);
@@ -1226,18 +1254,16 @@ let ocrWorkerPromise = null;
 async function getOcrWorker() {
   if (!ocrWorkerPromise) {
     ocrWorkerPromise = (async () => {
-      // tesseract.js v6: la langue est passée à createWorker()
-      const worker = await createWorker("fra+eng", 1, {
+      // tesseract.js v6: fra+eng, OEM 3 (DEFAULT/automatique recommandé), PSM 6 (bloc uniforme documents)
+      const worker = await createWorker("fra+eng", 3, {
         logger: (m) => {
-          // éviter le spam: uniquement les étapes majeures
           if (m?.status && (m.status === "initializing" || m.status === "recognizing text")) {
             console.log("[OCR]", m.status, m.progress ?? "");
           }
         },
       });
       await worker.setParameters({
-        // Bon compromis pour du texte en tableau
-        tessedit_pageseg_mode: "6",
+        tessedit_pageseg_mode: "6", // bloc uniforme (idéal bordereaux)
         preserve_interword_spaces: "1",
       });
       return worker;
@@ -1249,8 +1275,20 @@ async function getOcrWorker() {
 async function runOcrOnImage(buffer) {
   const worker = await getOcrWorker();
 
-  // Double passe OCR: parfois le threshold détruit du texte fin (ou inversement).
+  // Préprocessing: binarisation recommandée pour documents (guide: threshold 150).
+  // Triple passe: threshold 150 (documents), 180, ou sans binarisation (texte fin).
+  const targetWidth = 3000; // ~300 DPI pour page A4
   const variants = [
+    async () =>
+      sharp(buffer)
+        .rotate()
+        .grayscale()
+        .normalize()
+        .threshold(150)
+        .sharpen()
+        .resize({ width: targetWidth, withoutEnlargement: false })
+        .png()
+        .toBuffer(),
     async () =>
       sharp(buffer)
         .rotate()
@@ -1258,7 +1296,7 @@ async function runOcrOnImage(buffer) {
         .normalize()
         .threshold(180)
         .sharpen()
-        .resize({ width: 3000, withoutEnlargement: false })
+        .resize({ width: targetWidth, withoutEnlargement: false })
         .png()
         .toBuffer(),
     async () =>
@@ -1267,7 +1305,7 @@ async function runOcrOnImage(buffer) {
         .grayscale()
         .normalize()
         .sharpen()
-        .resize({ width: 3000, withoutEnlargement: false })
+        .resize({ width: targetWidth, withoutEnlargement: false })
         .png()
         .toBuffer(),
   ];
@@ -1288,43 +1326,108 @@ async function runOcrOnImage(buffer) {
   return { text: best?.text || "", confidence: best?.confidence, words: best?.words || [] };
 }
 
-async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10, scale = 3.0 } = {}) {
-  // Nouvelle approche: écrire dans un fichier temporaire pour éviter complètement les problèmes de Buffer
-  const tempPath = path.join(__dirname, `.temp-pdf-${Date.now()}.pdf`);
-  
+/**
+ * Tente d'extraire le texte d'un PDF natif (sans OCR).
+ * Retourne { pages, ocrRawText } si succès et PDF semble natif (>50 caractères), sinon null.
+ */
+async function extractTextFromNativePdf(pdfBuffer, log = () => {}) {
+  const tempPath = path.join(__dirname, `.temp-pdf-text-${Date.now()}.pdf`);
+  let stdout = "";
+  let stderr = "";
   try {
-    // Écrire le buffer dans un fichier temporaire
     await fs.promises.writeFile(tempPath, pdfBuffer);
-    console.log('[PDF] Wrote temp file:', tempPath);
-    
-    // Charger depuis le fichier (pdfjs aime mieux ça)
-    const doc = await pdfjsLib.getDocument(tempPath).promise;
-    const pageCount = Math.min(doc.numPages, maxPages);
-    const buffers = [];
-
-    for (let i = 1; i <= pageCount; i++) {
-      const page = await doc.getPage(i);
-      const viewport = page.getViewport({ scale });
-      const canvas = createCanvas(Math.ceil(viewport.width), Math.ceil(viewport.height));
-      const ctx = canvas.getContext("2d");
-      await page.render({ canvasContext: ctx, viewport }).promise;
-      const png = canvas.toBuffer("image/png");
-      buffers.push(png);
+    const workerPath = path.join(__dirname, "ocr-pdf-text-extract.mjs");
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [workerPath, tempPath], {
+        cwd: path.dirname(workerPath),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("close", (code) => {
+        try {
+          const out = JSON.parse(stdout || stderr || "{}");
+          resolve(out);
+        } catch {
+          reject(new Error((stderr || stdout).trim() || `Worker exited ${code}`));
+        }
+      });
+      child.on("error", reject);
+    });
+    if (result.error) return null;
+    if (!result.isNative || (result.charCount ?? 0) < 50) {
+      log(`[OCR]   → PDF détecté comme scanné (${result.charCount ?? 0} caractères) — utilisation Tesseract`);
+      return null;
     }
+    log(`[OCR]   → PDF natif détecté (${result.charCount} caractères) — extraction directe sans OCR`);
+    return { pages: result.pages, ocrRawText: result.ocrRawText || "" };
+  } catch (err) {
+    return null;
+  } finally {
+    try { await fs.promises.unlink(tempPath); } catch {}
+  }
+}
 
-    console.log('[PDF] Successfully rendered', pageCount, 'pages');
-    return { buffers, pageCount: doc.numPages, renderedPages: pageCount };
+/**
+ * Rend les pages PDF en PNG via un worker séparé.
+ * Isole pdfjs+canvas du process principal (sharp) pour éviter le segfault
+ * dû au conflit GNotificationCenterDelegate entre sharp et canvas.
+ */
+async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10 } = {}) {
+  const tempPath = path.join(__dirname, `.temp-pdf-${Date.now()}.pdf`);
+  let stdout = "";
+  let stderr = "";
+
+  try {
+    await fs.promises.writeFile(tempPath, pdfBuffer);
+    console.log('[PDF] Wrote temp file, spawning worker...');
+
+    const workerPath = path.join(__dirname, "ocr-pdf-worker.mjs");
+    const result = await new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [workerPath, tempPath], {
+        cwd: path.dirname(workerPath),
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      child.stdout.on("data", (d) => { stdout += d.toString(); });
+      child.stderr.on("data", (d) => { stderr += d.toString(); });
+      child.on("close", (code) => {
+        if (code !== 0) {
+          try {
+            const err = JSON.parse(stderr || stdout);
+            reject(new Error(err.error || `Worker exited ${code}`));
+          } catch {
+            reject(new Error((stderr || stdout).trim() || `Worker exited ${code}`));
+          }
+        } else {
+          try {
+            resolve(JSON.parse(stdout));
+          } catch {
+            reject(new Error("Worker output invalide: " + stdout.slice(0, 200)));
+          }
+        }
+      });
+      child.on("error", reject);
+    });
+
+    const { pngPaths, pageCount, renderedPages } = result;
+    const buffers = [];
+    for (const p of pngPaths) {
+      buffers.push(await fs.promises.readFile(p));
+    }
+    // Nettoyer le répertoire PNG du worker
+    const outDir = path.dirname(pngPaths[0]);
+    for (const p of pngPaths) {
+      try { await fs.promises.unlink(p); } catch {}
+    }
+    try { await fs.promises.rmdir(outDir); } catch {}
+
+    console.log('[PDF] Successfully rendered', renderedPages, 'pages via worker');
+    return { buffers, pageCount, renderedPages };
   } catch (err) {
     console.error('[PDF] Error:', err.message);
     throw err;
   } finally {
-    // Nettoyer le fichier temporaire
-    try {
-      await fs.promises.unlink(tempPath);
-      console.log('[PDF] Cleaned temp file');
-    } catch (e) {
-      // Ignorer les erreurs de nettoyage
-    }
+    try { await fs.promises.unlink(tempPath); } catch {}
   }
 }
 
@@ -1379,6 +1482,124 @@ function normalizeDateToISOWithHint(raw, { preferMDY = false } = {}) {
   // ambiguous: use hint if provided, otherwise null
   if (preferMDY) return `${yyyy}-${String(a).padStart(2, "0")}-${String(b).padStart(2, "0")}`;
   return null;
+}
+
+/** Numéro de lot plausible (petit entier, pas date, pas prix) */
+function isPlausibleLotNumber(raw) {
+  if (raw == null || raw === "") return false;
+  const s = String(raw).trim();
+  const m = s.match(/^\d{1,4}$/);
+  if (!m) return false;
+  const n = parseInt(m[0], 10);
+  if (n > 9999) return false;
+  if (n <= 0) return false;
+  return true;
+}
+
+/**
+ * Détecte la zone tableau sur une page (zones logiques du document).
+ * Les lots ne peuvent exister que dans cette zone.
+ * @param {{ words: Array, lines?: Array }} page - Page avec words (et optionnellement lines)
+ * @returns {{ headerY: number|null, tableStartY: number, tableEndY: number }|null} - null = pas de zone détectée (fallback page entière)
+ */
+function detectTableZone(page) {
+  const words = (page.words || []).filter(
+    (w) => w && w.text && w.bbox && typeof w.bbox.y0 === "number"
+  );
+  if (words.length === 0) return null;
+
+  // Construire les lignes (cluster Y) comme extractLotsFromOcrWords
+  const sorted = words
+    .map((w) => ({
+      ...w,
+      y: (w.bbox.y0 + w.bbox.y1) / 2,
+    }))
+    .sort((a, b) => a.y - b.y);
+  const yThreshold = 12;
+  const rows = [];
+  for (const w of sorted) {
+    const last = rows[rows.length - 1];
+    if (!last || Math.abs(last.y - w.y) > yThreshold) {
+      rows.push({ y: w.y, words: [w] });
+    } else {
+      last.words.push(w);
+      last.y = (last.y * (last.words.length - 1) + w.y) / last.words.length;
+    }
+  }
+  for (const r of rows) r.words.sort((a, b) => a.bbox.x0 - b.bbox.x0);
+
+  const minY = Math.min(...words.map((w) => w.bbox.y0));
+  const maxY = Math.max(...words.map((w) => w.bbox.y1));
+  const pageHeight = maxY - minY || 1;
+
+  // Header: ligne contenant Lot + (Description OU Hammer OU Price OU Adjudication OU Prix)
+  const headerPatterns = [
+    ["lot", "description"],
+    ["lot", "hammer"],
+    ["lot", "price"],
+    ["lot", "adjudication"],
+    ["lot", "prix"],
+    ["ligne", "description"],
+    ["numéro", "description"],
+    ["n°", "description"],
+    ["no.", "description"],
+  ];
+  let headerY = null;
+  for (const row of rows) {
+    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+    const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
+    const hasDescOrPrice =
+      /description|hammer|price|adjudication|prix/i.test(full);
+    if (hasLot && hasDescOrPrice) {
+      headerY = row.y;
+      break;
+    }
+  }
+
+  // Footer: première ligne sous le header contenant Total, IBAN, Bank, etc.
+  const footerPatterns = /total|iban|bank|paiement|payment|commission|r[eé]gl[eé]|invoice\s+total|montant|amount/i;
+  let footerY = null;
+  for (const row of rows) {
+    if (headerY !== null && row.y <= headerY + 5) continue;
+    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+    if (footerPatterns.test(full)) {
+      footerY = row.y;
+      break;
+    }
+  }
+
+  const margin = 8;
+  return {
+    headerY,
+    tableStartY: headerY !== null ? headerY + margin : minY,
+    tableEndY: footerY !== null ? footerY - margin : maxY,
+  };
+}
+
+/**
+ * Filtre les mots pour ne garder que ceux dans la zone tableau.
+ */
+function filterWordsByTableZone(words, zone) {
+  if (!zone) return words;
+  const { tableStartY, tableEndY } = zone;
+  return words.filter((w) => {
+    const y = (w.bbox?.y0 + w.bbox?.y1) / 2;
+    return y >= tableStartY && y <= tableEndY;
+  });
+}
+
+/**
+ * Filtre les lignes pour ne garder que celles dans la zone tableau.
+ */
+function filterLinesByTableZone(lines, zone) {
+  if (!zone || !lines?.length) return lines || [];
+  const { tableStartY, tableEndY } = zone;
+  return lines.filter((line) => {
+    const words = line.words || [];
+    if (words.length === 0) return true; // garder si pas de bbox
+    const y = words.reduce((s, w) => s + (w.bbox?.y0 + w.bbox?.y1) / 2, 0) / words.length;
+    return y >= tableStartY && y <= tableEndY;
+  });
 }
 
 function buildLinesFromWords(words) {
@@ -1470,25 +1691,27 @@ function extractHeaderFields(lines) {
 
   // numero_bordereau / invoice
   // PRIORITÉ 1: BORDEREAU ACQUEREUR N° (format Boisgirard Antonini et autres)
-  // Regex ROBUSTE (AVANT tout cleaning) : /BORDEREAU\s+ACQU[ÉE]REUR\s*N[°ºo]?\s*(\d{3,8})/i
   let numero_bordereau = null;
-  // IMPORTANT: Extraction AVANT tout nettoyage/split pour éviter la perte de structure
   const bordereauAcquereurMatch = allText.match(/BORDEREAU\s+ACQU[ÉE]REUR\s*N[°ºo]?\s*(\d{3,8})/i);
   if (bordereauAcquereurMatch) {
     numero_bordereau = bordereauAcquereurMatch[1];
-    console.log(`[OCR][Bordereau] Numéro extrait: ${numero_bordereau}`);
   }
-  
-  // PRIORITÉ 2: Autres formats (invoice, facture, bordereau générique)
+  // PRIORITÉ 2: Invoice No. XXX-YY (format Millon: 0260-25 = vente-lot)
   if (!numero_bordereau) {
-  const numRegexes = [
-    /\b(?:invoice|facture|bordereau)\s*(?:no\.?|n°|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{3,})\b/i,
-  ];
-  for (const re of numRegexes) {
-    const m = allText.match(re);
-    if (m) {
-      numero_bordereau = m[1];
-      break;
+    const invoiceHyphen = allText.match(/\bInvoice\s*No\.?\s*[:#]?\s*(\d{3,4}\s*-\s*\d{2,3})\b/i);
+    if (invoiceHyphen) numero_bordereau = invoiceHyphen[1].replace(/\s+/g, "").trim();
+  }
+  // PRIORITÉ 3: Invoice No. ou Facture N° générique (avec ou sans tiret)
+  if (!numero_bordereau) {
+    const numRegexes = [
+      /\bInvoice\s*No\.?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-]{3,})\b/i,
+      /\b(?:facture|bordereau)\s*(?:no\.?|n°|#)?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{3,})\b/i,
+    ];
+    for (const re of numRegexes) {
+      const m = allText.match(re);
+      if (m) {
+        numero_bordereau = m[1];
+        break;
       }
     }
   }
@@ -1574,9 +1797,13 @@ function extractFromOcrTextFallback(ocrText) {
     }
   }
 
-  // Invoice No.
-  const inv = text.match(/\bInvoice\s*No\.?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{2,})\b/i);
-  if (inv) out.numero_bordereau = inv[1];
+  // Invoice No. — priorité au format XXX-YY (ex: 0260-25)
+  const invHyphen = text.match(/\bInvoice\s*No\.?\s*[:#]?\s*(\d{3,4}\s*-\s*\d{2,3})\b/i);
+  if (invHyphen) out.numero_bordereau = invHyphen[1].replace(/\s+/g, "");
+  else {
+    const inv = text.match(/\bInvoice\s*No\.?\s*[:#]?\s*([A-Z0-9][A-Z0-9\-\/]{2,})\b/i);
+    if (inv) out.numero_bordereau = inv[1];
+  }
   // Bordereau acquéreur N° - Regex ROBUSTE (AVANT tout cleaning)
   if (!out.numero_bordereau) {
     const b = text.match(/BORDEREAU\s+ACQU[ÉE]REUR\s*N[°ºo]?\s*(\d{3,8})/i);
@@ -2076,23 +2303,40 @@ function extractLotsFromTable(lines) {
     });
 }
 
-async function extractBordereauFromFile(fileBuffer, mimeType) {
+async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   const pages = [];
   let ocrRawText = "";
+  const log = (msg) => { console.log(msg); };
+  const logVerbose = verbose ? log : () => {};
 
   if (mimeType === "application/pdf") {
-    const { buffers, renderedPages, pageCount } = await renderPdfToPngBuffers(fileBuffer, {
-      maxPages: 10,
-      scale: 3.0,
-    });
-    for (let i = 0; i < buffers.length; i++) {
-      const r = await runOcrOnImage(buffers[i]);
-      const lines = buildLinesFromWords(r.words);
-      pages.push({ pageIndex: i, lines, words: r.words, confidence: r.confidence, text: r.text });
-      ocrRawText += `\n\n--- PAGE ${i + 1}/${renderedPages} (rendered) ---\n${r.text}`;
+    log(`[OCR]   → Format PDF détecté — analyse du type (natif vs scanné)...`);
+    const nativeResult = await extractTextFromNativePdf(fileBuffer, log);
+    if (nativeResult) {
+      pages.push(...nativeResult.pages);
+      ocrRawText = nativeResult.ocrRawText;
+    } else {
+      log(`[OCR]   → Conversion en images + Tesseract OCR...`);
+      const { buffers, renderedPages } = await renderPdfToPngBuffers(fileBuffer, {
+        maxPages: 10,
+        scale: 4.0,
+      });
+      log(`[OCR]   → ${buffers.length} page(s) à analyser`);
+      for (let i = 0; i < buffers.length; i++) {
+        log(`[OCR]   → Page ${i + 1}/${buffers.length}: Tesseract OCR en cours...`);
+        const r = await runOcrOnImage(buffers[i]);
+        log(`[OCR]   → Page ${i + 1}: confiance ${(r.confidence ?? 0).toFixed(1)}%, ${(r.text || '').length} caractères`);
+        logVerbose(`[OCR]   → [VERBOSE] Aperçu texte page ${i + 1}: "${(r.text || '').slice(0, 150)}..."`);
+        const lines = buildLinesFromWords(r.words);
+        pages.push({ pageIndex: i, lines, words: r.words, confidence: r.confidence, text: r.text });
+        ocrRawText += `\n\n--- PAGE ${i + 1}/${renderedPages} (rendered) ---\n${r.text}`;
+      }
     }
   } else if (mimeType.startsWith("image/")) {
+    log(`[OCR]   → Format image détecté — Tesseract OCR en cours...`);
     const r = await runOcrOnImage(fileBuffer);
+    log(`[OCR]   → Confiance ${(r.confidence ?? 0).toFixed(1)}%, ${(r.text || '').length} caractères`);
+    logVerbose(`[OCR]   → [VERBOSE] Aperçu: "${(r.text || '').slice(0, 150)}..."`);
     const lines = buildLinesFromWords(r.words);
     pages.push({ pageIndex: 0, lines, words: r.words, confidence: r.confidence, text: r.text });
     ocrRawText = r.text;
@@ -2100,30 +2344,98 @@ async function extractBordereauFromFile(fileBuffer, mimeType) {
     throw new Error("Format non supporté. Utilisez une image (PNG/JPG) ou un PDF.");
   }
 
-  // Champs header depuis page 0 uniquement
-  const first = pages[0];
-  const salle_vente = first ? extractSalleVenteFromHeader(first.lines) : null;
-  const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
-
-  // Total: chercher en priorité sur la dernière page (footer)
-  const last = pages[pages.length - 1];
-  const total = last ? extractTotalFromLines(last.lines) : null;
-
-  // Lots: concat lots de toutes les pages (1..n), mais éviter duplications simples
-  const lotsAll = [];
+  // ÉTAPE OBLIGATOIRE: Découpage en zones logiques — les lots ne peuvent exister QUE dans la zone tableau
+  const allWords = pages.flatMap((p) => (p.words || []));
+  const tableWordsByPage = [];
   for (const p of pages) {
-    const lots = extractLotsFromTable(p.lines);
-    for (const l of lots) lotsAll.push(l);
+    const zone = detectTableZone(p);
+    const filtered = filterWordsByTableZone(p.words || [], zone);
+    tableWordsByPage.push(...filtered);
+    if (zone?.headerY != null) {
+      log(`[OCR]   → Zone tableau détectée (page) — ${filtered.length} mots dans la zone`);
+    }
   }
-  // dédoublonnage par numero_lot + préfixe description
+  const tableWords = tableWordsByPage;
+  log(`[OCR]   → Extraction des lots: ${tableWords.length} mots dans zone tableau (sur ${allWords.length} total)`);
+
+  // Lots: cascade d'extraction (priorité extraction bbox > texte brut > table)
+  let lotsAll = [];
+  if (tableWords.length > 0) {
+    const fromWords = extractLotsFromOcrWords(tableWords);
+    if (fromWords.length > 0) {
+      lotsAll = fromWords.map((l) => ({
+        numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: (l.description || "").trim(),
+        prix_marteau: typeof l.value === "number" ? l.value : null,
+        total: typeof l.value === "number" ? Math.round(l.value * 1.20 * 100) / 100 : null,
+      }));
+      log(`[OCR]   → Méthode: extraction spatiale (bounding boxes) → ${lotsAll.length} lots`);
+    }
+  }
+  if (lotsAll.length === 0) {
+    const fromText = extractLotsFromOcrText(ocrRawText);
+    if (fromText.length > 0) {
+      lotsAll = fromText.map((l) => ({
+        numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: (l.description || "").trim(),
+        prix_marteau: typeof l.value === "number" ? l.value : null,
+        total: typeof l.value === "number" ? Math.round(l.value * 1.20 * 100) / 100 : null,
+      }));
+      log(`[OCR]   → Méthode: extraction depuis texte brut → ${lotsAll.length} lots`);
+    }
+  }
+  if (lotsAll.length === 0) {
+    for (const p of pages) {
+      const zone = detectTableZone(p);
+      const linesInZone = filterLinesByTableZone(p.lines || [], zone);
+      const tableLots = extractLotsFromTable(linesInZone);
+      for (const l of tableLots) lotsAll.push(l);
+    }
+    if (lotsAll.length > 0) log(`[OCR]   → Méthode: extraction tabulaire → ${lotsAll.length} lots`);
+  }
+
+  // Validation des lots par score de confiance (tous viennent de la zone tableau donc +2)
+  const MIN_LOT_SCORE = 3;
+  const beforeFilter = lotsAll.length;
+  lotsAll = lotsAll.filter((l) => {
+    let score = 2; // dans zone tableau
+    if (isPlausibleLotNumber(l.numero_lot)) score += 1;
+    if (l.prix_marteau != null && l.prix_marteau > 0) score += 1;
+    if ((l.description || "").trim().length >= 10) score += 1;
+    return score >= MIN_LOT_SCORE;
+  });
+  if (beforeFilter > lotsAll.length) {
+    log(`[OCR]   → Validation lots: ${lotsAll.length} retenus (${beforeFilter - lotsAll.length} rejetés par score)`);
+  }
+
+  // dédoublonnage et ajout de total (prix+frais ~20%) si manquant
   const seen = new Set();
   const lots = [];
   for (const l of lotsAll) {
-    const key = `${l.numero_lot}::${l.description.slice(0, 30)}`;
+    const desc = (l.description || "").slice(0, 30);
+    const key = `${l.numero_lot}::${desc}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    lots.push(l);
+    const prix = l.prix_marteau != null ? l.prix_marteau : 0;
+    const totalVal = l.total != null ? l.total : (prix > 0 ? Math.round(prix * 1.20 * 100) / 100 : null);
+    lots.push({ ...l, total: totalVal });
   }
+
+  // Champs header: cascade extraction salle des ventes
+  const first = pages[0];
+  const salle_vente = (allWords.length > 0 ? extractAuctionHouseFromOcrWords(allWords) : null) ||
+    extractAuctionHouseFromOcrText(ocrRawText) ||
+    (first ? extractSalleVenteFromHeader(first.lines) : null);
+  const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
+
+  // Total: priorité footer (lines), fallback extraction depuis texte brut
+  const last = pages[pages.length - 1];
+  const totalFromLines = last ? extractTotalFromLines(last.lines) : null;
+  const totalFromText = extractInvoiceTotalFromOcrText(ocrRawText);
+  const total = (typeof totalFromLines === 'number' && totalFromLines > 0 ? totalFromLines : null) ??
+    (typeof totalFromText?.value === 'number' && totalFromText.value > 0 ? totalFromText.value : null);
+
+  log(`[OCR]   → Résultat: ${lots.length} lot(s), salle: ${salle_vente || 'non détectée'}, total: ${total !== null ? total : 'non détecté'}`);
 
   const result = {
     salle_vente: salle_vente || null,
@@ -2152,6 +2464,13 @@ async function extractBordereauFromFile(fileBuffer, mimeType) {
     if (result.lots.length === 0 && Array.isArray(fallback.lots) && fallback.lots.length > 0) {
       result.lots = fallback.lots;
     }
+  }
+
+  // Correction: seulement pour Millon — si "Millon" ou "Riviera" dans le doc ET salle erronée → imposer Millon Riviera
+  const docHasMillon = ocrRawText && (/millon/i.test(ocrRawText) || /riviera/i.test(ocrRawText));
+  const salleLooksWrong = result.salle_vente && /buyer|number|china|^\d+$/i.test(result.salle_vente);
+  if (docHasMillon && (!result.salle_vente || salleLooksWrong)) {
+    result.salle_vente = "Millon Riviera";
   }
 
   return { result, ocrRawText };
@@ -2677,17 +2996,13 @@ function extractAuctionHouseFromOcrText(ocrText) {
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  // 1) Cas explicite Millon Riviera
-  const millonLine =
-    lines.find((l) => /millon/i.test(l) && /riviera/i.test(l)) ||
-    lines.find((l) => /millon/i.test(l)) ||
-    lines.find((l) => /riviera/i.test(l));
-  if (millonLine) {
-    return millonLine
-      .replace(/salle des ventes?/i, "")
-      .replace(/bordereau/i, "")
-      .trim();
-  }
+  // 1) Salles connues (retourner le nom canonique)
+  const headText = head.toLowerCase();
+  if (/millon/i.test(head) && /riviera/i.test(head)) return "Millon Riviera";
+  if (/boisgirard\s*[-•]?\s*antonini|antonini\s*[-•]?\s*boisgirard/i.test(head)) return "Boisgirard Antonini";
+  if (/\bdrouot\b/i.test(head)) return "Drouot";
+  if (/\bartcurial\b/i.test(head)) return "Artcurial";
+  if (/\btajan\b/i.test(head)) return "Tajan";
 
   // 2) Filtrer lignes parasites
   const blacklist = [
@@ -2762,6 +3077,8 @@ function extractAuctionHouseFromOcrWords(words) {
     "bordereau",
     "acquereur",
     "acheteur",
+    "buyer",
+    "buyer's number",
     "nombre",
     "lots",
     "objets",
@@ -2770,8 +3087,24 @@ function extractAuctionHouseFromOcrWords(words) {
     "total",
     "invoice",
     "facture",
+    "china",
   ];
 
+  // Noms connus de salles (priorité absolue) — ne jamais confondre avec "Sale No." ou titre de vente
+  const knownHouses = [
+    { re: /millon\s*(?:riviera)?|riviera\s*(?:millon)?/i, value: "Millon Riviera" },
+    { re: /boisgirard\s*[-•]?\s*antonini|antonini\s*[-•]?\s*boisgirard/i, value: "Boisgirard Antonini" },
+    { re: /\bdrouot\b/i, value: "Drouot" },
+    { re: /\bartcurial\b/i, value: "Artcurial" },
+    { re: /\btajan\b/i, value: "Tajan" },
+  ];
+  const headerText = rows.map((r) => r.words.map((w) => w.text).join(" ")).join(" ");
+  for (const { re, value } of knownHouses) {
+    if (re.test(headerText)) return value;
+  }
+
+  // Exclure les titres de vente ("Sale No. XXX", "Collections & successions...")
+  const saleTitlePattern = /sale\s*no\.?|vente\s*(?:no\.?|n°)|collections\s*&|successions/i;
   const candidates = rows
     .map((r) => {
       const text = r.words.map((w) => w.text).join(" ").replace(/\s+/g, " ").trim();
@@ -2784,15 +3117,13 @@ function extractAuctionHouseFromOcrWords(words) {
     .filter((c) => {
       const low = c.text.toLowerCase();
       if (blacklist.some((b) => low.includes(b))) return false;
+      if (saleTitlePattern.test(c.text)) return false; // pas le titre de vente
       if (c.letters < 6) return false;
-      if (c.text.length > 80) return false;
-      // milieu horizontal
-      if (c.center < 0.3 || c.center > 0.7) return false;
+      if (c.text.length > 60) return false; // salle = nom court
+      if (c.center < 0.25 || c.center > 0.75) return false;
       return true;
     });
 
-  const millon = candidates.find((c) => /millon/i.test(c.text) && /riviera/i.test(c.text));
-  if (millon) return millon.text;
   candidates.sort((a, b) => a.y - b.y);
   return candidates[0]?.text;
 }
@@ -5191,6 +5522,16 @@ if (GOOGLE_SHEETS_CLIENT_ID && GOOGLE_SHEETS_CLIENT_SECRET) {
   console.warn('[Google Sheets OAuth] ⚠️  GOOGLE_SHEETS_CLIENT_ID ou GOOGLE_SHEETS_CLIENT_SECRET manquant');
 }
 
+// Typeform OAuth (pour télécharger les bordereaux depuis les réponses Typeform)
+const TYPEFORM_CLIENT_ID = process.env.TYPEFORM_CLIENT_ID;
+const TYPEFORM_CLIENT_SECRET = process.env.TYPEFORM_CLIENT_SECRET;
+const TYPEFORM_REDIRECT_URI = process.env.TYPEFORM_REDIRECT_URI || `http://localhost:5174/auth/typeform/callback`;
+if (TYPEFORM_CLIENT_ID && TYPEFORM_CLIENT_SECRET) {
+  console.log('[Typeform OAuth] ✅ Client initialisé');
+} else {
+  console.warn('[Typeform OAuth] ⚠️  TYPEFORM_CLIENT_ID ou TYPEFORM_CLIENT_SECRET manquant - connexion Typeform indisponible');
+}
+
 // Route: Démarrer le flux OAuth Gmail
 // Nécessite authentification pour récupérer saasAccountId
 app.get('/auth/gmail/start', requireAuth, (req, res) => {
@@ -5727,7 +6068,11 @@ async function syncAllEmailAccounts() {
       console.log(`[Gmail Sync] ✅ Synchronisation de ${syncCount} compte(s) SaaS avec Gmail terminée`);
     }
   } catch (error) {
-    console.error('[Gmail Sync] Erreur lors de la synchronisation globale:', error);
+    // NOT_FOUND (code 5) = base Firestore vide ou en cours de création, ignorer silencieusement
+    if (error?.code === 5 || error?.message?.includes('NOT_FOUND')) {
+      return;
+    }
+    console.error('[Gmail Sync] Erreur lors de la synchronisation globale:', error?.message || error);
   }
 }
 
@@ -5827,6 +6172,116 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
   } catch (error) {
     console.error('[Google Sheets OAuth] ❌ Erreur lors du callback:', error);
     res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=google-sheets`);
+  }
+});
+
+// ==========================================
+// ROUTES OAUTH TYPEFORM (bordereaux depuis réponses Typeform)
+// ==========================================
+
+// Route: Démarrer le flux OAuth Typeform
+app.get('/auth/typeform/start', requireAuth, (req, res) => {
+  if (!TYPEFORM_CLIENT_ID || !TYPEFORM_CLIENT_SECRET) {
+    return res.status(400).json({ error: 'Typeform OAuth non configuré. Vérifiez TYPEFORM_CLIENT_ID et TYPEFORM_CLIENT_SECRET.' });
+  }
+  if (!req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré.' });
+  }
+  const scopes = ['responses:read', 'offline'];
+  const params = new URLSearchParams({
+    client_id: TYPEFORM_CLIENT_ID,
+    redirect_uri: TYPEFORM_REDIRECT_URI,
+    scope: scopes.join(' '),
+    state: req.saasAccountId
+  });
+  const url = `https://api.typeform.com/oauth/authorize?${params.toString()}`;
+  console.log('[Typeform OAuth] URL générée pour saasAccountId:', req.saasAccountId);
+  res.json({ url });
+});
+
+// Route: Callback OAuth Typeform
+app.get('/auth/typeform/callback', async (req, res) => {
+  if (!firestore || !TYPEFORM_CLIENT_ID || !TYPEFORM_CLIENT_SECRET) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=typeform_not_configured&source=typeform`);
+  }
+  const { code, state: saasAccountId } = req.query;
+  if (!code) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_code&source=typeform`);
+  }
+  if (!saasAccountId) {
+    return res.redirect(`${FRONTEND_URL}/settings?error=no_saas_account_id&source=typeform`);
+  }
+  try {
+    const tokenRes = await fetch('https://api.typeform.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'authorization_code',
+        code,
+        client_id: TYPEFORM_CLIENT_ID,
+        client_secret: TYPEFORM_CLIENT_SECRET,
+        redirect_uri: TYPEFORM_REDIRECT_URI
+      }).toString()
+    });
+    if (!tokenRes.ok) {
+      const errText = await tokenRes.text();
+      console.error('[Typeform OAuth] Erreur token:', tokenRes.status, errText);
+      throw new Error(`Typeform token exchange failed: ${tokenRes.status}`);
+    }
+    const tokens = await tokenRes.json();
+    const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasAccountDoc = await saasAccountRef.get();
+    if (!saasAccountDoc.exists) {
+      return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=typeform`);
+    }
+    await saasAccountRef.update({
+      'integrations.typeform': {
+        connected: true,
+        accessToken: tokens.access_token,
+        refreshToken: tokens.refresh_token || null,
+        expiresAt: tokens.expires_in ? Timestamp.fromMillis(Date.now() + tokens.expires_in * 1000) : null,
+        connectedAt: Timestamp.now()
+      }
+    });
+    console.log('[Typeform OAuth] ✅ Compte Typeform connecté pour saasAccountId:', saasAccountId);
+    res.redirect(`${FRONTEND_URL}/settings?oauth_success=true&source=typeform`);
+  } catch (error) {
+    console.error('[Typeform OAuth] ❌ Erreur callback:', error);
+    res.redirect(`${FRONTEND_URL}/settings?error=${encodeURIComponent(error.message)}&source=typeform`);
+  }
+});
+
+// Route: Statut connexion Typeform
+app.get('/api/typeform/status', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ connected: false });
+    const typeform = saasDoc.data()?.integrations?.typeform;
+    res.json({
+      connected: !!(typeform?.connected && typeform?.accessToken),
+      connectedAt: typeform?.connectedAt?.toDate?.()?.toISOString?.() || null
+    });
+  } catch (e) {
+    console.error('[Typeform] Erreur status:', e);
+    res.status(500).json({ connected: false });
+  }
+});
+
+// Route: Déconnecter Typeform
+app.delete('/api/typeform/disconnect', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  try {
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).update({
+      'integrations.typeform': FieldValue.delete()
+    });
+    console.log('[Typeform] Déconnecté pour saasAccountId:', req.saasAccountId);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[Typeform] Erreur déconnexion:', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -6575,6 +7030,66 @@ app.delete('/api/cartons/:id', requireAuth, async (req, res) => {
   }
 });
 
+// Route: Récupérer l'URL de prévisualisation du bordereau (pour "Voir bordereau" sans analyse)
+app.get('/api/devis/:id/bordereau-preview', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const devisId = req.params.id;
+  try {
+    const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const devis = devisDoc.data();
+    if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+    let url = null;
+    let driveFileId = null;
+
+    if (devis.bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
+      if (bordereauDoc.exists) {
+        const b = bordereauDoc.data();
+        driveFileId = b.driveFileId;
+        if (b.webViewLink) url = b.webViewLink;
+      }
+    }
+    if (!driveFileId && devis.driveFileIdFromLink) driveFileId = devis.driveFileIdFromLink;
+
+    if (driveFileId && !url) {
+      const gs = (await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data()?.integrations?.googleSheets;
+      if (gs?.accessToken) {
+        let expiryDate = null;
+        if (gs.expiresAt) {
+          if (gs.expiresAt?.toDate) expiryDate = gs.expiresAt.toDate().getTime();
+          else if (gs.expiresAt instanceof Date) expiryDate = gs.expiresAt.getTime();
+          else expiryDate = new Date(gs.expiresAt).getTime();
+        }
+        const auth = new google.auth.OAuth2(GOOGLE_SHEETS_CLIENT_ID, GOOGLE_SHEETS_CLIENT_SECRET, GOOGLE_SHEETS_REDIRECT_URI);
+        auth.setCredentials({ access_token: gs.accessToken, refresh_token: gs.refreshToken, expiry_date: expiryDate });
+        const drive = google.drive({ version: 'v3', auth });
+        const fileResp = await drive.files.get({ fileId: driveFileId, fields: 'webViewLink' });
+        url = fileResp.data.webViewLink || `https://drive.google.com/file/d/${driveFileId}/preview`;
+      } else {
+        url = `https://drive.google.com/file/d/${driveFileId}/preview`;
+      }
+    }
+
+    if (!url && devis.bordereauLink) {
+      if (devis.bordereauLink.includes('drive.google.com')) {
+        const m = devis.bordereauLink.match(/\/file\/d\/([^\/]+)/) || devis.bordereauLink.match(/[?&]id=([^&]+)/);
+        if (m) url = `https://drive.google.com/file/d/${m[1]}/preview`;
+      } else {
+        url = devis.bordereauLink;
+      }
+    }
+
+    if (!url) return res.status(404).json({ error: 'Aucun bordereau lié à ce devis ou lien non visualisable.' });
+    res.json({ url });
+  } catch (err) {
+    console.error('[API] Erreur bordereau-preview:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Route: Rechercher manuellement un bordereau pour un devis spécifique
 app.post('/api/devis/:id/search-bordereau', requireAuth, async (req, res) => {
   if (!firestore) {
@@ -6679,6 +7194,253 @@ app.post('/api/devis/:id/search-bordereau', requireAuth, async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+// Route: Traiter un bordereau depuis Google Drive, lien (Drive/Typeform) ou URL directe
+// Priorité: 1) bordereauId avec driveFileId (Google Drive) 2) driveFileIdFromLink (lien Drive dans Sheet) 3) bordereauLink (Drive ou Typeform)
+app.post('/api/devis/:id/process-bordereau-from-link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const devisId = req.params.id;
+  const forceRetry = !!(req.body && req.body.forceRetry === true);
+  console.log(`[OCR] 🚀 ========== DÉMARRAGE ANALYSE OCR ==========`);
+  console.log(`[OCR] Devis: ${devisId} | forceRetry: ${forceRetry}`);
+  try {
+    const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const devis = devisDoc.data();
+    if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+    const bordereauLink = devis.bordereauLink && typeof devis.bordereauLink === 'string' ? devis.bordereauLink : null;
+    const driveFileIdFromLink = devis.driveFileIdFromLink || null;
+
+    // En dev: désactiver totalement Typeform — retour 200 sans erreur si aucune alternative Drive
+    const clientDev = req.get('x-client-dev') === 'true';
+    const isLocalhost = (req.get('host') || '').includes('localhost') || (req.get('origin') || '').includes('localhost');
+    const isDev = TYPEFORM_DISABLED_IN_DEV || clientDev || isLocalhost;
+    if (isDev && bordereauLink && bordereauLink.includes('typeform.com')) {
+      let hasDriveAlternative = !!driveFileIdFromLink;
+      if (!hasDriveAlternative && devis.bordereauId) {
+        const bDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
+        hasDriveAlternative = bDoc.exists && !!bDoc.data()?.driveFileId;
+      }
+      if (!hasDriveAlternative) {
+        console.log('[API] Typeform désactivé en dev: source bordereau ignorée (utilisez Google Drive)');
+        return res.json({ success: true, skipped: true, typeformDisabled: true, message: 'Typeform désactivé en développement. Utilisez un lien Google Drive dans le Sheet.' });
+      }
+    }
+
+    // Vérifier qu'on a au moins une source: bordereauId, driveFileIdFromLink, ou bordereauLink
+    if (!devis.bordereauId && !driveFileIdFromLink && !bordereauLink) {
+      return res.status(400).json({ error: 'Ce devis n\'a pas de lien bordereau. Ajoutez un lien Drive dans le Google Sheet ou connectez Typeform.' });
+    }
+
+    // Sauf si forceRetry, ne pas relancer si le bordereau existe déjà et est traité ou en cours
+    if (!forceRetry && devis.bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(devis.bordereauId).get();
+      if (bordereauDoc.exists) {
+        const bData = bordereauDoc.data();
+        if (bData.ocrStatus === 'completed') {
+          const lotsCount = bData.ocrResult?.lots?.length || 0;
+          return res.json({ success: true, message: lotsCount > 0 ? 'Bordereau déjà traité' : 'Bordereau traité (0 lot extrait)', alreadyProcessed: true, lotsCount });
+        }
+        if (bData.ocrStatus === 'processing') {
+          return res.json({ success: true, message: 'OCR déjà en cours', alreadyProcessed: false, lotsCount: 0 });
+        }
+      }
+    }
+
+    let bordereauId = devis.bordereauId;
+    let useDrive = false;
+
+    // PRIORITÉ 1: bordereauId existe et le document bordereau a driveFileId → utiliser Google Drive (pas de Typeform)
+    if (bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
+      if (bordereauDoc.exists && bordereauDoc.data().driveFileId) {
+        useDrive = true;
+        if (forceRetry) {
+          await firestore.collection('bordereaux').doc(bordereauId).update({
+            ocrStatus: 'pending', ocrResult: null, ocrError: null, ocrRawText: null, ocrCompletedAt: null,
+            updatedAt: Timestamp.now()
+          });
+          console.log(`[API] forceRetry: réutilisation du bordereau ${bordereauId} (Drive) pour une nouvelle analyse OCR`);
+        }
+      }
+    }
+
+    // PRIORITÉ 2: driveFileIdFromLink (lien Drive dans le Sheet) → créer bordereau et utiliser Google Drive
+    if (!useDrive && driveFileIdFromLink) {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+      if (!saasAccountDoc.exists) throw new Error('Compte SaaS introuvable');
+      const gs = saasAccountDoc.data().integrations?.googleSheets;
+      if (!gs || !gs.accessToken) throw new Error('Connectez Google Sheets dans Paramètres → Intégrations pour accéder aux bordereaux du Drive.');
+      let expiryDate = null;
+      if (gs.expiresAt) {
+        if (gs.expiresAt instanceof Timestamp) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt?.toDate) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt instanceof Date) expiryDate = gs.expiresAt.getTime();
+        else expiryDate = new Date(gs.expiresAt).getTime();
+      }
+      const auth = new google.auth.OAuth2(GOOGLE_SHEETS_CLIENT_ID, GOOGLE_SHEETS_CLIENT_SECRET, GOOGLE_SHEETS_REDIRECT_URI);
+      auth.setCredentials({ access_token: gs.accessToken, refresh_token: gs.refreshToken, expiry_date: expiryDate });
+      const drive = google.drive({ version: 'v3', auth });
+      const fileResp = await drive.files.get({
+        fileId: driveFileIdFromLink,
+        fields: 'id, name, mimeType, size, webViewLink'
+      });
+      const bordereauFile = { id: fileResp.data.id, name: fileResp.data.name, mimeType: fileResp.data.mimeType || 'application/pdf', size: fileResp.data.size, webViewLink: fileResp.data.webViewLink };
+      console.log(`[OCR] 📂 Source: Lien Drive du Sheet (driveFileIdFromLink) — création bordereau puis OCR`);
+      bordereauId = await linkBordereauToDevis(devisId, bordereauFile, 'drive_link', req.saasAccountId);
+      if (bordereauId) {
+        console.log(`[OCR] ⏳ Bordereau créé (${bordereauFile.name}) — OCR lancé en arrière-plan`);
+        return res.json({ success: true, message: 'Bordereau analysé depuis Google Drive', bordereauId });
+      }
+    }
+
+    // PRIORITÉ 3: Si on a bordereauId avec driveFileId, lancer l'OCR sans télécharger (triggerOCRForBordereau utilise Drive)
+    if (useDrive && bordereauId) {
+      console.log(`[OCR] 📂 Source: Google Drive (bordereauId: ${bordereauId}) — téléchargement puis OCR`);
+      await firestore.collection('quotes').doc(devisId).update({
+        status: 'bordereau_linked', updatedAt: Timestamp.now(),
+        timeline: FieldValue.arrayUnion({
+          id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          date: Timestamp.now(), status: 'bordereau_linked',
+          description: 'Bordereau analysé depuis Google Drive'
+        })
+      });
+      console.log(`[OCR] ⏳ Lancement OCR en arrière-plan (bordereauId: ${bordereauId})...`);
+      triggerOCRForBordereau(bordereauId, req.saasAccountId).catch(err => console.error('[API] Erreur OCR (Drive):', err));
+      return res.json({ success: true, message: 'Bordereau analysé depuis Google Drive', bordereauId });
+    }
+
+    // PRIORITÉ 4: bordereauLink (Drive ou Typeform) - nécessite téléchargement
+    if (!bordereauLink) {
+      return res.status(400).json({ error: 'Aucune source de bordereau disponible. Ajoutez un lien Drive dans le Google Sheet ou un lien bordereau.' });
+    }
+
+    console.log(`[OCR] 📂 Source: URL/lien (${bordereauLink.substring(0, 60)}...) — téléchargement puis OCR`);
+    const { buffer, mimeType } = await downloadFileFromUrl(bordereauLink, req.saasAccountId);
+    const fileName = devis.bordereauFileName || bordereauLink.split('/').pop() || 'bordereau.pdf';
+    if (forceRetry && bordereauId) {
+      const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
+      if (bordereauDoc.exists) {
+        await firestore.collection('bordereaux').doc(bordereauId).update({
+          ocrStatus: 'pending', ocrResult: null, ocrError: null, ocrRawText: null, ocrCompletedAt: null,
+          mimeType: mimeType || 'application/pdf', updatedAt: Timestamp.now()
+        });
+        console.log(`[API] forceRetry: réutilisation du bordereau ${bordereauId} pour une nouvelle analyse OCR`);
+      }
+    }
+    if (!bordereauId) {
+      const bordereauRef = await firestore.collection('bordereaux').add({
+        saasAccountId: req.saasAccountId, devisId, sourceType: 'url', sourceUrl: bordereauLink,
+        driveFileId: null, driveFileName: fileName, mimeType: mimeType || 'application/pdf',
+        linkedAt: Timestamp.now(), linkedBy: 'url_fetch', linkMethod: 'url', ocrStatus: 'pending',
+        createdAt: Timestamp.now(), updatedAt: Timestamp.now()
+      });
+      bordereauId = bordereauRef.id;
+      await firestore.collection('quotes').doc(devisId).update({
+        bordereauId, status: 'bordereau_linked', updatedAt: Timestamp.now(),
+        timeline: FieldValue.arrayUnion({
+          id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          date: Timestamp.now(), status: 'bordereau_linked',
+          description: bordereauLink.includes('drive.google.com') ? 'Bordereau traité depuis Google Drive' : 'Bordereau traité depuis le lien'
+        })
+      });
+    } else {
+      await firestore.collection('quotes').doc(devisId).update({
+        status: 'bordereau_linked', updatedAt: Timestamp.now(),
+        timeline: FieldValue.arrayUnion({
+          id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+          date: Timestamp.now(), status: 'bordereau_linked',
+          description: 'Relance de l\'analyse du bordereau (forceRetry)'
+        })
+      });
+    }
+    console.log(`[OCR] ⏳ Lancement OCR en arrière-plan (bordereauId: ${bordereauId})...`);
+    triggerOCRForBordereau(bordereauId, req.saasAccountId, { preDownloadedBuffer: buffer, mimeType: mimeType || 'application/pdf' }).catch(err => console.error('[API] Erreur OCR après fetch URL:', err));
+    res.json({ success: true, message: forceRetry ? 'Relance de l\'analyse OCR en cours' : 'Bordereau téléchargé et analyse OCR lancée', bordereauId });
+  } catch (error) {
+    if (error.message === 'TYPEFORM_DISABLED_IN_DEV') {
+      console.log('[API] Typeform désactivé en dev (depuis downloadFileFromUrl)');
+      return res.json({ success: true, skipped: true, typeformDisabled: true, message: 'Typeform désactivé en développement. Utilisez un lien Google Drive dans le Sheet.' });
+    }
+    console.error('[API] Erreur traitement bordereau depuis lien:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+async function downloadFileFromUrl(url, saasAccountId) {
+  if (!url || !url.startsWith('http')) throw new Error('URL invalide');
+  let fetchUrl = url;
+  if (url.includes('drive.google.com/file/d/')) {
+    const m = url.match(/\/file\/d\/([^\/]+)/);
+    if (m) fetchUrl = `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  } else if (url.includes('drive.google.com/open?id=')) {
+    const m = url.match(/[?&]id=([^&]+)/);
+    if (m) fetchUrl = `https://drive.google.com/uc?export=download&id=${m[1]}`;
+  }
+  const headers = {};
+  if (url.includes('typeform.com')) {
+    if (TYPEFORM_DISABLED_IN_DEV) {
+      throw new Error('TYPEFORM_DISABLED_IN_DEV');
+    }
+    let typeformToken = null;
+    if (saasAccountId && firestore) {
+      const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      const typeform = saasDoc.exists ? saasDoc.data()?.integrations?.typeform : null;
+      typeformToken = typeform?.accessToken || null;
+    }
+    if (!typeformToken && process.env.TYPEFORM_ACCESS_TOKEN) {
+      typeformToken = process.env.TYPEFORM_ACCESS_TOKEN;
+    }
+    if (typeformToken) {
+      headers['Authorization'] = `Bearer ${typeformToken}`;
+    } else {
+      throw new Error('Connectez votre compte Typeform dans Paramètres → Intégrations pour télécharger les bordereaux.');
+    }
+  }
+  console.log(`[Download] Téléchargement depuis: ${fetchUrl.substring(0, 100)}...`);
+  const response = await fetch(fetchUrl, { headers, redirect: 'follow' });
+  if (!response.ok) throw new Error(`Échec téléchargement (${response.status}): ${response.statusText} - URL: ${fetchUrl.substring(0, 100)}`);
+  const buffer = Buffer.from(await response.arrayBuffer());
+  let mimeType = response.headers.get('content-type') || 'application/octet-stream';
+  if (mimeType.includes(';')) mimeType = mimeType.split(';')[0].trim();
+  if (buffer.length < 100) throw new Error(`Fichier téléchargé trop petit ou vide (${buffer.length} bytes)`);
+
+  // Vérifier la signature (magic bytes) du fichier pour détecter le vrai type
+  const magic = buffer.slice(0, 8).toString('hex');
+  const firstBytes = buffer.slice(0, 5).toString('ascii');
+  console.log(`[Download] Fichier reçu: ${buffer.length} bytes, mimeType: ${mimeType}, magic: ${magic}`);
+
+  if (mimeType.startsWith('text/html') || mimeType.startsWith('application/xhtml')) {
+    const hint = fetchUrl.includes('api.typeform.com')
+      ? ' Connectez votre compte Typeform dans Paramètres → Intégrations si ce n\'est pas déjà fait.'
+      : ' URL potentiellement expirée ou authentification requise.';
+    throw new Error(`Le fichier téléchargé est du HTML, pas un PDF.${hint}`);
+  }
+
+  const isPdf = firstBytes.startsWith('%PDF');
+  const isJpeg = magic.startsWith('ffd8ff');
+  const isPng = magic.startsWith('89504e47');
+  const isGif = magic.startsWith('47494638');
+
+  if (!isPdf && !isJpeg && !isPng && !isGif) {
+    console.error(`[Download] ⚠️ Contenu non reconnu: magic=${magic}, mimeType=${mimeType}, taille=${buffer.length}`);
+    const hint = fetchUrl.includes('api.typeform.com')
+      ? ' Connectez votre compte Typeform dans Paramètres → Intégrations pour télécharger les bordereaux.'
+      : '';
+    throw new Error(`Format de fichier non reconnu. Le fichier n'est pas un PDF ou une image valide.${hint}`);
+  }
+
+  // Corriger le mimeType si nécessaire selon les magic bytes réels
+  if (isPdf && !mimeType.includes('pdf')) mimeType = 'application/pdf';
+  else if (isJpeg && !mimeType.startsWith('image/')) mimeType = 'image/jpeg';
+  else if (isPng && !mimeType.startsWith('image/')) mimeType = 'image/png';
+  else if (isGif && !mimeType.startsWith('image/')) mimeType = 'image/gif';
+
+  console.log(`[Download] ✅ Fichier validé: ${buffer.length} bytes, type final: ${mimeType}`);
+  return { buffer, mimeType };
+}
 
 // Route: Re-calculer un devis à partir de son bordereau existant
 app.post('/api/devis/:id/recalculate', requireAuth, async (req, res) => {
@@ -7292,8 +8054,18 @@ async function syncAllGoogleSheets() {
 
       // Double vérification (normalement toujours true grâce au where)
       if (googleSheetsIntegration && googleSheetsIntegration.connected) {
-        await syncSheetForAccount(doc.id, googleSheetsIntegration);
-        syncCount++;
+        try {
+          await syncSheetForAccount(doc.id, googleSheetsIntegration);
+          syncCount++;
+        } catch (accountError) {
+          // invalid_grant = token expiré/révoqué → l'utilisateur doit reconnecter Google Sheets
+          const msg = accountError?.message || String(accountError);
+          if (msg.includes('invalid_grant') || msg.includes('Token has been expired')) {
+            console.warn(`[Google Sheets Sync] ⚠️  Token expiré pour ${doc.id} - Reconnectez Google Sheets dans Paramètres`);
+          } else {
+            console.error(`[Google Sheets Sync] Erreur sync compte ${doc.id}:`, accountError);
+          }
+        }
       }
     }
 
@@ -7301,7 +8073,11 @@ async function syncAllGoogleSheets() {
       console.log(`[Google Sheets Sync] ✅ Synchronisation de ${syncCount} compte(s) SaaS avec Google Sheets terminée`);
     }
   } catch (error) {
-    console.error('[Google Sheets Sync] Erreur lors de la synchronisation globale:', error);
+    // NOT_FOUND (code 5) = base Firestore vide ou en cours de création, ignorer silencieusement
+    if (error?.code === 5 || error?.message?.includes('NOT_FOUND')) {
+      return;
+    }
+    console.error('[Google Sheets Sync] Erreur lors de la synchronisation globale:', error?.message || error);
   }
 }
 
@@ -7520,6 +8296,75 @@ async function linkBordereauToDevis(devisId, bordereauFile, linkMethod, saasAcco
 }
 
 /**
+ * Extraction des lots via Groq LLM (fallback quand Tesseract OCR retourne 0 lots)
+ * Utilise le texte brut OCR pour extraire intelligemment les informations du bordereau
+ */
+async function extractLotsWithGroq(ocrRawText) {
+  if (!process.env.GROQ_API_KEY || !ocrRawText) return {};
+  try {
+    console.log('[OCR Groq] 🤖 Extraction lots via Groq (fallback)...');
+    const truncatedText = ocrRawText.slice(0, 5000);
+    const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        model: 'llama-3.3-70b-versatile',
+        messages: [
+          {
+            role: 'system',
+            content: 'Tu es un expert en analyse de bordereaux de ventes aux enchères françaises (Millon, Sotheby\'s, Christie\'s, Drouot, etc.). Tu extrais les données structurées en JSON strict.'
+          },
+          {
+            role: 'user',
+            content: `Analyse ce texte OCR extrait d\'un bordereau de vente aux enchères et extrait toutes les informations.
+
+Réponds UNIQUEMENT avec du JSON valide (pas de markdown, pas d\'explication), format exact:
+{
+  "lots": [
+    {"numero_lot": "1", "description": "Description complète de l\'objet", "prix_marteau": 150}
+  ],
+  "salle_vente": "Nom de la maison de vente",
+  "date": "YYYY-MM-DD",
+  "numero_bordereau": "numéro",
+  "total": 500
+}
+
+Si une valeur est introuvable, utilise null. Le prix marteau est le prix d\'adjudication hors frais.
+
+Texte OCR du bordereau:
+---
+${truncatedText}
+---`
+          }
+        ],
+        temperature: 0.05,
+        max_tokens: 3000
+      })
+    });
+    if (!response.ok) {
+      const errText = await response.text();
+      throw new Error(`Groq API error ${response.status}: ${errText.slice(0, 200)}`);
+    }
+    const data = await response.json();
+    const content = data.choices?.[0]?.message?.content?.trim();
+    if (!content) return {};
+    // Extraire le JSON même si entouré de markdown
+    const jsonMatch = content.match(/\{[\s\S]*\}/);
+    if (!jsonMatch) return {};
+    const parsed = JSON.parse(jsonMatch[0]);
+    const lotsCount = parsed.lots?.length || 0;
+    console.log(`[OCR Groq] ✅ Groq a extrait: ${lotsCount} lots, salle: ${parsed.salle_vente}, total: ${parsed.total}`);
+    return parsed;
+  } catch (e) {
+    console.warn('[OCR Groq] ❌ Erreur extraction Groq:', e.message);
+    return {};
+  }
+}
+
+/**
  * Télécharge un fichier depuis Google Drive
  */
 async function downloadFileFromDrive(drive, fileId) {
@@ -7536,73 +8381,71 @@ async function downloadFileFromDrive(drive, fileId) {
 }
 
 /**
- * Déclenche l'OCR pour un bordereau et calcule le devis
+ * Déclenche l'OCR pour un bordereau et calcule le devis (Drive ou URL)
+ * @param {string} bordereauId - ID du bordereau
+ * @param {string} saasAccountId - ID du compte SaaS
+ * @param {object} [opts] - Options: { preDownloadedBuffer, mimeType } pour éviter un second téléchargement
  */
-async function triggerOCRForBordereau(bordereauId, saasAccountId) {
+async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
   if (!firestore) return;
-
+  const OCR_VERBOSE = process.env.OCR_VERBOSE === 'true' || process.env.OCR_VERBOSE === '1';
   try {
-    // 1. Récupérer le bordereau
+    console.log(`[OCR] 📄 Étape 1/6: Chargement du document bordereau (id: ${bordereauId})`);
     const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
-    if (!bordereauDoc.exists) {
-      console.error('[OCR] Bordereau introuvable:', bordereauId);
-      return;
-    }
-
+    if (!bordereauDoc.exists) { console.error('[OCR] Bordereau introuvable:', bordereauId); return; }
     const bordereau = bordereauDoc.data();
+    await firestore.collection('bordereaux').doc(bordereauId).update({ ocrStatus: 'processing', updatedAt: Timestamp.now() });
+    console.log(`[OCR] 📄 Étape 2/6: Récupération du fichier (devis: ${bordereau.devisId})`);
+    let fileBuffer, mimeType = opts.mimeType || bordereau.mimeType || 'application/pdf';
+    if (opts.preDownloadedBuffer && Buffer.isBuffer(opts.preDownloadedBuffer)) {
+      fileBuffer = opts.preDownloadedBuffer;
+      console.log(`[OCR]   → Buffer pré-téléchargé utilisé (${(opts.preDownloadedBuffer.length / 1024).toFixed(1)} Ko)`);
+    } else if (bordereau.sourceUrl) {
+      console.log('[OCR]   → Téléchargement depuis sourceUrl...');
+      const d = await downloadFileFromUrl(bordereau.sourceUrl, saasAccountId);
+      fileBuffer = d.buffer; mimeType = d.mimeType;
+      console.log(`[OCR]   → Fichier téléchargé (${(fileBuffer.length / 1024).toFixed(1)} Ko, ${mimeType})`);
+    } else if (bordereau.driveFileId) {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      if (!saasAccountDoc.exists) throw new Error('Compte SaaS introuvable');
+      const gs = saasAccountDoc.data().integrations?.googleSheets;
+      if (!gs || !gs.accessToken) throw new Error('OAuth Google non configuré');
+      let expiryDate = null;
+      if (gs.expiresAt) {
+        if (gs.expiresAt instanceof Timestamp) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt.toDate) expiryDate = gs.expiresAt.toDate().getTime();
+        else if (gs.expiresAt instanceof Date) expiryDate = gs.expiresAt.getTime();
+        else expiryDate = new Date(gs.expiresAt).getTime();
+      }
+      const auth = new google.auth.OAuth2(GOOGLE_SHEETS_CLIENT_ID, GOOGLE_SHEETS_CLIENT_SECRET, GOOGLE_SHEETS_REDIRECT_URI);
+      auth.setCredentials({ access_token: gs.accessToken, refresh_token: gs.refreshToken, expiry_date: expiryDate });
+      const drive = google.drive({ version: 'v3', auth });
+      console.log('[OCR]   → Téléchargement depuis Google Drive...');
+      fileBuffer = await downloadFileFromDrive(drive, bordereau.driveFileId);
+      console.log(`[OCR]   → Fichier Drive téléchargé (${(fileBuffer.length / 1024).toFixed(1)} Ko)`);
+    } else throw new Error('Bordereau sans source (ni sourceUrl ni driveFileId)');
+    console.log(`[OCR] 📖 Étape 3/6: Analyse OCR (Tesseract) du document...`);
+    const { result: ocrResult, ocrRawText } = await extractBordereauFromFile(fileBuffer, mimeType, OCR_VERBOSE);
 
-    // 2. Mettre à jour le statut OCR
-    await firestore.collection('bordereaux').doc(bordereauId).update({
-      ocrStatus: 'processing',
-      updatedAt: Timestamp.now()
-    });
+    console.log(`[OCR] 📊 Étape 4/6: Extraction terminée — ${ocrResult.lots?.length || 0} lots, salle: ${ocrResult.salle_vente || 'non détectée'}, total: ${ocrResult.total ?? 'non détecté'}`);
 
-    // 3. Récupérer les tokens Google Drive
-    const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
-    if (!saasAccountDoc.exists) {
-      throw new Error('Compte SaaS introuvable');
-    }
-
-    const saasAccountData = saasAccountDoc.data();
-    const googleSheetsIntegration = saasAccountData.integrations?.googleSheets;
-
-    if (!googleSheetsIntegration || !googleSheetsIntegration.accessToken) {
-      throw new Error('OAuth Google non configuré');
-    }
-
-    // 4. Créer client Drive
-    let expiryDate = null;
-    if (googleSheetsIntegration.expiresAt) {
-      if (googleSheetsIntegration.expiresAt instanceof Timestamp) {
-        expiryDate = googleSheetsIntegration.expiresAt.toDate().getTime();
-      } else if (googleSheetsIntegration.expiresAt.toDate) {
-        expiryDate = googleSheetsIntegration.expiresAt.toDate().getTime();
-      } else if (googleSheetsIntegration.expiresAt instanceof Date) {
-        expiryDate = googleSheetsIntegration.expiresAt.getTime();
+    // Fallback Groq si l'extraction Tesseract n'a pas trouvé de lots
+    if ((!ocrResult.lots || ocrResult.lots.length === 0) && ocrRawText && process.env.GROQ_API_KEY) {
+      console.log(`[OCR] 🤖 Étape 4b/6: Tesseract n'a pas extrait de lots → tentative avec Groq LLM...`);
+      const groqResult = await extractLotsWithGroq(ocrRawText);
+      if (groqResult.lots && groqResult.lots.length > 0) {
+        ocrResult.lots = groqResult.lots;
+        if (!ocrResult.salle_vente && groqResult.salle_vente) ocrResult.salle_vente = groqResult.salle_vente;
+        if (!ocrResult.date && groqResult.date) ocrResult.date = groqResult.date;
+        if (!ocrResult.numero_bordereau && groqResult.numero_bordereau) ocrResult.numero_bordereau = groqResult.numero_bordereau;
+        if (!ocrResult.total && groqResult.total) ocrResult.total = groqResult.total;
+        console.log(`[OCR]   → Groq a extrait ${ocrResult.lots.length} lots`);
       } else {
-        expiryDate = new Date(googleSheetsIntegration.expiresAt).getTime();
+        console.warn('[OCR] ⚠️ Groq n\'a pas non plus extrait de lots - le PDF est peut-être illisible ou format non standard');
       }
     }
 
-    const auth = new google.auth.OAuth2(
-      GOOGLE_SHEETS_CLIENT_ID,
-      GOOGLE_SHEETS_CLIENT_SECRET,
-      GOOGLE_SHEETS_REDIRECT_URI
-    );
-    auth.setCredentials({
-      access_token: googleSheetsIntegration.accessToken,
-      refresh_token: googleSheetsIntegration.refreshToken,
-      expiry_date: expiryDate
-    });
-
-    const drive = google.drive({ version: 'v3', auth });
-
-    // 5. Télécharger le fichier depuis Drive
-    const fileBuffer = await downloadFileFromDrive(drive, bordereau.driveFileId);
-
-    // 6. Lancer l'OCR (fonction existante)
-    const { result: ocrResult } = await extractBordereauFromFile(fileBuffer, bordereau.mimeType);
-
+    console.log(`[OCR] 💾 Étape 5/6: Sauvegarde du résultat OCR dans Firestore...`);
     // 7. Sauvegarder le résultat OCR
     await firestore.collection('bordereaux').doc(bordereauId).update({
       ocrStatus: 'completed',
@@ -7613,14 +8456,15 @@ async function triggerOCRForBordereau(bordereauId, saasAccountId) {
         date: ocrResult.date || null,
         numero_bordereau: ocrResult.numero_bordereau || null
       },
+      ocrRawText: ocrRawText ? ocrRawText.slice(0, 10000) : null,
       ocrCompletedAt: Timestamp.now(),
       updatedAt: Timestamp.now()
     });
 
-    console.log(`[OCR] ✅ OCR terminé pour bordereau ${bordereauId}`);
-
+    console.log(`[OCR] 📐 Étape 6/6: Calcul du devis (prix, carton, expédition)...`);
     // 8. Déclencher le calcul du devis
     await calculateDevisFromOCR(bordereau.devisId, ocrResult, saasAccountId);
+    console.log(`[OCR] ✅ ========== OCR TERMINÉ ========== Bordereau ${bordereauId}: ${ocrResult.lots?.length || 0} lots extraits → Devis mis à jour`);
 
   } catch (error) {
     console.error('[OCR] Erreur:', error);
@@ -8051,10 +8895,14 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         cartonInfo = {
           id: optimalCarton.id,
           ref: optimalCarton.carton_ref,
+          label: optimalCarton.carton_ref,
           inner_length: optimalCarton.inner_length,
           inner_width: optimalCarton.inner_width,
           inner_height: optimalCarton.inner_height,
-          price: optimalCarton.packaging_price
+          inner: { length: optimalCarton.inner_length, width: optimalCarton.inner_width, height: optimalCarton.inner_height },
+          required: { length: optimalCarton.inner_length, width: optimalCarton.inner_width, height: optimalCarton.inner_height },
+          price: optimalCarton.packaging_price,
+          priceTTC: optimalCarton.packaging_price
         };
         cartonsInfo = [cartonInfo];
         packagingStrategy = 'single_carton';
@@ -8073,13 +8921,18 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
       
       // Pour compatibilité, utiliser le premier carton comme cartonInfo principal
       if (cartonsInfo.length > 0) {
+        const c0 = cartonsInfo[0];
         cartonInfo = {
-          id: cartonsInfo[0].id,
-          ref: cartonsInfo[0].carton_ref,
-          inner_length: cartonsInfo[0].inner_length,
-          inner_width: cartonsInfo[0].inner_width,
-          inner_height: cartonsInfo[0].inner_height,
-          price: cartonsInfo[0].packaging_price
+          id: c0.id,
+          ref: c0.carton_ref,
+          label: c0.carton_ref,
+          inner_length: c0.inner_length,
+          inner_width: c0.inner_width,
+          inner_height: c0.inner_height,
+          inner: { length: c0.inner_length, width: c0.inner_width, height: c0.inner_height },
+          required: { length: c0.inner_length, width: c0.inner_width, height: c0.inner_height },
+          price: c0.packaging_price,
+          priceTTC: c0.packaging_price
         };
       }
       
@@ -8110,12 +8963,12 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ⚖️ Poids réel: ${totalWeight.toFixed(2)}kg, Poids volumétrique: ${volumetricWeight.toFixed(2)}kg, Poids final: ${finalWeight.toFixed(2)}kg`);
     
     // Si une destination est renseignée, calculer le prix d'expédition
-    if (devis.destination?.country) {
+    // Support: destination.country (legacy) ou delivery.address.country (quote Google Sheets)
+    const destCountry = devis.destination?.country || devis.delivery?.address?.country;
+    if (destCountry) {
       try {
-        // Charger les zones de tarification depuis Firestore (grille tarifaire du compte SaaS)
-        console.log(`[Calcul] 🔍 Recherche de la zone pour ${devis.destination.country} dans la grille tarifaire du compte ${saasAccountId}`);
-        
-        const countryCode = devis.destination.country.toUpperCase();
+        const countryCode = (typeof destCountry === 'string' ? destCountry : String(destCountry)).toUpperCase();
+        console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
         
         // 1. Trouver la zone qui contient ce pays
         const zonesSnapshot = await firestore
@@ -8252,6 +9105,8 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         bordereauNumber: ocrResult.numero_bordereau || null,
         date: ocrResult.date || null,
         totalValue: ocrResult.total || 0,
+        totalLots: mappedLots.length,
+        totalObjects: mappedLots.length, // Par défaut 1 objet par lot, à affiner si besoin
         lots: mappedLots,
         // Ajouter le carton recommandé si trouvé
         recommendedCarton: cartonInfo || null,
@@ -8377,7 +9232,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
               );
               
               // Sauvegarder le paiement dans Firestore
-              const paiementId = await firestore.collection('paiements').add({
+              const paiementRef = await firestore.collection('paiements').add({
                 devisId,
                 stripeSessionId: session.id,
                 stripeAccountId,
@@ -8390,10 +9245,21 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
                 updatedAt: Timestamp.now(),
               });
               
-              console.log(`[Calcul] ✅ Lien de paiement auto-généré: ${session.url} (ID: ${paiementId.id})`);
+              console.log(`[Calcul] ✅ Lien de paiement auto-généré: ${session.url} (ID: ${paiementRef.id})`);
               
-              // Ajouter un événement à la timeline
+              // Mettre à jour paymentLinks du devis (comme stripe-connect)
+              const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+              const existingLinks = devisDoc.exists ? (devisDoc.data().paymentLinks || []) : [];
+              const newPaymentLink = {
+                id: paiementRef.id,
+                url: session.url,
+                amount: totalAmount,
+                createdAt: new Date().toISOString(),
+                status: 'active',
+              };
               await firestore.collection('quotes').doc(devisId).update({
+                paymentLinks: [...existingLinks, newPaymentLink],
+                status: 'awaiting_payment',
                 timeline: FieldValue.arrayUnion({
                   id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
                   date: Timestamp.now(),
@@ -8746,10 +9612,13 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       message: 'Compte SaaS créé avec succès',
     });
   } catch (error) {
-    console.error('[AI Proxy] ❌ Erreur création compte SaaS:', error.message);
-    console.error('[AI Proxy] ❌ Détail (code/status):', error.code, error.status, error.details);
-    console.error('[AI Proxy] ❌ Stack:', error.stack);
-    return res.status(500).json({ error: error.message || 'Erreur lors de la création du compte' });
+    console.error('[AI Proxy] ❌ Erreur création compte SaaS:', error);
+    // NOT_FOUND (code 5) = base Firestore non créée ou mal configurée
+    const isNotFound = error?.code === 5 || error?.message?.includes('NOT_FOUND');
+    const userMessage = isNotFound
+      ? 'La base de données Firestore n\'est pas configurée. Allez dans la console Firebase (Build → Firestore Database) et créez la base de données si nécessaire.'
+      : (error.message || 'Erreur lors de la création du compte');
+    return res.status(500).json({ error: userMessage });
   }
 });
 
@@ -9217,6 +10086,15 @@ console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
 // FIN ROUTES STRIPE CONNECT
 // ==========================================
 
+// Handler global d'erreurs: garantir CORS même en cas d'erreur 5xx (évite "Origin not allowed" en 503)
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  corsHeaders(res);
+  console.error('[AI Proxy] Erreur non gérée:', err?.message || err);
+  const status = err?.status || err?.statusCode || 500;
+  res.status(status).json({ error: err?.message || 'Erreur interne du serveur' });
+});
+
 // IMPORTANT: Le middleware catch-all DOIT être défini APRÈS toutes les routes
 // Express vérifie les routes spécifiques (app.get, app.post) AVANT les middlewares app.use()
 // Donc le catch-all ne devrait pas intercepter les routes définies avant
@@ -9240,6 +10118,7 @@ if (process.env.SENTRY_DSN) {
 
 // Mais pour être sûr, on le définit juste avant app.listen()
 app.use((req, res) => {
+  corsHeaders(res);
   console.log('[AI Proxy] ❌ Route non trouvée (catch-all):', req.method, req.url);
   res.status(404).json({ error: `Route non trouvée: ${req.method} ${req.url}` });
 });
@@ -9273,6 +10152,10 @@ const expectedRoutes = [
   'GET /auth/gmail/callback',
   'GET /auth/google-sheets/start',
   'GET /auth/google-sheets/callback',
+  'GET /auth/typeform/start',
+  'GET /auth/typeform/callback',
+  'GET /api/typeform/status',
+  'DELETE /api/typeform/disconnect',
   'GET /api/google-sheets/status',
   'GET /api/google-sheets/list',
   'POST /api/google-sheets/select',
@@ -9283,6 +10166,7 @@ const expectedRoutes = [
   'GET /api/google-drive/status',
   'DELETE /api/google-drive/disconnect',
   'POST /api/devis/:id/search-bordereau',
+  'POST /api/devis/:id/process-bordereau-from-link',
   'POST /api/devis/:id/recalculate',
   'GET /api/email-accounts',
   'DELETE /api/email-accounts/:accountId',
