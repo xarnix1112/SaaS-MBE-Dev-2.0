@@ -82,10 +82,10 @@ export default function Welcome() {
             </div>
           </div>
           <h1 className="text-4xl font-bold text-gray-900">
-            Bienvenue sur QuoteFlow Pro
+            Bienvenue sur Mirai
           </h1>
           <p className="text-lg text-muted-foreground max-w-2xl mx-auto">
-            La solution complète pour gérer vos devis, expéditions et paiements MBE
+            La solution complète pour gérer vos devis, expéditions et paiements
           </p>
         </div>
 
@@ -102,7 +102,7 @@ export default function Welcome() {
                 </div>
                 <CardTitle className="text-2xl">Créer un compte</CardTitle>
                 <CardDescription className="text-base mt-2">
-                  Nouveau sur QuoteFlow Pro ? Créez votre compte en quelques minutes
+                  Nouveau sur Mirai ? Créez votre compte en quelques minutes
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">

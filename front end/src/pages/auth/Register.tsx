@@ -80,7 +80,7 @@ export default function Register() {
           </div>
           <CardTitle className="text-2xl font-bold">Créer un compte</CardTitle>
           <CardDescription>
-            Commencez votre aventure avec QuoteFlow Pro
+            Commencez votre aventure avec Mirai
           </CardDescription>
         </CardHeader>
         <CardContent>

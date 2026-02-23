@@ -96,7 +96,7 @@ export default function Login() {
           </div>
           <CardTitle className="text-2xl font-bold">Connexion</CardTitle>
           <CardDescription>
-            Accédez à votre espace QuoteFlow Pro
+            Accédez à votre espace Mirai
           </CardDescription>
         </CardHeader>
         <CardContent>
