@@ -27,7 +27,7 @@ import { AppHeader } from '@/components/layout/AppHeader';
 export default function Account() {
   const navigate = useNavigate();
   const { saasAccount, user, isLoading } = useAuth();
-  const { data: featuresData } = useFeatures(saasAccount?.id);
+  const { data: featuresData } = useFeatures();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
@@ -167,24 +167,29 @@ export default function Account() {
                     Plan
                   </Label>
                   <p className="text-base font-semibold text-foreground mt-1">
-                    {featuresData?.planName ?? (saasAccount.plan === 'pro' ? 'Pro' : 'Starter')}
+                    {featuresData?.planName ?? (saasAccount.planId === 'pro' ? 'Pro' : saasAccount.planId === 'ultra' ? 'Ultra' : 'Starter')}
                   </p>
-                  {featuresData?.remaining?.quotesPerYear != null && (
+                  {featuresData?.limits?.quotesPerYear != null && (
                     <div className="mt-3 w-full max-w-sm space-y-2">
                       <div className="flex items-center justify-between gap-2">
                         <Label htmlFor="progress-devis" className="text-sm font-normal text-muted-foreground">
                           Quota devis
                         </Label>
                         <span className="text-sm text-muted-foreground">
-                          {featuresData.remaining.quotesPerYear === -1
-                            ? 'Illimités'
-                            : `${featuresData.remaining.quotesPerYear} restants / ${featuresData.limits?.quotesPerYear ?? '—'}`}
+                          {featuresData.limits!.quotesPerYear! === -1
+                            ? 'Devis illimités'
+                            : (() => {
+                                const max = featuresData.limits!.quotesPerYear!;
+                                const used = featuresData.usage?.quotesUsedThisYear ?? 0;
+                                const remaining = featuresData.remaining?.quotesPerYear ?? Math.max(0, max - used);
+                                return `${remaining} restants / ${max}`;
+                              })()}
                         </span>
                       </div>
-                      {featuresData.remaining.quotesPerYear !== -1 && featuresData.limits?.quotesPerYear != null && featuresData.limits.quotesPerYear > 0 && (
+                      {featuresData.limits!.quotesPerYear! !== -1 && (
                         <Progress
                           id="progress-devis"
-                          value={Math.min(100, ((featuresData.usage?.quotesUsedThisYear ?? 0) / featuresData.limits.quotesPerYear) * 100)}
+                          value={Math.min(100, ((featuresData.usage?.quotesUsedThisYear ?? 0) / featuresData.limits!.quotesPerYear!) * 100)}
                           className="h-2"
                         />
                       )}
