@@ -9890,6 +9890,146 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
   }
 });
 
+// ===== MBE HUB (plans Pro et Ultra) - Envoi devis vers zone expédition =====
+
+function hasMbeHubPlan(saasData) {
+  const planId = saasData?.planId || saasData?.plan || 'starter';
+  return planId === 'pro' || planId === 'ultra';
+}
+
+async function getMbeHubApiKey(firestore, saasAccountId) {
+  if (!firestore || !saasAccountId) return null;
+  const doc = await firestore.collection('saasAccounts').doc(saasAccountId).collection('secrets').doc('mbehub').get();
+  return doc.exists ? (doc.data()?.apiKey || null) : null;
+}
+
+// GET /api/account/mbehub-status
+app.get('/api/account/mbehub-status', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const saas = saasDoc.data();
+    if (!hasMbeHubPlan(saas)) {
+      return res.json({ available: false, configured: false, message: 'Réservé aux plans Pro et Ultra' });
+    }
+    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
+    return res.json({ available: true, configured: Boolean(apiKey) });
+  } catch (error) {
+    console.error('[API] Erreur mbehub-status:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/mbehub-key
+app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { apiKey } = req.body;
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    return res.status(400).json({ error: 'Clé API requise' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    await saasRef.collection('secrets').doc('mbehub').set({
+      apiKey: apiKey.trim(),
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Clé MBE Hub enregistrée pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[API] Erreur mbehub-key:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/mbehub/send-quote - Envoi devis vers MBE Hub (zone expédition)
+// TODO: Adapter l'URL et le payload dès que la documentation API MBE Hub sera disponible
+app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Configurez votre clé API MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+
+    // Construire le payload pour MBE Hub (client, destinataire, dimensions, poids, cartons)
+    const client = quote.client || {};
+    const delivery = quote.delivery || {};
+    const lot = quote.lot || {};
+    const auctionSheet = quote.auctionSheet || {};
+    const cartons = auctionSheet.cartons || (auctionSheet.recommendedCarton ? [auctionSheet.recommendedCarton] : []);
+    const cartonPayload = cartons.map((c) => ({
+      ref: c.ref,
+      weight: c.weight ?? lot.weight ?? lot.dimensions?.weight,
+      dimensions: c.inner_length && c.inner_width && c.inner_height
+        ? { length: c.inner_length, width: c.inner_width, height: c.inner_height }
+        : (lot.dimensions || lot.realDimensions) ? { length: (lot.dimensions || lot.realDimensions).length, width: (lot.dimensions || lot.realDimensions).width, height: (lot.dimensions || lot.realDimensions).height } : null,
+    }));
+
+    const payload = {
+      reference: quote.reference,
+      client: {
+        name: client.name,
+        email: client.email,
+        phone: client.phone,
+        address: client.address,
+      },
+      recipient: delivery.contact ? {
+        name: delivery.contact.name,
+        email: delivery.contact.email,
+        phone: delivery.contact.phone,
+        address: delivery.address ? {
+          line1: delivery.address.line1,
+          line2: delivery.address.line2,
+          city: delivery.address.city,
+          zip: delivery.address.zip,
+          country: delivery.address.country,
+        } : null,
+      } : null,
+      cartons: cartonPayload,
+      weight: quote.totalWeight ?? lot.weight ?? lot.dimensions?.weight,
+      volumetricWeight: lot.volumetricWeight,
+    };
+
+    // TODO: Appeler l'API MBE Hub quand documentation disponible
+    // const MBE_HUB_URL = process.env.MBE_HUB_API_URL || 'https://api.mbehub.example';
+    // const hubRes = await fetch(`${MBE_HUB_URL}/expedition`, { method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    console.log('[MBE Hub] Payload prêt (API non configurée):', JSON.stringify(payload, null, 2));
+
+    return res.json({
+      success: false,
+      message: 'L\'API MBE Hub n\'est pas encore configurée. L\'intégration sera activée dès que la documentation sera disponible.',
+      payload,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/send-quote:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
 // ===== PAYMENT PROVIDER (Stripe / Paytweak) - Feature customPaytweak pour compte es4IiIhl03aPttsTz5xj =====
 
 // GET /api/account/payment-settings

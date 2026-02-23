@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
@@ -85,6 +85,11 @@ export default function Settings() {
   const [paytweakApiKeyInput, setPaytweakApiKeyInput] = useState('');
   const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
   const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
+
+  // MBE Hub (plans Pro/Ultra)
+  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; message?: string } | null>(null);
+  const [mbehubApiKeyInput, setMbehubApiKeyInput] = useState('');
+  const [isSavingMbehubKey, setIsSavingMbehubKey] = useState(false);
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -167,6 +172,47 @@ export default function Settings() {
       toast.error(error instanceof Error ? error.message : 'Erreur');
     } finally {
       setIsSavingPaytweakKey(false);
+    }
+  };
+
+  const loadMbehubStatus = async () => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/mbehub-status');
+      if (!res.ok) {
+        setMbehubStatus(null);
+        return;
+      }
+      const data = await res.json();
+      setMbehubStatus(data);
+    } catch {
+      setMbehubStatus(null);
+    }
+  };
+
+  const handleSaveMbehubKey = async () => {
+    if (!mbehubApiKeyInput.trim()) {
+      toast.error('Saisissez votre clé API MBE Hub');
+      return;
+    }
+    try {
+      setIsSavingMbehubKey(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/mbehub-key', {
+        method: 'PUT',
+        body: JSON.stringify({ apiKey: mbehubApiKeyInput.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      toast.success('Clé MBE Hub enregistrée');
+      setMbehubApiKeyInput('');
+      await loadMbehubStatus();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingMbehubKey(false);
     }
   };
 
@@ -287,6 +333,9 @@ export default function Settings() {
   useEffect(() => {
     if (settingsTab === 'paiements') {
       loadPaymentSettings();
+    }
+    if (settingsTab === 'mbehub') {
+      loadMbehubStatus();
     }
   }, [settingsTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -719,6 +768,10 @@ export default function Settings() {
               Expédition
             </TabsTrigger>
             <TabsTrigger value="paiements">Paiements</TabsTrigger>
+            <TabsTrigger value="mbehub" className="gap-2">
+              <Globe className="w-4 h-4" />
+              MBE Hub
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="emails" className="space-y-6">
@@ -1464,6 +1517,69 @@ export default function Settings() {
                 </CardContent>
               </Card>
             )}
+          </TabsContent>
+
+          {/* MBE Hub - plans Pro et Ultra */}
+          <TabsContent value="mbehub" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Globe className="w-5 h-5" />
+                  MBE Hub
+                </CardTitle>
+                <CardDescription>
+                  Connectez votre clé API MBE Hub pour envoyer les devis vers la zone expédition et créer les envois
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {mbehubStatus === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Chargement...
+                  </div>
+                ) : !mbehubStatus.available ? (
+                  <div className="py-6 text-center">
+                    <Globe className="w-12 h-12 mx-auto mb-4 opacity-50 text-muted-foreground" />
+                    <p className="text-muted-foreground">
+                      {mbehubStatus.message || 'MBE Hub est réservé aux plans Pro et Ultra.'}
+                    </p>
+                    <p className="text-sm text-muted-foreground mt-2">
+                      Passez à un plan supérieur pour accéder à cette fonctionnalité.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Clé API MBE Hub</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="password"
+                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configurée)' : 'Votre clé API MBE Hub'}
+                          value={mbehubApiKeyInput}
+                          onChange={(e) => setMbehubApiKeyInput(e.target.value)}
+                          className="flex-1"
+                        />
+                        <Button
+                          onClick={handleSaveMbehubKey}
+                          disabled={isSavingMbehubKey || !mbehubApiKeyInput.trim()}
+                        >
+                          {isSavingMbehubKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
+                        </Button>
+                      </div>
+                      {mbehubStatus.configured && (
+                        <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                          <CheckCircle2 className="w-4 h-4" />
+                          MBE Hub configuré
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      Une fois la clé configurée, le bouton « Envoyer vers MBE Hub » sera disponible sur chaque devis.
+                    </p>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
       </div>

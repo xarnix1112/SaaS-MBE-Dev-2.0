@@ -196,7 +196,8 @@ service cloud.firestore {
         && request.resource.data.ownerUid == request.auth.uid;
     }
 
-    // Secrets (clé API Paytweak) : refus explicite aux clients, seul le backend y accède
+    // Secrets (clés API Paytweak, MBE Hub, etc.) : refus explicite aux clients (RGPD)
+    // Seul le backend (Admin SDK) y accède. Aucune clé stockée dans .env ou sur poste dev.
     match /saasAccounts/{accountId}/secrets/{secretId} {
       allow read, write: if false;
     }

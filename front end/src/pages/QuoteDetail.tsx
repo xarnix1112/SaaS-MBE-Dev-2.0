@@ -57,6 +57,7 @@ import {
   RefreshCw,
   CheckCircle2,
   Loader2,
+  Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -120,11 +121,24 @@ import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
 import type { Paiement } from "@/types/stripe";
+import { useFeatures } from "@/hooks/use-features";
+import { useQuery } from "@tanstack/react-query";
 
 export default function QuoteDetail() {
   const { id } = useParams();
   const { data: quotes = [], isLoading, isError } = useQuotes();
   const queryClient = useQueryClient();
+  const { data: featuresData } = useFeatures();
+  const { data: mbehubStatus } = useQuery({
+    queryKey: ['mbehub-status'],
+    queryFn: async () => {
+      const res = await authenticatedFetch('/api/account/mbehub-status');
+      if (!res.ok) return { available: false, configured: false };
+      return res.json();
+    },
+    enabled: !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra'),
+  });
+  const showMbehubButton = mbehubStatus?.available && mbehubStatus?.configured;
   const foundQuote = quotes.find((q) => q.id === id);
   const [generatingLink, setGeneratingLink] = useState<boolean>(false);
   const [quote, setQuote] = useState<Quote | undefined>(foundQuote);
@@ -1251,6 +1265,32 @@ export default function QuoteDetail() {
     } catch (error) {
       console.error('[Surcharge Email] Erreur:', error);
       toast.error('Erreur lors de l\'envoi de l\'email surcoût');
+    }
+  };
+
+  const [isSendingToMbehub, setIsSendingToMbehub] = useState(false);
+  const handleSendToMbeHub = async () => {
+    if (!quote?.id) return;
+    setIsSendingToMbehub(true);
+    try {
+      const res = await authenticatedFetch('/api/mbehub/send-quote', {
+        method: 'POST',
+        body: JSON.stringify({ quoteId: quote.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || data.message || 'Erreur lors de l\'envoi vers MBE Hub');
+        return;
+      }
+      if (data.success === false && data.message) {
+        toast.info(data.message);
+      } else {
+        toast.success('Devis envoyé vers MBE Hub');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSendingToMbehub(false);
     }
   };
 
@@ -2721,6 +2761,21 @@ export default function QuoteDetail() {
                     Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
                   </Button>
                 ))}
+                {showMbehubButton && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={handleSendToMbeHub}
+                    disabled={isSendingToMbehub}
+                  >
+                    {isSendingToMbehub ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Globe className="w-4 h-4" />
+                    )}
+                    Envoyer vers MBE Hub
+                  </Button>
+                )}
               </CardContent>
             </Card>
           </div>
