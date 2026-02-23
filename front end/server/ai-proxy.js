@@ -65,6 +65,7 @@ import {
   sendCollectedEmail,
   sendAwaitingShipmentEmail,
   sendShippedEmail,
+  getBodyContentPreview,
 } from "./quote-automatic-emails.js";
 import {
   getTemplatesForAccount,
@@ -10394,12 +10395,15 @@ app.put('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (re
     const prev = current[type] || {};
     const history = prev.history || [];
     if (history.length >= 10) history.pop();
-    history.unshift({
-      subject: prev.subject,
-      signature: prev.signature,
-      tone: prev.tone,
-      updatedAt: prev.updatedAt,
-    });
+    const prevSnapshot = {
+      ...(prev.subject != null && { subject: prev.subject }),
+      ...(prev.signature != null && { signature: prev.signature }),
+      ...(prev.tone != null && { tone: prev.tone }),
+      ...(prev.updatedAt != null && { updatedAt: prev.updatedAt }),
+    };
+    if (Object.keys(prevSnapshot).length > 0) {
+      history.unshift(prevSnapshot);
+    }
     const updated = {
       ...current,
       [type]: {
@@ -10410,7 +10414,7 @@ app.put('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (re
         updatedAt: Timestamp.now(),
       },
     };
-    await saasRef.update({ emailTemplates: updated, updatedAt: Timestamp.now() });
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
     return res.json({
       success: true,
       templates: getTemplatesForAccount(updated),
@@ -10436,7 +10440,7 @@ app.post('/api/email-templates/reset', requireAuth, checkCustomizeAutoEmails, as
     } else {
       updated = {};
     }
-    await saasRef.update({ emailTemplates: updated, updatedAt: Timestamp.now() });
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
     return res.json({
       success: true,
       templates: getTemplatesForAccount(updated),
@@ -10474,7 +10478,17 @@ app.post('/api/email-templates/preview', requireAuth, checkCustomizeAutoEmails, 
       .replace(/{clientName}/g, sample.clientName)
       .replace(/{mbeName}/g, sample.mbeName)
       .replace(/{amount}/g, sample.amount);
-    return res.json({ subject, signature, tone: t.tone, sample });
+    const bodyContent = getBodyContentPreview(type, t.tone || 'formel', sample);
+    const signatureHtml = signature.replace(/\n/g, '<br>');
+    const bodyHtml = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: sans-serif; line-height: 1.6; color: #333;">
+  ${bodyContent}
+  <p>${signatureHtml}</p>
+</body>
+</html>`.trim();
+    return res.json({ subject, signature, tone: t.tone || 'formel', bodyHtml, sample });
   } catch (err) {
     console.error('[API] Erreur preview email-templates:', err);
     return res.status(500).json({ error: 'Erreur prévisualisation' });

@@ -52,7 +52,7 @@ export default function AutoEmailsSettings({ onLoad }: AutoEmailsSettingsProps) 
   const [customTemplates, setCustomTemplates] = useState<Record<string, unknown> | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState<string | null>(null);
-  const [preview, setPreview] = useState<Record<string, { subject: string; signature: string; tone: string }> | null>(null);
+  const [preview, setPreview] = useState<Record<string, { subject: string; signature: string; tone: string; bodyHtml?: string }> | null>(null);
   const [expandedType, setExpandedType] = useState<string | null>(null);
   const [edits, setEdits] = useState<Record<string, { subject: string; signature: string; tone: string }>>({});
 
@@ -269,10 +269,19 @@ export default function AutoEmailsSettings({ onLoad }: AutoEmailsSettingsProps) 
                     </Button>
                   </div>
                   {preview?.[type] && (
-                    <div className="mt-3 p-3 bg-muted/50 rounded-md text-sm">
-                      <p className="font-medium mb-1">Aperçu :</p>
+                    <div className="mt-3 p-3 bg-muted/50 rounded-md text-sm space-y-2">
+                      <p className="font-medium">Aperçu :</p>
                       <p><strong>Sujet :</strong> {preview[type].subject}</p>
-                      <p className="mt-1 whitespace-pre-wrap"><strong>Signature :</strong><br />{preview[type].signature}</p>
+                      {preview[type].bodyHtml && (
+                        <div className="border rounded p-3 bg-white dark:bg-zinc-900 mt-2">
+                          <p className="font-medium mb-2 text-xs text-muted-foreground">Corps de l&apos;email :</p>
+                          <div
+                            className="prose prose-sm max-w-none dark:prose-invert"
+                            dangerouslySetInnerHTML={{ __html: preview[type].bodyHtml || '' }}
+                          />
+                        </div>
+                      )}
+                      <p className="mt-1 whitespace-pre-wrap text-xs"><strong>Signature :</strong><br />{preview[type].signature}</p>
                     </div>
                   )}
                 </div>

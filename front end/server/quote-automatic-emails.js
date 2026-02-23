@@ -126,6 +126,24 @@ function getBodyContent(type, tone, quote, opts = {}) {
 }
 
 /**
+ * Retourne le contenu du corps (HTML) pour un aperçu avec données simulées
+ */
+export function getBodyContentPreview(type, tone, { clientName, mbeName, reference, amount, trackingNumber, carrier } = {}) {
+  const sampleQuote = {
+    _saasCommercialName: mbeName || 'Mon MBE',
+    client: { name: clientName || 'Jean Dupont' },
+    reference: reference || 'DEV-2024-00123',
+    delivery: {},
+  };
+  const opts = type === 'payment_received' ? { amount: amount ? parseFloat(amount) : 125.50, isPrincipal: true } : {};
+  if (type === 'shipped') {
+    opts.trackingNumber = trackingNumber || '9Z1234567890123';
+    opts.carrier = carrier || 'Colissimo';
+  }
+  return getBodyContent(type, tone || 'formel', sampleQuote, opts);
+}
+
+/**
  * Envoie un email automatique (helper interne)
  */
 async function sendAutoEmail(firestore, sendEmailFn, quote, subject, htmlContent, textContent) {
