@@ -18,6 +18,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from '@/components/ui/alert-dialog';
+import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
@@ -161,20 +162,34 @@ export default function Account() {
                   </p>
                 </div>
 
-                <div>
-                  <label className="text-sm font-medium text-muted-foreground">
+                <div className="md:col-span-2">
+                  <Label className="text-sm font-medium text-muted-foreground">
                     Plan
-                  </label>
+                  </Label>
                   <p className="text-base font-semibold text-foreground mt-1">
                     {featuresData?.planName ?? (saasAccount.plan === 'pro' ? 'Pro' : 'Starter')}
-                    {featuresData?.remaining?.quotesPerYear != null && (
-                      <span className="block text-sm font-normal text-muted-foreground mt-0.5">
-                        {featuresData.remaining.quotesPerYear === -1
-                          ? 'Devis illimités'
-                          : `${featuresData.remaining.quotesPerYear} devis restants sur ${featuresData.limits?.quotesPerYear ?? '—'}`}
-                      </span>
-                    )}
                   </p>
+                  {featuresData?.remaining?.quotesPerYear != null && (
+                    <div className="mt-3 w-full max-w-sm space-y-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <Label htmlFor="progress-devis" className="text-sm font-normal text-muted-foreground">
+                          Quota devis
+                        </Label>
+                        <span className="text-sm text-muted-foreground">
+                          {featuresData.remaining.quotesPerYear === -1
+                            ? 'Illimités'
+                            : `${featuresData.remaining.quotesPerYear} restants / ${featuresData.limits?.quotesPerYear ?? '—'}`}
+                        </span>
+                      </div>
+                      {featuresData.remaining.quotesPerYear !== -1 && featuresData.limits?.quotesPerYear != null && featuresData.limits.quotesPerYear > 0 && (
+                        <Progress
+                          id="progress-devis"
+                          value={Math.min(100, ((featuresData.usage?.quotesUsedThisYear ?? 0) / featuresData.limits.quotesPerYear) * 100)}
+                          className="h-2"
+                        />
+                      )}
+                    </div>
+                  )}
                 </div>
               </div>
             </CardContent>
