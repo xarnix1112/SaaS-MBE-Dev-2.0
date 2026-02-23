@@ -22,6 +22,7 @@ import Register from "./pages/auth/Register";
 import ForgotPassword from "./pages/auth/ForgotPassword";
 import Welcome from "./pages/auth/Welcome";
 import TypeformCallback from "./pages/auth/TypeformCallback";
+import StripeCallback from "./pages/auth/StripeCallback";
 import SetupMBE from "./pages/onboarding/SetupMBE";
 import Success from "./pages/onboarding/Success";
 import { bootstrapFirestoreCollections } from "./lib/firestoreBootstrap";
@@ -110,6 +111,8 @@ const App = () => {
             <Route path="/forgot-password" element={<ForgotPassword />} />
             {/* Callback OAuth Typeform - redirige vers le backend */}
             <Route path="/auth/typeform/callback" element={<TypeformCallback />} />
+            {/* Callback OAuth Stripe Connect - redirige vers le backend */}
+            <Route path="/stripe/callback" element={<StripeCallback />} />
             
             {/* Routes d'onboarding */}
             <Route path="/setup-mbe" element={<ProtectedRoute requireSetup={false}><SetupMBE /></ProtectedRoute>} />
