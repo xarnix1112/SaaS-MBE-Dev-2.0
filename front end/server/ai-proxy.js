@@ -7632,8 +7632,8 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
     try {
       const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
       const saasData = saasAccountDoc.exists ? saasAccountDoc.data() : {};
-      const rawPlan = saasData.planId || saasData.plan || 'basic';
-      const planId = rawPlan === 'free' ? 'basic' : rawPlan;
+      const rawPlan = saasData.planId || saasData.plan || 'starter';
+      const planId = ['free', 'basic'].includes(rawPlan) ? 'starter' : rawPlan;
       const planDoc = await firestore.collection('plans').doc(planId).get();
       const plan = planDoc.exists ? planDoc.data() : null;
       const maxQuotes = plan?.limits?.quotesPerYear ?? 200;
@@ -9612,7 +9612,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       createdAt: Timestamp.now(),
       isActive: true,
       plan: 'free',
-      planId: 'basic',
+      planId: 'starter',
       customFeatures: {},
       usage: { quotesUsedThisYear: 0 },
       billingPeriod: (() => {

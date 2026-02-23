@@ -10,8 +10,9 @@
  */
 
 function resolvePlanId(raw) {
-  const id = raw || "basic";
-  return id === "free" ? "basic" : id;
+  if (!raw) return "starter";
+  const mapping = { free: "starter", basic: "starter", enterprise: "ultra" };
+  return mapping[raw] || raw;
 }
 
 /**
@@ -56,7 +57,7 @@ async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
       limits: {},
       usage: {},
       remaining: {},
-      planId: "basic",
+      planId: "starter",
       planName: "Basic",
     };
   }
@@ -68,7 +69,7 @@ async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
       limits: {},
       usage: {},
       remaining: {},
-      planId: "basic",
+      planId: "starter",
       planName: "Basic",
     };
   }
