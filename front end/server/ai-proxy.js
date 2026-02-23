@@ -1553,18 +1553,41 @@ function isPlausibleLotNumber(raw) {
 }
 
 /**
+ * Templates de bordereaux — zoning par maison de vente
+ * millon: Invoice No. + Lot/Description/Hammer
+ * boisgirard: BORDEREAU ACQUEREUR + Ligne/Description/Adjudication — zone lots vs zone fiscale
+ */
+const BORDEREAU_TEMPLATES = {
+  millon: {
+    lotHeaderKeywords: ["lot", "description", "hammer"],
+    financialKeywords: ["total", "iban", "invoice total"],
+  },
+  boisgirard: {
+    lotHeaderKeywords: ["ligne", "description", "adjudication"],
+    financialKeywords: ["taux", "base adjug", "base ht", "total ht", "frais engag", "frais drouot", "somme à payer"],
+  },
+};
+
+function detectBordereauTemplate(ocrText) {
+  const text = String(ocrText || "").toLowerCase();
+  if (text.includes("boisgirard") || text.includes("bordereau acquereur")) return "boisgirard";
+  if (text.includes("millon") || text.includes("riviera") || /\binvoice\s+no\./i.test(text)) return "millon";
+  return null;
+}
+
+/**
  * Détecte la zone tableau sur une page (zones logiques du document).
  * Les lots ne peuvent exister que dans cette zone.
  * @param {{ words: Array, lines?: Array }} page - Page avec words (et optionnellement lines)
- * @returns {{ headerY: number|null, tableStartY: number, tableEndY: number }|null} - null = pas de zone détectée (fallback page entière)
+ * @param {string|null} template - 'millon' | 'boisgirard' | null
+ * @returns {{ headerY: number|null, tableStartY: number, tableEndY: number }|null}
  */
-function detectTableZone(page) {
+function detectTableZone(page, template = null) {
   const words = (page.words || []).filter(
     (w) => w && w.text && w.bbox && typeof w.bbox.y0 === "number"
   );
   if (words.length === 0) return null;
 
-  // Construire les lignes (cluster Y) comme extractLotsFromOcrWords
   const sorted = words
     .map((w) => ({
       ...w,
@@ -1586,39 +1609,52 @@ function detectTableZone(page) {
 
   const minY = Math.min(...words.map((w) => w.bbox.y0));
   const maxY = Math.max(...words.map((w) => w.bbox.y1));
-  const pageHeight = maxY - minY || 1;
 
-  // Header: ligne contenant Lot + (Description OU Hammer OU Price OU Adjudication OU Prix)
-  const headerPatterns = [
-    ["lot", "description"],
-    ["lot", "hammer"],
-    ["lot", "price"],
-    ["lot", "adjudication"],
-    ["lot", "prix"],
-    ["ligne", "description"],
-    ["numéro", "description"],
-    ["n°", "description"],
-    ["no.", "description"],
-  ];
   let headerY = null;
-  for (const row of rows) {
-    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
-    const hasDescOrPrice =
-      /description|hammer|price|adjudication|prix/i.test(full);
-    if (hasLot && hasDescOrPrice) {
-      headerY = row.y;
-      break;
+  const tpl = template && BORDEREAU_TEMPLATES[template];
+
+  if (tpl) {
+    // Boisgirard: header doit contenir Ligne + Description + Adjudication (simultanément)
+    if (template === "boisgirard") {
+      for (const row of rows) {
+        const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+        const hasAll = ["ligne", "description", "adjudication"].every((k) => full.includes(k));
+        if (hasAll) {
+          headerY = row.y;
+          break;
+        }
+      }
+    } else {
+      for (const row of rows) {
+        const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+        const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
+        const hasDescOrPrice = /description|hammer|price|adjudication|prix/i.test(full);
+        if (hasLot && hasDescOrPrice) {
+          headerY = row.y;
+          break;
+        }
+      }
+    }
+  } else {
+    for (const row of rows) {
+      const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+      const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
+      const hasDescOrPrice = /description|hammer|price|adjudication|prix/i.test(full);
+      if (hasLot && hasDescOrPrice) {
+        headerY = row.y;
+        break;
+      }
     }
   }
 
-  // Footer: première ligne sous le header contenant Total, IBAN, Bank, etc.
-  const footerPatterns = /total|iban|bank|paiement|payment|commission|r[eé]gl[eé]|invoice\s+total|montant|amount/i;
   let footerY = null;
+  const footerRe = tpl
+    ? new RegExp(tpl.financialKeywords.join("|"), "i")
+    : /total|iban|bank|paiement|payment|commission|r[eé]gl[eé]|invoice\s+total|montant|amount/i;
   for (const row of rows) {
     if (headerY !== null && row.y <= headerY + 5) continue;
     const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (footerPatterns.test(full)) {
+    if (footerRe.test(full)) {
       footerY = row.y;
       break;
     }
@@ -2083,43 +2119,34 @@ function extractFromOcrTextFallback(ocrText) {
   return out;
 }
 
-function extractLotsFromTable(lines) {
-  // détecter la ligne d'en-tête de tableau (si OCR l'a bien lue)
+function extractLotsFromTable(lines, template = null) {
   let headerIdx = -1;
   let hasLigneColumn = false;
-  let isBoisgirardAntonini = false;
+  const isBoisgirard = template === "boisgirard";
   let hasBoisgirardHeader = false;
-  
-  // Détecter si c'est un bordereau Boisgirard Antonini
-  for (let i = 0; i < Math.min(20, lines.length); i++) {
-    const low = lines[i].text.toLowerCase();
-    if (low.includes("boisgirard") || low.includes("antonini")) {
-      isBoisgirardAntonini = true;
-      console.log('[OCR][BA] Bordereau Boisgirard Antonini détecté');
-      break;
-    }
-  }
-  
-  // Détecter l'en-tête spécifique Boisgirard Antonini : "Ligne Références Description Adjudication"
+
+  const tpl = template && BORDEREAU_TEMPLATES[template];
+  const financialRe = tpl ? new RegExp(tpl.financialKeywords.join("|"), "i") : null;
+
   for (let i = 0; i < lines.length; i++) {
     const low = lines[i].text.toLowerCase();
-    // Regex permissif pour l'en-tête Boisgirard Antonini
-    if (/ligne\s+réf\S*\s+description\s+adjudication/i.test(lines[i].text)) {
-      headerIdx = i;
-      hasLigneColumn = true;
-      hasBoisgirardHeader = true;
-      console.log('[OCR][BA] En-tête tabulaire détecté:', lines[i].text);
-      break;
-    }
-    // Fallback: détection classique
-    if (
-      (low.includes("lot") || low.includes("ligne")) &&
-      (low.includes("description") || low.includes("désignation")) &&
-      (low.includes("adjudication") || low.includes("prix") || low.includes("hammer"))
-    ) {
-      headerIdx = i;
-      hasLigneColumn = low.includes("ligne");
-      break;
+    if (isBoisgirard) {
+      if (["ligne", "description", "adjudication"].every((k) => low.includes(k))) {
+        headerIdx = i;
+        hasLigneColumn = true;
+        hasBoisgirardHeader = true;
+        break;
+      }
+    } else {
+      if (
+        (low.includes("lot") || low.includes("ligne")) &&
+        (low.includes("description") || low.includes("désignation")) &&
+        (low.includes("adjudication") || low.includes("prix") || low.includes("hammer"))
+      ) {
+        headerIdx = i;
+        hasLigneColumn = low.includes("ligne");
+        break;
+      }
     }
   }
   
@@ -2132,12 +2159,13 @@ function extractLotsFromTable(lines) {
   const start = headerIdx >= 0 ? headerIdx + 1 : 0;
   const table = lines.slice(start).filter((l) => l.yn >= 0.18 && l.yn <= 0.90);
 
-  const footerStop = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\d+\s+lot\(s\))/i;
+  const footerStop = financialRe ||
+    /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\d+\s+lot\(s\))/i;
   const lots = [];
   let current = null;
 
-  // MODE SPÉCIFIQUE BOISGIRARD ANTONINI : parsing tabulaire avec deux nombres identiques
-  if (isBoisgirardAntonini && hasBoisgirardHeader) {
+  // MODE SPÉCIFIQUE BOISGIRARD : parsing tabulaire avec zoning strict
+  if (isBoisgirard && hasBoisgirardHeader) {
     console.log('[OCR][BA] Mode parsing tabulaire activé');
     for (const row of table) {
       if (footerStop.test(row.text)) {
@@ -2145,7 +2173,6 @@ function extractLotsFromTable(lines) {
         break;
       }
       
-      // Ignorer lignes parasites
       const lowRow = row.text.toLowerCase();
       if (
         lowRow.includes("nombre de lots") ||
@@ -2153,9 +2180,8 @@ function extractLotsFromTable(lines) {
         lowRow.includes("lots détectés") ||
         lowRow.includes("salle des ventes") ||
         lowRow.includes("bordereau acquereur")
-      ) {
-        continue;
-      }
+      ) continue;
+      if (financialRe && financialRe.test(lowRow)) continue; // Anti-faux-lots: Taux, Base, Total HT, Frais...
 
       // Pattern spécifique Boisgirard : <number> <number> <description...> <price>
       // Les deux premiers nombres sont identiques = numéro de lot
@@ -2165,8 +2191,9 @@ function extractLotsFromTable(lines) {
       if (match) {
         const [, ligne, reference, description, priceStr] = match;
         
-        // Vérifier que les deux nombres sont identiques (signal fiable)
         if (ligne === reference) {
+          const numVal = parseInt(ligne, 10);
+          if (numVal > 5000) continue; // Anti-faux-lots: numéro fiscal
           const lotNumber = ligne;
           const prix_marteau = normalizeAmountStrict(priceStr);
           
@@ -2219,6 +2246,7 @@ function extractLotsFromTable(lines) {
     ) {
       continue;
     }
+    if (isBoisgirard && financialRe && financialRe.test(lowRow)) continue;
 
     const words = row.words || [];
     // split pseudo-colonnes
@@ -2308,8 +2336,12 @@ function extractLotsFromTable(lines) {
       if (after) desc = after;
     }
 
-    // fallback lot detection: parfois le numéro est tout seul dans la première colonne
-    const lotNumberFinal = lotNumber;
+    // Anti-faux-lots Boisgirard: numéro > 5000 = probablement numéro fiscal, ignorer la ligne
+    let lotNumberFinal = lotNumber;
+    if (isBoisgirard && lotNumber && parseInt(lotNumber, 10) > 5000) {
+      lotNumberFinal = null;
+      if (!midText.trim() && !rightText.trim()) continue; // ligne uniquement numérique, ne pas append
+    }
 
     // IMPORTANT: Accepter les lots SANS numéro de lot (normal pour certaines salles comme Boisgirard Antonini)
     // Un lot est valide s'il a une description OU un prix
@@ -2400,11 +2432,14 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     throw new Error("Format non supporté. Utilisez une image (PNG/JPG) ou un PDF.");
   }
 
+  const detectedTemplate = detectBordereauTemplate(ocrRawText);
+  if (detectedTemplate) log(`[OCR]   → Template détecté: ${detectedTemplate}`);
+
   // ÉTAPE OBLIGATOIRE: Découpage en zones logiques — les lots ne peuvent exister QUE dans la zone tableau
   const allWords = pages.flatMap((p) => (p.words || []));
   const tableWordsByPage = [];
   for (const p of pages) {
-    const zone = detectTableZone(p);
+    const zone = detectTableZone(p, detectedTemplate);
     const filtered = filterWordsByTableZone(p.words || [], zone);
     tableWordsByPage.push(...filtered);
     if (zone?.headerY != null) {
@@ -2417,7 +2452,7 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   // Lots: cascade d'extraction (priorité extraction bbox > texte brut > table)
   let lotsAll = [];
   if (tableWords.length > 0) {
-    const fromWords = extractLotsFromOcrWords(tableWords);
+    const fromWords = extractLotsFromOcrWords(tableWords, detectedTemplate);
     if (fromWords.length > 0) {
       lotsAll = fromWords.map((l) => ({
         numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
@@ -2428,7 +2463,7 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
       log(`[OCR]   → Méthode: extraction spatiale (bounding boxes) → ${lotsAll.length} lots`);
     }
   }
-  if (lotsAll.length === 0) {
+  if (lotsAll.length === 0 && detectedTemplate !== "boisgirard") {
     const fromText = extractLotsFromOcrText(ocrRawText);
     if (fromText.length > 0) {
       lotsAll = fromText.map((l) => ({
@@ -2442,12 +2477,25 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   }
   if (lotsAll.length === 0) {
     for (const p of pages) {
-      const zone = detectTableZone(p);
+      const zone = detectTableZone(p, detectedTemplate);
       const linesInZone = filterLinesByTableZone(p.lines || [], zone);
-      const tableLots = extractLotsFromTable(linesInZone);
+      const tableLots = extractLotsFromTable(linesInZone, detectedTemplate);
       for (const l of tableLots) lotsAll.push(l);
     }
     if (lotsAll.length > 0) log(`[OCR]   → Méthode: extraction tabulaire → ${lotsAll.length} lots`);
+  }
+
+  if (lotsAll.length === 0 && detectedTemplate === "boisgirard") {
+    const fallbackBoisgirard = extractLotsFromOcrTextBoisgirard(ocrRawText);
+    if (fallbackBoisgirard.length > 0) {
+      lotsAll = fallbackBoisgirard.map((l) => ({
+        numero_lot: l.numero_lot,
+        description: l.description,
+        prix_marteau: l.prix_marteau,
+        total: l.prix_marteau != null ? Math.round(l.prix_marteau * 1.20 * 100) / 100 : null,
+      }));
+      log(`[OCR]   → Méthode: fallback texte Boisgirard → ${lotsAll.length} lots`);
+    }
   }
 
   // Validation des lots par score de confiance (tous viennent de la zone tableau donc +2)
@@ -2554,6 +2602,67 @@ function normalizePriceToNumber(raw) {
 }
 
 /**
+ * Extraction Boisgirard depuis texte OCR avec zoning strict.
+ * Zone lots = entre "Ligne/Description/Adjudication" et "Taux/Base/Total HT/Frais"
+ */
+function extractLotsFromOcrTextBoisgirard(ocrText) {
+  const lines = ocrText.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const tpl = BORDEREAU_TEMPLATES.boisgirard;
+  const financialRe = new RegExp(tpl.financialKeywords.join("|"), "i");
+
+  let lotZoneStart = -1;
+  let lotZoneEnd = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const low = lines[i].toLowerCase();
+    if (["ligne", "description", "adjudication"].every((k) => low.includes(k))) {
+      lotZoneStart = i + 1;
+    }
+    if (lotZoneStart >= 0 && financialRe.test(low)) {
+      lotZoneEnd = i;
+      break;
+    }
+  }
+  if (lotZoneStart < 0) return [];
+
+  const zoneLines = lines.slice(lotZoneStart, lotZoneEnd);
+  const lots = [];
+  let current = null;
+  const priceAtEnd = /(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?$/i;
+  const baPattern = /^(\d{1,4})\s+(\d{1,4})\s+(.+?)\s+(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?/i;
+
+  for (const line of zoneLines) {
+    const low = line.toLowerCase();
+    if (financialRe.test(low)) continue;
+
+    const match = line.match(baPattern);
+    if (match) {
+      const [, ligne, ref, description, priceStr] = match;
+      if (ligne === ref && parseInt(ligne, 10) <= 5000) {
+        if (current) lots.push(current);
+        current = {
+          numero_lot: ligne,
+          description: description.trim(),
+          prix_marteau: normalizeAmountStrict(priceStr),
+        };
+      } else if (current) {
+        current.description = `${current.description} ${line}`.trim();
+      }
+    } else if (current) {
+      current.description = `${current.description} ${line}`.trim();
+    }
+  }
+  if (current) lots.push(current);
+
+  return lots
+    .filter((l) => (l.description || "").trim().length > 0 || (l.prix_marteau != null && l.prix_marteau > 0))
+    .map((l) => ({
+      numero_lot: l.numero_lot,
+      description: (l.description || "").replace(/\s+/g, " ").trim(),
+      prix_marteau: l.prix_marteau,
+    }));
+}
+
+/**
  * Extraction déterministe depuis texte OCR.
  * Stratégie: on travaille ligne par ligne; on associe un prix en fin de ligne au lot en cours.
  */
@@ -2654,12 +2763,10 @@ function extractLotsFromOcrText(ocrText) {
 
 /**
  * Extraction table/colonnes depuis les bounding boxes OCR (beaucoup plus fiable que le texte brut).
- * - Colonne gauche: numéro de lot (≈ 0-18% largeur)
- * - Colonne droite: adjudication/prix (≈ 72-100% largeur)
- * - Colonne centrale: description (≈ 18-72% largeur)
- * - Les lignes sans numéro de lot sont considérées comme des continuations de description
+ * @param {Array} words - Mots OCR avec bbox
+ * @param {string|null} template - 'millon' | 'boisgirard' pour règles anti-faux-lots
  */
-function extractLotsFromOcrWords(words) {
+function extractLotsFromOcrWords(words, template = null) {
   const cleanedWords = (words || [])
     .filter((w) => w && typeof w.text === "string" && w.text.trim())
     .map((w) => ({
@@ -2703,37 +2810,30 @@ function extractLotsFromOcrWords(words) {
   let current = null;
 
   const isPriceToken = (t) => /\d/.test(t) && !/cm|mm|kg/i.test(t);
-  // repère la ligne d'en-tête (pour ignorer ce qui est au-dessus)
   let headerY = null;
   let hasLigneColumn = false;
-  let isBoisgirardAntonini = false;
-  
-  // Détecter si c'est un bordereau Boisgirard Antonini
-  for (const row of rows.slice(0, 20)) {
-    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (full.includes("boisgirard") || full.includes("antonini")) {
-      isBoisgirardAntonini = true;
-      break;
-    }
-  }
-  
+  const isBoisgirard = template === "boisgirard";
+  const financialRe = isBoisgirard && BORDEREAU_TEMPLATES.boisgirard
+    ? new RegExp(BORDEREAU_TEMPLATES.boisgirard.financialKeywords.join("|"), "i")
+    : null;
+
   for (const row of rows) {
     const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (full.includes("description") && (full.includes("adjudication") || full.includes("prix"))) {
+    if (isBoisgirard) {
+      if (["ligne", "description", "adjudication"].every((k) => full.includes(k))) {
+        headerY = row.y;
+        hasLigneColumn = true;
+        break;
+      }
+    } else if (full.includes("description") && (full.includes("adjudication") || full.includes("prix"))) {
       headerY = row.y;
-      // Détecter si la colonne s'appelle "Ligne" ou "Ligne / Référence"
       hasLigneColumn = full.includes("ligne");
       break;
     }
   }
-  
-  // Pour Boisgirard Antonini, on suppose toujours qu'il y a une colonne "Ligne" même si non détectée
-  if (isBoisgirardAntonini && !hasLigneColumn) {
-    hasLigneColumn = true;
-  }
+  if (isBoisgirard && !hasLigneColumn) hasLigneColumn = true;
 
-  // MODE SPÉCIFIQUE BOISGIRARD ANTONINI : extraction par position spatiale (bbox)
-  if (isBoisgirardAntonini) {
+  if (isBoisgirard) {
     console.log('[OCR][BA] Mode extraction spatiale activé (bbox)');
     console.log(`[OCR][BA] Total mots OCR: ${cleanedWords.length}, Lignes détectées: ${rows.length}`);
     
@@ -2748,8 +2848,8 @@ function extractLotsFromOcrWords(words) {
         // Détecter prix avec décimales: "60,00" ou "60.00"
         const priceMatch = w.text.match(/\b(\d{1,3}[,\u00A0.]\d{2})\b/);
         if (priceMatch) {
-          // Vérifier que ce n'est pas dans un contexte de date/téléphone/total
           const context = row.words.map(ww => ww.text).join(" ").toLowerCase();
+          if (financialRe && financialRe.test(context)) continue; // Anti-faux-lots Boisgirard
           if (!/total|réglé|date|tél|phone|iban|bic/i.test(context)) {
             priceWords.push({
               word: w,
