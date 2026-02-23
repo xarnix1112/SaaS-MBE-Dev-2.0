@@ -175,15 +175,28 @@ Dans Railway → ton service production → **Deployments** → **View logs** : 
 
 Tu vois cette erreur ET la page Stripe affiche "Vous utilisez un compte test" :
 
-**Cause :** Le frontend (www.mbe-sdv.fr) appelait le **backend staging** pour `/api/stripe/connect` (clés test), mais le callback arrivait sur le **backend production** (clés live). Stripe refuse ce mélange.
+**Cause :** Stripe utilise des **client_id différents** pour le mode Test et le mode Live. En production, si tu utilises le client_id du mode Test (récupéré depuis le Dashboard en mode Test), Stripe lance l'OAuth en mode Test → le code renvoyé est un code Test → le backend (avec clé Live) ne peut pas l'échanger.
 
-**Solution :** Le code force désormais www.mbe-sdv.fr à utiliser `api.mbe-sdv.fr` pour tous les appels API. Vérifie :
+**Solution :** Ajouter la variable **STRIPE_CONNECT_CLIENT_ID_LIVE** dans Railway production.
 
-1. **Vercel** : redéploie le frontend (ou push sur master) pour appliquer la correction
-2. **Railway production** : `STRIPE_SECRET_KEY` = `sk_live_...`, `APP_URL` = `https://api.mbe-sdv.fr`
-3. **Stripe Dashboard** (mode Live) : Redirect URI = `https://api.mbe-sdv.fr/stripe/callback`
+### Étapes
 
-Après redéploiement, déconnecte le compte Stripe puis reconnecte : tu ne devrais plus voir "compte test" sur la page Stripe.
+1. **Stripe Dashboard** : bascule en **mode Live** (switch en haut à droite).
+2. **Connect** → **Settings** → **OAuth settings** → copie le **Client ID** (commence par `ca_`).
+3. **Railway** → service production → **Variables** → ajoute :
+   ```
+   STRIPE_CONNECT_CLIENT_ID_LIVE=ca_xxxxxxxxxxxxx
+   ```
+   (colle le Client ID copié depuis Stripe en mode Live)
+4. **Redéploie** le service Railway.
+
+Le backend utilisera automatiquement ce client_id Live quand `STRIPE_SECRET_KEY` commence par `sk_live_`.
+
+### Vérifications complémentaires
+
+- `STRIPE_SECRET_KEY` = `sk_live_...` (clé Live)
+- `APP_URL` = `https://api.mbe-sdv.fr`
+- Redirect URI dans Stripe (mode Live) = `https://api.mbe-sdv.fr/stripe/callback`
 
 ---
 

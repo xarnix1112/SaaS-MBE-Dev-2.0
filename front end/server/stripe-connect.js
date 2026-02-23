@@ -34,6 +34,7 @@ if (fs.existsSync(envLocalPath)) {
 // Variables d'environnement requises
 const STRIPE_SECRET_KEY = process.env.STRIPE_SECRET_KEY;
 const STRIPE_CONNECT_CLIENT_ID = process.env.STRIPE_CONNECT_CLIENT_ID;
+const STRIPE_CONNECT_CLIENT_ID_LIVE = process.env.STRIPE_CONNECT_CLIENT_ID_LIVE; // Client ID Live (obligatoire en prod)
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
@@ -47,10 +48,16 @@ if (!STRIPE_SECRET_KEY) {
   console.log("[stripe-connect] ✅ STRIPE_SECRET_KEY chargée");
 }
 
-if (!STRIPE_CONNECT_CLIENT_ID) {
-  console.warn("[stripe-connect] ⚠️  STRIPE_CONNECT_CLIENT_ID non définie");
+// Client ID : en mode Live (sk_live_), utiliser STRIPE_CONNECT_CLIENT_ID_LIVE si défini
+const isLiveKey = STRIPE_SECRET_KEY && STRIPE_SECRET_KEY.startsWith("sk_live_");
+const effectiveClientId = isLiveKey && STRIPE_CONNECT_CLIENT_ID_LIVE
+  ? STRIPE_CONNECT_CLIENT_ID_LIVE
+  : STRIPE_CONNECT_CLIENT_ID;
+
+if (!effectiveClientId) {
+  console.warn("[stripe-connect] ⚠️  STRIPE_CONNECT_CLIENT_ID non définie" + (isLiveKey && !STRIPE_CONNECT_CLIENT_ID_LIVE ? " (prod: définir STRIPE_CONNECT_CLIENT_ID_LIVE!)" : ""));
 } else {
-  console.log("[stripe-connect] ✅ STRIPE_CONNECT_CLIENT_ID chargée");
+  console.log("[stripe-connect] ✅ Client ID:", isLiveKey ? "LIVE" : "TEST", effectiveClientId ? "OK" : "manquant");
 }
 
 const stripe = STRIPE_SECRET_KEY
@@ -327,9 +334,12 @@ async function updateDevisStatus(firestore, devisId) {
  */
 export async function handleStripeConnect(req, res) {
   try {
-    if (!stripe || !STRIPE_CONNECT_CLIENT_ID) {
+    if (!stripe || !effectiveClientId) {
+      const hint = isLiveKey && !STRIPE_CONNECT_CLIENT_ID_LIVE
+        ? " En production (clés Live), définissez STRIPE_CONNECT_CLIENT_ID_LIVE dans Railway (Connect → Settings en mode Live)."
+        : "";
       return res.status(400).json({ 
-        error: "Stripe Connect non configuré. Vérifiez STRIPE_SECRET_KEY et STRIPE_CONNECT_CLIENT_ID" 
+        error: "Stripe Connect non configuré. Vérifiez STRIPE_SECRET_KEY et STRIPE_CONNECT_CLIENT_ID." + hint
       });
     }
 
@@ -340,13 +350,12 @@ export async function handleStripeConnect(req, res) {
       return res.status(400).json({ error: "Compte SaaS non configuré. Veuillez compléter la configuration MBE." });
     }
 
-    // Générer l'URL OAuth Stripe (le mode test/live dépend de STRIPE_SECRET_KEY)
-    const isLiveMode = STRIPE_SECRET_KEY && STRIPE_SECRET_KEY.startsWith("sk_live_");
-    console.log("[stripe-connect] Mode OAuth:", isLiveMode ? "LIVE (production)" : "TEST (staging)", "| redirect_uri:", `${APP_URL}/stripe/callback`);
+    // Client ID : en Live, utiliser le client_id Live (sinon Stripe affiche "compte test")
+    console.log("[stripe-connect] Mode OAuth:", isLiveKey ? "LIVE" : "TEST", "| client_id:", effectiveClientId.substring(0, 12) + "...", "| redirect_uri:", `${APP_URL}/stripe/callback`);
 
     const url = stripe.oauth.authorizeUrl({
       response_type: "code",
-      client_id: STRIPE_CONNECT_CLIENT_ID,
+      client_id: effectiveClientId,
       scope: "read_write",
       redirect_uri: `${APP_URL}/stripe/callback`,
       state: saasAccountId, // Passer le saasAccountId dans le state
@@ -1271,10 +1280,10 @@ export async function handleStripeDisconnect(req, res, firestore) {
       return res.status(400).json({ error: "Aucun compte Stripe connecté" });
     }
 
-    // Révoquer l'accès OAuth (optionnel mais recommandé)
+    // Révoquer l'accès OAuth (client_id doit correspondre au mode du compte connecté)
     try {
       await stripe.oauth.deauthorize({
-        client_id: STRIPE_CONNECT_CLIENT_ID,
+        client_id: effectiveClientId,
         stripe_user_id: stripeIntegration.stripeAccountId,
       });
     } catch (err) {
