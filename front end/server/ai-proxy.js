@@ -53,6 +53,12 @@ import {
   checkFeature,
   checkLimit,
 } from "./middleware/featureFlags.js";
+import {
+  hasCustomPaytweak,
+  getPaymentProviderConfig,
+  getPaytweakApiKey,
+  createPaytweakLinkForAccount,
+} from "./payment-provider.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -9222,8 +9228,54 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
           } else {
             const saasAccount = saasAccountDoc.data();
             const stripeAccountId = saasAccount.integrations?.stripe?.stripeAccountId;
-            
-            if (!stripeAccountId) {
+            const paymentConfig = await getPaymentProviderConfig(firestore, saasAccountId);
+            const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+            if (usePaytweak) {
+              try {
+                const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+                const clientName = devis.client?.name || 'Client';
+                const bordereauNumber = ocrResult.numero_bordereau || '';
+                const auctionHouse = ocrResult.salle_vente || '';
+                const descriptionParts = [clientName];
+                if (bordereauNumber) descriptionParts.push(bordereauNumber);
+                if (auctionHouse) descriptionParts.push(auctionHouse);
+                const description = descriptionParts.join(' | ');
+                const paytweakResult = await createPaytweakLinkForAccount(firestore, saasAccountId, {
+                  amount: totalAmount,
+                  currency: 'EUR',
+                  reference: devis.reference || devisId,
+                  description: description || `Devis ${devis.reference || devisId} - PRINCIPAL`,
+                  customer: {
+                    name: devis.client?.name || '',
+                    email: devis.client?.email || '',
+                    phone: devis.client?.phone || '',
+                  },
+                }, baseUrl);
+                const paiementRef = await firestore.collection('paiements').add({
+                  devisId,
+                  amount: totalAmount,
+                  type: 'PRINCIPAL',
+                  status: 'PENDING',
+                  url: paytweakResult.url,
+                  saasAccountId,
+                  paymentProvider: 'paytweak',
+                  createdAt: Timestamp.now(),
+                  updatedAt: Timestamp.now(),
+                });
+                const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+                const existingLinks = devisDoc.exists ? (devisDoc.data().paymentLinks || []) : [];
+                await firestore.collection('quotes').doc(devisId).update({
+                  paymentLinks: [...existingLinks, { id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
+                  status: 'awaiting_payment',
+                  timeline: FieldValue.arrayUnion({ id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+                  updatedAt: Timestamp.now(),
+                });
+                console.log(`[Calcul] ✅ Lien Paytweak auto-généré: ${paytweakResult.url}`);
+              } catch (paytweakErr) {
+                console.error('[Calcul] ❌ Erreur Paytweak auto-génération:', paytweakErr);
+              }
+            } else if (!stripeAccountId) {
               console.log(`[Calcul] ⚠️  Compte Stripe non connecté pour le compte SaaS ${saasAccountId}, pas de génération automatique`);
             } else if (!stripe) {
               console.error(`[Calcul] ❌ Stripe non configuré (STRIPE_SECRET_KEY manquante)`);
@@ -9835,6 +9887,144 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[API] Erreur mise à jour plan:', error);
     return res.status(500).json({ error: error.message || 'Erreur lors de la mise à jour du plan' });
+  }
+});
+
+// ===== PAYMENT PROVIDER (Stripe / Paytweak) - Feature customPaytweak pour compte es4IiIhl03aPttsTz5xj =====
+
+// GET /api/account/payment-settings
+app.get('/api/account/payment-settings', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const config = await getPaymentProviderConfig(firestore, saasAccountId);
+    if (!config) return res.status(404).json({ error: 'Compte non trouvé' });
+    return res.json({
+      hasCustomPaytweak: config.hasCustomPaytweak,
+      paymentProvider: config.paymentProvider,
+      paytweakConfigured: config.paytweakConfigured,
+      stripeConnected: config.stripeConnected,
+    });
+  } catch (error) {
+    console.error('[API] Erreur payment-settings:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/payment-settings
+app.put('/api/account/payment-settings', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { paymentProvider } = req.body;
+  if (!paymentProvider || !['stripe', 'paytweak'].includes(paymentProvider)) {
+    return res.status(400).json({ error: 'paymentProvider invalide. Valeurs: stripe ou paytweak' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
+    }
+    if (paymentProvider === 'paytweak') {
+      const apiKey = await getPaytweakApiKey(firestore, saasAccountId);
+      if (!apiKey) {
+        return res.status(400).json({ error: 'Configurez d\'abord votre clé API Paytweak dans les paramètres' });
+      }
+    }
+    await saasRef.update({
+      paymentProvider,
+      updatedAt: Timestamp.now(),
+    });
+    invalidateSaasAccountCache(req.uid);
+    console.log(`[API] ✅ Payment provider mis à jour: saasAccountId=${saasAccountId}, paymentProvider=${paymentProvider}`);
+    return res.json({ success: true, paymentProvider });
+  } catch (error) {
+    console.error('[API] Erreur payment-settings:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/paytweak-key
+app.put('/api/account/paytweak-key', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { apiKey } = req.body;
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    return res.status(400).json({ error: 'Clé API requise' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
+    }
+    await saasRef.collection('secrets').doc('paytweak').set({
+      apiKey: apiKey.trim(),
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Clé Paytweak enregistrée pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[API] Erreur paytweak-key:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/paytweak/link - Génération de lien Paytweak avec clé du compte (requireAuth)
+app.post('/api/paytweak/link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Paytweak n\'est pas disponible pour votre compte' });
+    }
+    const { amount, currency = 'EUR', reference, description, customer, successUrl, cancelUrl } = req.body;
+    if (!amount || !reference || !customer?.email) {
+      return res.status(400).json({ error: 'Champs requis: amount, reference, customer.email' });
+    }
+    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+    const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
+    return res.json({ url: result.url, id: result.id });
+  } catch (error) {
+    console.error('[API] Erreur paytweak/link:', error);
+    if (error.message?.includes('non configurée')) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/payment/link - Lien unifié Stripe ou Paytweak (selon paymentProvider du compte)
+app.post('/api/payment/link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const config = await getPaymentProviderConfig(firestore, saasAccountId);
+    const usePaytweak = config?.hasCustomPaytweak && config?.paymentProvider === 'paytweak' && config?.paytweakConfigured;
+    if (usePaytweak) {
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
+      return res.json({ url: result.url, id: result.id });
+    }
+    if (!stripe) return res.status(400).json({ error: 'Stripe non configuré' });
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    const stripeAccountId = saasDoc.exists ? saasDoc.data()?.integrations?.stripe?.stripeAccountId : null;
+    const payload = buildPaymentLinkPayload(req.body);
+    const createOptions = stripeAccountId ? { stripeAccount: stripeAccountId } : {};
+    const paymentLink = await stripe.paymentLinks.create(payload, createOptions);
+    if (!paymentLink?.url) return res.status(502).json({ error: 'Pas d\'URL Stripe retournée' });
+    return res.json({ url: paymentLink.url, id: paymentLink.id });
+  } catch (error) {
+    console.error('[API] Erreur payment/link:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
   }
 });
 

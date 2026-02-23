@@ -195,6 +195,11 @@ service cloud.firestore {
       allow create: if request.auth != null 
         && request.resource.data.ownerUid == request.auth.uid;
     }
+
+    // Secrets (clé API Paytweak) : refus explicite aux clients, seul le backend y accède
+    match /saasAccounts/{accountId}/secrets/{secretId} {
+      allow read, write: if false;
+    }
     
     match /{document=**} {
       allow read, write: if false;

@@ -11,6 +11,7 @@
 import Stripe from "stripe";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import dotenv from "dotenv";
+import { getPaymentProviderConfig, createPaytweakLinkForAccount } from "./payment-provider.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
@@ -481,6 +482,72 @@ export async function handleCreatePaiement(req, res, firestore) {
 
     const saasAccount = saasAccountDoc.data();
     const stripeIntegration = saasAccount.integrations?.stripe;
+
+    // Vérifier si le compte utilise Paytweak (feature customPaytweak)
+    const paymentConfig = await getPaymentProviderConfig(firestore, saasAccountId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    if (usePaytweak) {
+      // Générer le lien Paytweak
+      const clientName = devis.client?.name || 'Client';
+      const bordereauNumber = devis.auctionSheet?.bordereauNumber || '';
+      const auctionHouse = devis.lot?.auctionHouse || '';
+      const descriptionParts = [clientName];
+      if (bordereauNumber) descriptionParts.push(bordereauNumber);
+      if (auctionHouse) descriptionParts.push(auctionHouse);
+      const descriptionStr = descriptionParts.join(' | ') || `Devis ${devis.reference || devisId} - ${type}`;
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      try {
+        const paytweakResult = await createPaytweakLinkForAccount(firestore, saasAccountId, {
+          amount,
+          currency: 'EUR',
+          reference: devis.reference || devisId,
+          description: description || descriptionStr,
+          customer: {
+            name: devis.client?.name || '',
+            email: devis.client?.email || '',
+            phone: devis.client?.phone || '',
+          },
+        }, baseUrl);
+        const paiementId = await createPaiement(firestore, {
+          devisId,
+          saasAccountId,
+          amount,
+          type,
+          status: "PENDING",
+          url: paytweakResult.url,
+          paymentProvider: 'paytweak',
+        });
+        await addTimelineEventToQuote(firestore, devisId, {
+          id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          date: Timestamp.now(),
+          status: devis.status || 'awaiting_payment',
+          description: type === 'PRINCIPAL' ? `Lien Paytweak généré (${amount.toFixed(2)}€)` : `Lien Paytweak surcoût (${amount.toFixed(2)}€)`,
+          user: 'Système',
+        });
+        const devisRef = firestore.collection("quotes").doc(devisId);
+        const devisDoc = await devisRef.get();
+        const existingPaymentLinks = devisDoc.data()?.paymentLinks || [];
+        const newPaymentLink = {
+          id: paiementId,
+          url: paytweakResult.url,
+          amount,
+          type,
+          status: 'pending',
+          createdAt: Timestamp.now(),
+        };
+        await devisRef.update({
+          paymentLinks: [...existingPaymentLinks, newPaymentLink],
+          status: type === 'PRINCIPAL' ? 'awaiting_payment' : devisDoc.data()?.status,
+          updatedAt: Timestamp.now(),
+        });
+        console.log("[stripe-connect] ✅ Lien Paytweak créé:", paytweakResult.url);
+        return res.json({ url: paytweakResult.url, sessionId: paytweakResult.id, paiementId });
+      } catch (paytweakError) {
+        console.error("[stripe-connect] ❌ Erreur Paytweak:", paytweakError);
+        return res.status(500).json({ error: paytweakError.message || "Erreur lors de la génération du lien Paytweak" });
+      }
+    }
 
     if (!stripeIntegration || !stripeIntegration.connected || !stripeIntegration.stripeAccountId) {
       console.error("[stripe-connect] ❌ Compte SaaS sans Stripe connecté:", saasAccountId);

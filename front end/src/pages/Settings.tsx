@@ -4,12 +4,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 interface EmailAccount {
   id: string;
@@ -72,6 +74,17 @@ export default function Settings() {
   const [typeformStatus, setTypeformStatus] = useState<TypeformStatus | null>(null);
   const [isLoadingTypeform, setIsLoadingTypeform] = useState(false);
   const [settingsTab, setSettingsTab] = useState('emails');
+
+  // État Paytweak / Payment Provider (feature customPaytweak)
+  const [paymentSettings, setPaymentSettings] = useState<{
+    hasCustomPaytweak: boolean;
+    paymentProvider: 'stripe' | 'paytweak';
+    paytweakConfigured: boolean;
+    stripeConnected: boolean;
+  } | null>(null);
+  const [paytweakApiKeyInput, setPaytweakApiKeyInput] = useState('');
+  const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
+  const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -108,6 +121,70 @@ export default function Settings() {
       // Ne pas afficher d'erreur si le client n'existe pas encore
     } finally {
       setIsLoadingStripe(false);
+    }
+  };
+
+  // Charger les paramètres de paiement (provider Stripe/Paytweak)
+  const loadPaymentSettings = async () => {
+    try {
+      setIsLoadingPaymentSettings(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/payment-settings');
+      if (!res.ok) {
+        setPaymentSettings(null);
+        return;
+      }
+      const data = await res.json();
+      setPaymentSettings(data);
+    } catch (error) {
+      console.error('[Settings] Erreur chargement payment-settings:', error);
+      setPaymentSettings(null);
+    } finally {
+      setIsLoadingPaymentSettings(false);
+    }
+  };
+
+  const handleSavePaytweakKey = async () => {
+    if (!paytweakApiKeyInput.trim()) {
+      toast.error('Saisissez votre clé API Paytweak');
+      return;
+    }
+    try {
+      setIsSavingPaytweakKey(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/paytweak-key', {
+        method: 'PUT',
+        body: JSON.stringify({ apiKey: paytweakApiKeyInput.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      toast.success('Clé Paytweak enregistrée');
+      setPaytweakApiKeyInput('');
+      await loadPaymentSettings();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingPaytweakKey(false);
+    }
+  };
+
+  const handleSetPaymentProvider = async (provider: 'stripe' | 'paytweak') => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/payment-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ paymentProvider: provider }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success(`Outil de paiement: ${provider === 'paytweak' ? 'Paytweak' : 'Stripe'}`);
+      await loadPaymentSettings();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
     }
   };
 
@@ -176,6 +253,7 @@ export default function Settings() {
         if (source === 'stripe') {
           toast.success('Compte Stripe connecté avec succès');
           loadStripeStatus();
+          loadPaymentSettings();
         } else if (source === 'google-sheets') {
           toast.success('Google Sheets connecté avec succès');
           loadGoogleSheetsStatus();
@@ -205,6 +283,12 @@ export default function Settings() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (settingsTab === 'paiements') {
+      loadPaymentSettings();
+    }
+  }, [settingsTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Charger le statut Google Sheets
   const loadGoogleSheetsStatus = async () => {
@@ -1299,6 +1383,87 @@ export default function Settings() {
                 )}
               </CardContent>
             </Card>
+
+            {/* Section Paytweak + sélecteur provider (compte avec customPaytweak) */}
+            {paymentSettings?.hasCustomPaytweak && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <KeyRound className="w-5 h-5" />
+                    Paytweak & choix de l&apos;outil de paiement
+                  </CardTitle>
+                  <CardDescription>
+                    Connectez Paytweak avec votre clé API et choisissez quel outil génère vos liens de paiement
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {isLoadingPaymentSettings ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Chargement...
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-2">
+                        <Label>Clé API Paytweak</Label>
+                        <div className="flex gap-2">
+                          <Input
+                            type="password"
+                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Votre clé API Paytweak"}
+                            value={paytweakApiKeyInput}
+                            onChange={(e) => setPaytweakApiKeyInput(e.target.value)}
+                            className="flex-1"
+                          />
+                          <Button
+                            onClick={handleSavePaytweakKey}
+                            disabled={isSavingPaytweakKey || !paytweakApiKeyInput.trim()}
+                          >
+                            {isSavingPaytweakKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
+                          </Button>
+                        </div>
+                        {paymentSettings.paytweakConfigured && (
+                          <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-4 h-4" />
+                            Paytweak configuré
+                          </p>
+                        )}
+                      </div>
+
+                      {paymentSettings.stripeConnected && paymentSettings.paytweakConfigured && (
+                        <div className="space-y-2">
+                          <Label>Outil pour générer les liens de paiement</Label>
+                          <div className="flex gap-4">
+                            <Button
+                              variant={paymentSettings.paymentProvider === 'stripe' ? 'default' : 'outline'}
+                              onClick={() => handleSetPaymentProvider('stripe')}
+                            >
+                              <CreditCard className="w-4 h-4 mr-2" />
+                              Stripe
+                            </Button>
+                            <Button
+                              variant={paymentSettings.paymentProvider === 'paytweak' ? 'default' : 'outline'}
+                              onClick={() => handleSetPaymentProvider('paytweak')}
+                            >
+                              <KeyRound className="w-4 h-4 mr-2" />
+                              Paytweak
+                            </Button>
+                          </div>
+                          <p className="text-sm text-muted-foreground">
+                            Actuellement utilisé : <strong>{paymentSettings.paymentProvider === 'paytweak' ? 'Paytweak' : 'Stripe'}</strong>
+                          </p>
+                        </div>
+                      )}
+
+                      {paymentSettings.stripeConnected && !paymentSettings.paytweakConfigured && (
+                        <p className="text-sm text-muted-foreground">
+                          Configurez votre clé API Paytweak ci-dessus pour pouvoir choisir entre Stripe et Paytweak.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            )}
           </TabsContent>
         </Tabs>
       </div>

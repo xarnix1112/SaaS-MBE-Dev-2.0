@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { useQuotes } from "@/hooks/use-quotes";
 import { useToast } from "@/components/ui/use-toast";
 import { useQueryClient } from "@tanstack/react-query";
-import { createStripeLink } from "@/lib/stripe";
+import { createPaymentLink } from "@/lib/stripe";
 import { setDoc, doc, Timestamp, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
 import { createTimelineEvent, timelineEventToFirestore } from "@/lib/quoteTimeline";
@@ -351,7 +351,7 @@ export default function Payments() {
                                     return;
                                   }
                                   
-                                  const res = await createStripeLink({
+                                  const res = await createPaymentLink({
                                     quote,
                                     amount: total,
                                     currency: "EUR",
@@ -427,7 +427,7 @@ export default function Payments() {
                                   queryClient.invalidateQueries({ queryKey: ['quotes'] });
                                   
                                   toast({
-                                    title: "Lien Stripe généré et sauvegardé",
+                                    title: "Lien de paiement généré et sauvegardé",
                                     description: "Le lien de paiement a été sauvegardé sur le devis",
                                   });
                                 } catch (error) {
@@ -443,7 +443,7 @@ export default function Payments() {
                               }}
                             >
                               <LinkIcon className="w-3 h-3" />
-                              {generatingId === `${quote.id}-stripe` ? "Stripe..." : "Lien Stripe"}
+                              {generatingId === `${quote.id}-stripe` ? "Génération..." : "Générer un lien"}
                             </Button>
                         )}
                         {quote.paymentStatus === 'paid' && (
