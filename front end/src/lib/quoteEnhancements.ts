@@ -719,7 +719,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
           ? firestoreTimeline
           : (q.timeline && q.timeline.length > 0 ? q.timeline : []);
         
-        if (hasPackaging || hasShipping || paymentLinks || finalTimeline.length > 0 || finalPaymentStatus !== q.paymentStatus) {
+        const hasRealDimensions = firestoreData.realDimensions != null;
+        if (hasPackaging || hasShipping || paymentLinks || finalTimeline.length > 0 || finalPaymentStatus !== q.paymentStatus || hasRealDimensions) {
           console.log('[mergeEnhancements] Données récupérées depuis Firestore (sans bordereau):', {
             quoteId: q.id,
             packagingPrice: snap.packagingPrice,

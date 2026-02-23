@@ -647,6 +647,15 @@ export async function loadQuotes(): Promise<Quote[]> {
         estimated: q.lotDimensions.estimated !== undefined ? q.lotDimensions.estimated : true,
       } : (q.lot?.dimensions || { length: 0, width: 0, height: 0, weight: 0, estimated: false });
       
+      // Fusionner les dimensions réelles (sauvegardées depuis Préparation, stockées à la racine ou dans lot)
+      const realDimensions = q.realDimensions ? {
+        length: Number(q.realDimensions.length) || 0,
+        width: Number(q.realDimensions.width) || 0,
+        height: Number(q.realDimensions.height) || 0,
+        weight: Number(q.realDimensions.weight) || 0,
+        estimated: q.realDimensions.estimated !== undefined ? q.realDimensions.estimated : false,
+      } : (q.lot?.realDimensions || undefined);
+      
       // Fusionner les informations de livraison
       const deliveryMode = q.deliveryMode !== undefined && q.deliveryMode !== null ? q.deliveryMode : (q.delivery?.mode || 'client');
       const deliveryContactName = q.deliveryContactName !== undefined && q.deliveryContactName !== null ? q.deliveryContactName : (q.delivery?.contact?.name || '');
@@ -681,6 +690,7 @@ export async function loadQuotes(): Promise<Quote[]> {
           value: lotValue,
           auctionHouse: lotAuctionHouse,
           dimensions: lotDimensions,
+          realDimensions,
         },
         // Fusionner les informations de livraison
         delivery: {
