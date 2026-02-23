@@ -23,6 +23,7 @@
     "start": "npm run build && npm run serve",
     "stripe:check": "node scripts/check-stripe-config.mjs",
     "stripe:init": "node scripts/init-firestore-stripe.mjs",
+    "plans:init": "node scripts/init-plans.mjs",
     "test:firebase": "node scripts/test-firebase-config.mjs"
   },
   "dependencies": {

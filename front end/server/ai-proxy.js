@@ -48,6 +48,11 @@ import {
   handleGetShipmentGroup,
   handleDeleteShipmentGroup,
 } from "./shipmentGroups.js";
+import {
+  getAccountFeaturesAndLimits,
+  checkFeature,
+  checkLimit,
+} from "./middleware/featureFlags.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -7622,6 +7627,22 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
 
     let newDevisCount = 0;
 
+    // Feature flags: vérifier la limite de devis pour le plan
+    let remainingQuotes = Infinity;
+    try {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      const saasData = saasAccountDoc.exists ? saasAccountDoc.data() : {};
+      const rawPlan = saasData.planId || saasData.plan || 'basic';
+      const planId = rawPlan === 'free' ? 'basic' : rawPlan;
+      const planDoc = await firestore.collection('plans').doc(planId).get();
+      const plan = planDoc.exists ? planDoc.data() : null;
+      const maxQuotes = plan?.limits?.quotesPerYear ?? 200;
+      const used = saasData.usage?.quotesUsedThisYear ?? 0;
+      remainingQuotes = maxQuotes === -1 ? Infinity : Math.max(0, maxQuotes - used);
+    } catch (limitErr) {
+      console.warn('[Google Sheets Sync] ⚠️  Vérification limite plan ignorée:', limitErr.message);
+    }
+
     // Traiter uniquement les nouvelles lignes
     for (let i = startIndex; i < rows.length; i++) {
       const row = rows[i];
@@ -7946,11 +7967,25 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         // Référence générée automatiquement
         reference: `GS-${Date.now()}-${sheetRowIndex}`
       };
-      
+
+      // Vérifier limite plan avant création
+      if (remainingQuotes <= 0) {
+        console.log(`[Google Sheets Sync] ⚠️  Limite devis atteinte pour saasAccountId ${saasAccountId}, ligne ${sheetRowIndex} ignorée`);
+        continue;
+      }
+
       const devisRef = await firestore.collection('quotes').add(quoteData);
       const devisId = devisRef.id;
 
       newDevisCount++;
+      remainingQuotes--;
+      try {
+        await firestore.collection('saasAccounts').doc(saasAccountId).update({
+          'usage.quotesUsedThisYear': FieldValue.increment(1),
+        });
+      } catch (incErr) {
+        console.warn('[Google Sheets Sync] ⚠️  Incrément usage échoué:', incErr.message);
+      }
       console.log(`[Google Sheets Sync] ✅ Devis créé pour la ligne ${sheetRowIndex} (${clientName || clientEmail})`);
 
       // 🔔 CRÉER UNE NOTIFICATION pour le nouveau devis
@@ -9577,6 +9612,18 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       createdAt: Timestamp.now(),
       isActive: true,
       plan: 'free',
+      planId: 'basic',
+      customFeatures: {},
+      usage: { quotesUsedThisYear: 0 },
+      billingPeriod: (() => {
+        const now = new Date();
+        const yearStart = new Date(now.getFullYear(), 0, 1);
+        const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+        return {
+          yearStart: yearStart.toISOString(),
+          yearEnd: yearEnd.toISOString(),
+        };
+      })(),
     };
 
     console.log('[AI Proxy] Étape 3/5: Création saasAccount...');
@@ -9619,6 +9666,25 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       ? 'La base de données Firestore n\'est pas configurée. Allez dans la console Firebase (Build → Firestore Database) et créez la base de données si nécessaire.'
       : (error.message || 'Erreur lors de la création du compte');
     return res.status(500).json({ error: userMessage });
+  }
+});
+
+// ===== ROUTE FEATURE FLAGS / PLANS =====
+
+// Récupérer les features, limites et usage du compte SaaS connecté
+app.get("/api/features", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  if (!req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+  try {
+    const data = await getAccountFeaturesAndLimits(firestore, req.saasAccountId);
+    return res.json(data);
+  } catch (error) {
+    console.error('[API] Erreur /api/features:', error);
+    return res.status(500).json({ error: 'Erreur récupération features' });
   }
 });
 

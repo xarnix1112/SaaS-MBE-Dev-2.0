@@ -1,70 +1,190 @@
 /**
- * Middleware Feature Flags
- * Vérifie que l'utilisateur a accès à une feature selon son plan + overrides
+ * Middleware Feature Flags / Limites
+ *
+ * Architecture:
+ * - plans/{planId} : features + limits (dynamiques)
+ * - saasAccounts/{id} : planId, customFeatures, usage, billingPeriod
+ * - finalFeatures = { ...plan.features, ...saasAccount.customFeatures }
+ *
+ * Utilise saasAccountId (req.saasAccountId) - niveau tenant/organisation
  */
 
-import { getFirestore } from 'firebase-admin/firestore';
-
-// Features incluses par plan (par défaut)
-export const PLAN_FEATURES = {
-  basic: ['coreQuotes', 'basicPayments'],
-  pro: ['coreQuotes', 'basicPayments', 'advancedAnalytics', 'customWorkflows', 'prioritySupport'],
-  enterprise: ['coreQuotes', 'basicPayments', 'advancedAnalytics', 'customWorkflows', 'prioritySupport', 'apiAccess', 'customBranding', 'dedicatedSupport'],
-};
+function resolvePlanId(raw) {
+  const id = raw || "basic";
+  return id === "free" ? "basic" : id;
+}
 
 /**
- * Récupère les features actives pour un userId
+ * Récupère les features finales pour un saasAccountId
+ * @param {FirebaseFirestore.Firestore} firestore
+ * @param {string} saasAccountId
+ * @returns {Promise<{ features: Record<string, boolean>, plan: object | null }>}
  */
-export async function getUserFeatures(userId) {
-  if (!userId) return new Set(PLAN_FEATURES.basic);
+async function getAccountFeatures(firestore, saasAccountId) {
+  if (!firestore || !saasAccountId) {
+    return { features: {}, plan: null };
+  }
 
-  const db = getFirestore();
-  const userDoc = await db.collection('users').doc(userId).get();
-  if (!userDoc.exists) return new Set(PLAN_FEATURES.basic);
+  const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+  if (!saasDoc.exists) return { features: {}, plan: null };
 
-  const data = userDoc.data();
-  const plan = data.plan || 'basic';
-  const planFeatures = PLAN_FEATURES[plan] || PLAN_FEATURES.basic;
-  const overrides = data.features || {};
+  const saasData = saasDoc.data();
+  const planId = resolvePlanId(saasData.planId || saasData.plan);
+  const customFeatures = saasData.customFeatures || {};
 
-  const active = new Set(planFeatures);
-  Object.entries(overrides).forEach(([key, enabled]) => {
-    if (enabled) active.add(key);
-    else active.delete(key);
-  });
+  const planSnapshot = await firestore.collection("plans").doc(planId).get();
+  const plan = planSnapshot.exists ? planSnapshot.data() : null;
+  const planFeatures = plan?.features || {};
 
-  return active;
+  // customFeatures écrase le plan
+  const finalFeatures = { ...planFeatures, ...customFeatures };
+
+  return { features: finalFeatures, plan };
+}
+
+/**
+ * Récupère les infos complètes (features + limits + usage) pour le frontend
+ * @param {FirebaseFirestore.Firestore} firestore
+ * @param {string} saasAccountId
+ */
+async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
+  const { features, plan } = await getAccountFeatures(firestore, saasAccountId);
+
+  if (!firestore || !saasAccountId) {
+    return {
+      features: {},
+      limits: {},
+      usage: {},
+      remaining: {},
+      planId: "basic",
+      planName: "Basic",
+    };
+  }
+
+  const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+  if (!saasDoc.exists) {
+    return {
+      features: {},
+      limits: {},
+      usage: {},
+      remaining: {},
+      planId: "basic",
+      planName: "Basic",
+    };
+  }
+
+  const saasData = saasDoc.data();
+  const planId = resolvePlanId(saasData.planId || saasData.plan);
+  const usage = saasData.usage || {};
+  const limits = plan?.limits || {};
+
+  const remaining = {};
+  for (const [key, max] of Object.entries(limits)) {
+    if (max === -1) remaining[key] = -1; // illimité
+    else remaining[key] = Math.max(0, (max || 0) - (usage[key] || 0));
+  }
+
+  return {
+    features,
+    limits,
+    usage,
+    remaining,
+    planId,
+    planName: plan?.name || planId,
+    billingPeriod: saasData.billingPeriod || null,
+  };
 }
 
 /**
  * Middleware Express : vérifie qu'une feature est activée
+ * À placer APRÈS requireAuth (req.saasAccountId requis)
+ *
+ * @param {FirebaseFirestore.Firestore} firestore
+ * @param {string} featureName
  */
-export function checkFeature(featureName) {
+function checkFeature(firestore, featureName) {
   return async (req, res, next) => {
-    const userId = req.user?.uid || req.headers['x-user-id'] || req.query?.userId;
-    if (!userId) {
-      return res.status(401).json({ error: 'Non authentifié', code: 'UNAUTHORIZED' });
+    const saasAccountId = req.saasAccountId;
+    if (!saasAccountId) {
+      return res.status(400).json({
+        error: "Compte SaaS non configuré",
+        code: "SAAS_ACCOUNT_REQUIRED",
+      });
     }
 
     try {
-      const features = await getUserFeatures(userId);
-      if (!features.has(featureName)) {
+      const { features } = await getAccountFeatures(firestore, saasAccountId);
+      if (!features[featureName]) {
         return res.status(403).json({
-          error: `Feature "${featureName}" non disponible sur votre plan`,
-          code: 'FEATURE_DISABLED',
+          error: `Fonctionnalité "${featureName}" non disponible sur votre plan`,
+          code: "FEATURE_DISABLED",
         });
       }
       next();
     } catch (err) {
-      console.error('[featureFlags] Erreur:', err);
-      res.status(500).json({ error: 'Erreur vérification feature', code: 'FEATURE_CHECK_FAILED' });
+      console.error("[featureFlags] Erreur checkFeature:", err);
+      res.status(500).json({
+        error: "Erreur lors de la vérification des droits",
+        code: "FEATURE_CHECK_FAILED",
+      });
     }
   };
 }
 
 /**
- * Vérification synchrone (si features déjà en cache)
+ * Middleware Express : vérifie qu'une limite n'est pas atteinte
+ * À placer APRÈS requireAuth
+ *
+ * @param {FirebaseFirestore.Firestore} firestore
+ * @param {string} limitName (ex: quotesPerYear)
  */
-export function hasFeature(featuresSet, featureName) {
-  return featuresSet && featuresSet.has(featureName);
+function checkLimit(firestore, limitName) {
+  return async (req, res, next) => {
+    const saasAccountId = req.saasAccountId;
+    if (!saasAccountId) {
+      return res.status(400).json({
+        error: "Compte SaaS non configuré",
+        code: "SAAS_ACCOUNT_REQUIRED",
+      });
+    }
+
+    try {
+      const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+      if (!saasDoc.exists) {
+        return res.status(400).json({ error: "Compte SaaS non trouvé" });
+      }
+
+      const saasData = saasDoc.data();
+      const planId = resolvePlanId(saasData.planId || saasData.plan);
+      const planDoc = await firestore.collection("plans").doc(planId).get();
+      const plan = planDoc.exists ? planDoc.data() : null;
+
+      const maxLimit = plan?.limits?.[limitName] ?? 0;
+      const currentUsage = saasData.usage?.[limitName] ?? 0;
+
+      if (maxLimit !== -1 && currentUsage >= maxLimit) {
+        return res.status(403).json({
+          error: `Limite atteinte pour votre plan (${limitName})`,
+          code: "LIMIT_REACHED",
+          limit: limitName,
+          current: currentUsage,
+          max: maxLimit,
+        });
+      }
+      next();
+    } catch (err) {
+      console.error("[featureFlags] Erreur checkLimit:", err);
+      res.status(500).json({
+        error: "Erreur lors de la vérification des limites",
+        code: "LIMIT_CHECK_FAILED",
+      });
+    }
+  };
 }
+
+export {
+  getAccountFeatures,
+  getAccountFeaturesAndLimits,
+  checkFeature,
+  checkLimit,
+};
