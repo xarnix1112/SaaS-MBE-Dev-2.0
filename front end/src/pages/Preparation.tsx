@@ -22,6 +22,7 @@ import {
   Plus,
   Link as LinkIcon,
   Euro,
+  Truck,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -39,7 +40,10 @@ export default function Preparation() {
     weight: '',
   });
   
-  const preparationQuotes = quotes.filter(q => q.status === 'preparation');
+  // Inclure les colis collectés (en attente de préparation) ET en cours de préparation
+  const preparationQuotes = quotes.filter(q => q.status === 'collected' || q.status === 'preparation');
+  const collectedQuotes = preparationQuotes.filter(q => q.status === 'collected');
+  const inPreparationQuotes = preparationQuotes.filter(q => q.status === 'preparation');
 
   const handleOpenDimensionsDialog = (quoteId: string, isEdit: boolean = false) => {
     const quote = quotes.find(q => q.id === quoteId);
@@ -158,6 +162,49 @@ export default function Preparation() {
     }
   };
 
+  // Démarrer la préparation d'un colis collecté
+  const handleStartPreparation = async (quoteId: string) => {
+    try {
+      const quote = quotes.find(q => q.id === quoteId);
+      if (!quote) return;
+
+      const quoteDoc = await getDoc(doc(db, 'quotes', quoteId));
+      const existingData = quoteDoc.data();
+      const existingTimeline = existingData?.timeline || quote.timeline || [];
+
+      const timelineEvent = createTimelineEvent('preparation', 'Préparation du colis démarrée');
+      const firestoreEvent = timelineEventToFirestore(timelineEvent);
+
+      const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
+      const isDuplicate = existingTimeline.some(
+        (e: any) =>
+          e.status === 'preparation' &&
+          e.description === timelineEvent.description &&
+          (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
+      );
+
+      const updatedTimeline = isDuplicate
+        ? existingTimeline
+        : [...existingTimeline, firestoreEvent];
+
+      await setDoc(
+        doc(db, 'quotes', quoteId),
+        {
+          status: 'preparation',
+          timeline: updatedTimeline,
+          updatedAt: Timestamp.now(),
+        },
+        { merge: true }
+      );
+
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      toast.success('Préparation démarrée');
+    } catch (error) {
+      console.error('Erreur:', error);
+      toast.error('Erreur lors du démarrage de la préparation');
+    }
+  };
+
   return (
     <div className="flex flex-col h-full">
       <AppHeader 
@@ -186,9 +233,58 @@ export default function Preparation() {
           </Badge>
         </div>
 
+        {/* Colis collectés - en attente de préparation */}
+        {collectedQuotes.length > 0 && (
+          <div>
+            <h3 className="text-sm font-medium text-muted-foreground mb-3 flex items-center gap-2">
+              <Truck className="w-4 h-4" />
+              Colis collectés ({collectedQuotes.length}) — Cliquez pour démarrer la préparation
+            </h3>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 mb-6">
+              {collectedQuotes.map((quote) => (
+                <Card key={quote.id} className="card-hover">
+                  <CardHeader className="pb-2">
+                    <div className="flex items-start justify-between">
+                      <div>
+                        <CardTitle className="text-base flex items-center gap-2">
+                          <Package className="w-4 h-4" />
+                          {quote.lot.number}
+                        </CardTitle>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          {quote.reference} • {quote.client.name}
+                        </p>
+                      </div>
+                      <StatusBadge status={quote.status} />
+                    </div>
+                  </CardHeader>
+                  <CardContent>
+                    <p className="text-sm mb-3">{quote.lot.description}</p>
+                    <Button
+                      size="sm"
+                      className="gap-1"
+                      onClick={() => handleStartPreparation(quote.id)}
+                    >
+                      <Package className="w-4 h-4" />
+                      Démarrer la préparation
+                    </Button>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Colis en cours de préparation */}
+        {inPreparationQuotes.length > 0 && (
+          <h3 className="text-sm font-medium text-muted-foreground mb-3 flex items-center gap-2">
+            <Ruler className="w-4 h-4" />
+            En cours de préparation ({inPreparationQuotes.length})
+          </h3>
+        )}
+
         {/* Preparation Cards */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-          {preparationQuotes.map((quote) => {
+          {inPreparationQuotes.map((quote) => {
             // Calculer le poids volumétrique estimé et réel
             // Le poids facturé est le maximum entre le poids volumétrique et le poids réel
             const estimatedVolumetricWeight = calculateVolumetricWeight(
@@ -376,7 +472,10 @@ export default function Preparation() {
         {preparationQuotes.length === 0 && (
           <div className="text-center py-12">
             <Package className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
-            <p className="text-muted-foreground">Aucun colis en préparation</p>
+            <p className="text-muted-foreground">Aucun colis collecté ou en préparation</p>
+            <p className="text-sm text-muted-foreground mt-2">
+              Les colis marqués comme collectés dans l'onglet Collectes apparaîtront ici.
+            </p>
           </div>
         )}
       </div>
