@@ -32,7 +32,7 @@ export function useFeatures() {
   return useQuery<FeaturesData>({
     queryKey: ["features"],
     queryFn: fetchFeatures,
-    staleTime: 1000 * 60 * 5, // 5 min
+    staleTime: 1000 * 30, // 30 s pour que le quota devis reste à jour
     refetchOnWindowFocus: true,
   });
 }

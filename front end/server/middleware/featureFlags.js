@@ -7,7 +7,13 @@
  * - finalFeatures = { ...plan.features, ...saasAccount.customFeatures }
  *
  * Utilise saasAccountId (req.saasAccountId) - niveau tenant/organisation
+ *
+ * IMPORTANT: Pour quotesPerYear, on recalcule l'usage à partir du nombre réel de devis
+ * dans Firestore si ce nombre est supérieur au compteur stocké. Cela corrige les
+ * désynchronisations (devis créés hors sync Google Sheets, compteur non incrémenté, etc.)
  */
+
+import { Timestamp } from "firebase-admin/firestore";
 
 function resolvePlanId(raw) {
   if (!raw) return "starter";
@@ -76,8 +82,44 @@ async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
 
   const saasData = saasDoc.data();
   const planId = resolvePlanId(saasData.planId || saasData.plan);
-  const usage = saasData.usage || {};
+  let usage = { ...(saasData.usage || {}) };
   const limits = plan?.limits || {};
+
+  // Recalculer usage.quotesPerYear à partir du nombre réel de devis (corrige les désyncs)
+  if (limits.quotesPerYear != null && limits.quotesPerYear !== -1) {
+    try {
+      const billingPeriod = saasData.billingPeriod || {};
+      const yearStart = billingPeriod.yearStart ? new Date(billingPeriod.yearStart) : new Date(new Date().getFullYear(), 0, 1);
+      const yearEnd = billingPeriod.yearEnd ? new Date(billingPeriod.yearEnd) : new Date(new Date().getFullYear(), 11, 31, 23, 59, 59, 999);
+      const startTs = Timestamp.fromDate(yearStart);
+      const endTs = Timestamp.fromDate(yearEnd);
+
+      let actualCount = 0;
+      try {
+        const countSnap = await firestore
+          .collection("quotes")
+          .where("saasAccountId", "==", saasAccountId)
+          .where("createdAt", ">=", startTs)
+          .where("createdAt", "<=", endTs)
+          .count()
+          .get();
+        actualCount = countSnap.data().count ?? 0;
+      } catch (countErr) {
+        // Fallback si count() non supporté ou index manquant: utiliser .get().size
+        const snap = await firestore
+          .collection("quotes")
+          .where("saasAccountId", "==", saasAccountId)
+          .where("createdAt", ">=", startTs)
+          .where("createdAt", "<=", endTs)
+          .get();
+        actualCount = snap.size;
+      }
+      const storedUsage = usage.quotesUsedThisYear ?? 0;
+      usage.quotesUsedThisYear = Math.max(storedUsage, actualCount);
+    } catch (err) {
+      console.warn("[featureFlags] Recalcul usage devis échoué, utilisation valeur stockée:", err.message);
+    }
+  }
 
   const remaining = {};
   for (const [key, max] of Object.entries(limits)) {
