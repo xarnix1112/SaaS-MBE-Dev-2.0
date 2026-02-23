@@ -9680,7 +9680,24 @@ app.delete("/api/account", requireAuth, async (req, res) => {
     return res.status(500).json({ error: 'Firestore non configuré' });
   }
   const uid = req.uid;
-  const saasAccountId = req.saasAccountId;
+  let saasAccountId = req.saasAccountId;
+
+  // Fallback: si le backend n'a pas trouvé le saasAccountId (cache, projet Firestore différent),
+  // accepter X-Saas-Account-Id du frontend après vérification ownerUid
+  if (!saasAccountId) {
+    const headerId = req.headers['x-saas-account-id'];
+    if (headerId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(headerId).get();
+        if (saasDoc.exists && saasDoc.data()?.ownerUid === uid) {
+          saasAccountId = headerId;
+          console.log(`[API] saasAccountId récupéré via header X-Saas-Account-Id (vérifié ownerUid): ${saasAccountId}`);
+        }
+      } catch (e) {
+        console.warn('[API] Erreur vérification fallback saasAccountId:', e.message);
+      }
+    }
+  }
   if (!saasAccountId) {
     return res.status(400).json({ error: 'Aucun compte SaaS associé' });
   }

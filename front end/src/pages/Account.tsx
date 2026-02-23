@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { logout, deleteCurrentUser } from '@/lib/firebase';
+import { logout, deleteCurrentUser, reauthenticateWithPassword } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { authenticatedFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -14,7 +16,6 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from '@/components/ui/alert-dialog';
 import { Separator } from '@/components/ui/separator';
 import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2 } from 'lucide-react';
@@ -26,6 +27,8 @@ export default function Account() {
   const { saasAccount, user, isLoading } = useAuth();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
+  const [deletePassword, setDeletePassword] = useState('');
+  const [deleteDialogOpen, setDeleteDialogOpen] = useState(false);
 
   useEffect(() => {
     // Si pas de compte SaaS chargé et pas en chargement, rediriger
@@ -48,20 +51,38 @@ export default function Account() {
     }
   };
 
-  const handleDeleteAccount = async () => {
+  const handleDeleteAccount = async (password: string) => {
+    if (!password.trim()) {
+      toast.error('Veuillez entrer votre mot de passe');
+      return;
+    }
     try {
       setIsDeleting(true);
-      const res = await authenticatedFetch('/api/account', { method: 'DELETE' });
+      // 1. Réauthentification (requise par Firebase avant deleteUser - auth/requires-recent-login)
+      await reauthenticateWithPassword(password);
+      // 2. Suppression des données côté backend (avec X-Saas-Account-Id en fallback)
+      const res = await authenticatedFetch('/api/account', {
+        method: 'DELETE',
+        forceRefresh: true,
+        headers: saasAccount?.id ? { 'X-Saas-Account-Id': saasAccount.id } : undefined,
+      });
       if (!res.ok) {
         const data = await res.json().catch(() => ({}));
         throw new Error(data.error || 'Erreur lors de la suppression');
       }
+      // 3. Suppression du compte Firebase Auth
       await deleteCurrentUser();
       toast.success('Compte supprimé définitivement');
       navigate('/welcome', { replace: true });
     } catch (error: unknown) {
       console.error('[Account] Erreur suppression compte:', error);
-      toast.error(error instanceof Error ? error.message : 'Erreur lors de la suppression du compte');
+      const err = error as { code?: string; message?: string };
+      const msg = err?.message ?? (error instanceof Error ? error.message : 'Erreur lors de la suppression du compte');
+      if (err?.code === 'auth/wrong-password' || err?.code === 'auth/invalid-credential' || msg.includes('wrong-password') || msg.includes('invalid-credential')) {
+        toast.error('Mot de passe incorrect');
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setIsDeleting(false);
     }
@@ -262,32 +283,51 @@ export default function Account() {
                     </>
                   )}
                 </Button>
-                <AlertDialog>
-                  <AlertDialogTrigger asChild>
-                    <Button
-                      variant="outline"
-                      className="border-destructive text-destructive hover:bg-destructive/10 sm:w-auto"
-                      disabled={isLoggingOut || isDeleting}
-                    >
-                      <Trash2 className="mr-2 h-4 w-4" />
-                      Supprimer compte
-                    </Button>
-                  </AlertDialogTrigger>
+                <AlertDialog open={deleteDialogOpen} onOpenChange={(open) => { setDeleteDialogOpen(open); if (!open) setDeletePassword(''); }}>
+                  <Button
+                    variant="outline"
+                    className="border-destructive text-destructive hover:bg-destructive/10 sm:w-auto"
+                    disabled={isLoggingOut || isDeleting}
+                    onClick={() => setDeleteDialogOpen(true)}
+                  >
+                    <Trash2 className="mr-2 h-4 w-4" />
+                    Supprimer compte
+                  </Button>
                   <AlertDialogContent>
                     <AlertDialogHeader>
                       <AlertDialogTitle>Supprimer votre compte ?</AlertDialogTitle>
                       <AlertDialogDescription>
                         Cette action est irréversible. Toutes vos données (devis, paiements, paramètres…)
-                        seront définitivement supprimées. Souhaitez-vous continuer ?
+                        seront définitivement supprimées. Entrez votre mot de passe pour confirmer.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    <div className="py-4">
+                      <Label htmlFor="delete-password">Mot de passe</Label>
+                      <Input
+                        id="delete-password"
+                        type="password"
+                        placeholder="Votre mot de passe"
+                        value={deletePassword}
+                        onChange={(e) => setDeletePassword(e.target.value)}
+                        disabled={isDeleting}
+                        className="mt-2"
+                        autoComplete="current-password"
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleDeleteAccount(deletePassword);
+                          }
+                        }}
+                      />
+                    </div>
                     <AlertDialogFooter>
-                      <AlertDialogCancel>Annuler</AlertDialogCancel>
+                      <AlertDialogCancel disabled={isDeleting}>Annuler</AlertDialogCancel>
                       <AlertDialogAction
                         onClick={(e) => {
                           e.preventDefault();
-                          handleDeleteAccount();
+                          handleDeleteAccount(deletePassword);
                         }}
+                        disabled={isDeleting || !deletePassword.trim()}
                         className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
                       >
                         {isDeleting ? (
