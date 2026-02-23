@@ -165,6 +165,7 @@ export interface Quote {
   paymentStatus: PaymentStatus;
   auctionHouseStatus?: AuctionHouseStatus;
   totalAmount: number;
+  paidAmount?: number; // Montant effectivement encaissé (somme des paiements PAID)
   options: {
     insurance: boolean;
     express: boolean;

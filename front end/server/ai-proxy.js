@@ -5536,7 +5536,7 @@ if (TYPEFORM_CLIENT_ID && TYPEFORM_CLIENT_SECRET) {
 // Nécessite authentification pour récupérer saasAccountId
 app.get('/auth/gmail/start', requireAuth, (req, res) => {
   if (!oauth2Client) {
-    return res.status(400).json({ error: 'Gmail OAuth non configuré. Vérifiez GMAIL_CLIENT_ID et GMAIL_CLIENT_SECRET dans .env.local' });
+    return res.status(400).json({ error: 'Gmail OAuth non configuré. Ajoutez GMAIL_CLIENT_ID et GMAIL_CLIENT_SECRET dans les variables Railway (staging/prod) ou .env.local (dev). Voir GMAIL_OAUTH_ENVIRONNEMENTS.md' });
   }
 
   if (!req.saasAccountId) {
@@ -6094,7 +6094,7 @@ if (firestore && oauth2Client) {
 // Route: Démarrer le flux OAuth Google Sheets
 app.get('/auth/google-sheets/start', requireAuth, (req, res) => {
   if (!googleSheetsOAuth2Client) {
-    return res.status(400).json({ error: 'Google Sheets OAuth non configuré. Vérifiez GOOGLE_SHEETS_CLIENT_ID et GOOGLE_SHEETS_CLIENT_SECRET dans .env.local' });
+    return res.status(400).json({ error: 'Google Sheets OAuth non configuré. Ajoutez GOOGLE_SHEETS_CLIENT_ID et GOOGLE_SHEETS_CLIENT_SECRET dans les variables Railway ou .env.local. Voir GMAIL_OAUTH_ENVIRONNEMENTS.md' });
   }
 
   if (!req.saasAccountId) {
@@ -9723,21 +9723,25 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
       
       // Charger les paiements depuis la collection paiements
       let paymentLinksFromPaiements = [];
+      let paidAmount = 0;
       try {
         const paiementsSnapshot = await firestore
           .collection('paiements')
           .where('devisId', '==', doc.id)
           .get();
         
-        paymentLinksFromPaiements = paiementsSnapshot.docs.map(paiementDoc => {
+        paiementsSnapshot.docs.forEach(paiementDoc => {
           const p = paiementDoc.data();
-          return {
+          if (p.status === 'PAID') {
+            paidAmount += (p.amount || 0);
+          }
+          paymentLinksFromPaiements.push({
             id: paiementDoc.id,
             url: p.url || '',
             amount: p.amount || 0,
             createdAt: p.createdAt?.toDate ? p.createdAt.toDate().toISOString() : p.createdAt,
             status: p.status === 'PAID' ? 'paid' : (p.status === 'CANCELLED' ? 'expired' : 'active')
-          };
+          });
         });
       } catch (paiementError) {
         console.warn(`[API] ⚠️  Erreur chargement paiements pour devis ${doc.id}:`, paiementError.message);
@@ -9751,6 +9755,7 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
       return {
         id: doc.id,
         ...data,
+        paidAmount,
         paymentLinks: allPaymentLinks,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,

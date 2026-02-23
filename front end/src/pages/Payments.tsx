@@ -93,7 +93,7 @@ export default function Payments() {
     totalAmount: quotesWithPayment.reduce((sum, q) => sum + q.totalAmount, 0),
     paidAmount: quotesWithPayment
       .filter(q => q.paymentStatus === 'paid')
-      .reduce((sum, q) => sum + q.totalAmount, 0),
+      .reduce((sum, q) => sum + (q.paidAmount ?? q.totalAmount ?? 0), 0),
   };
 
   // Debug: Afficher les devis avec paymentLinks
@@ -261,15 +261,16 @@ export default function Payments() {
                     </TableCell>
                     <TableCell>
                       {(() => {
-                        // Toujours calculer le total réel depuis les options du devis
-                        // Ne pas utiliser le montant du lien de paiement qui peut être obsolète
+                        // Pour les devis payés : afficher le montant encaissé (depuis paiements Stripe)
+                        if (quote.paymentStatus === 'paid' && (quote.paidAmount ?? 0) > 0) {
+                          return <span className="font-semibold text-green-600">{(quote.paidAmount ?? 0).toFixed(2)}€</span>;
+                        }
+                        // Sinon : total du devis (options ou totalAmount)
                         const total = (
                           (quote.options?.packagingPrice || 0) +
                           (quote.options?.shippingPrice || 0) +
                           (quote.options?.insuranceAmount || 0)
                         );
-                        
-                        // Si le total calculé est > 0, l'utiliser, sinon utiliser totalAmount
                         const displayAmount = total > 0 ? total : (quote.totalAmount || 0);
                         return <span className="font-semibold">{displayAmount.toFixed(2)}€</span>;
                       })()}
