@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { logout, deleteCurrentUser, reauthenticateWithPassword } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
+import { useFeatures } from '@/hooks/use-features';
 import { authenticatedFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -25,6 +26,7 @@ import { AppHeader } from '@/components/layout/AppHeader';
 export default function Account() {
   const navigate = useNavigate();
   const { saasAccount, user, isLoading } = useAuth();
+  const { data: featuresData } = useFeatures();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
@@ -163,8 +165,15 @@ export default function Account() {
                   <label className="text-sm font-medium text-muted-foreground">
                     Plan
                   </label>
-                  <p className="text-base font-semibold text-foreground mt-1 capitalize">
-                    {saasAccount.plan === 'pro' ? 'Pro' : 'Gratuit'}
+                  <p className="text-base font-semibold text-foreground mt-1">
+                    {featuresData?.planName ?? (saasAccount.plan === 'pro' ? 'Pro' : 'Starter')}
+                    {featuresData?.remaining?.quotesPerYear != null && (
+                      <span className="block text-sm font-normal text-muted-foreground mt-0.5">
+                        {featuresData.remaining.quotesPerYear === -1
+                          ? 'Devis illimités'
+                          : `${featuresData.remaining.quotesPerYear} devis restants sur ${featuresData.limits?.quotesPerYear ?? '—'}`}
+                      </span>
+                    )}
                   </p>
                 </div>
               </div>
