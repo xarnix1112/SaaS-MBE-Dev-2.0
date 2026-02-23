@@ -88,34 +88,46 @@ async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
   // Recalculer usage.quotesPerYear à partir du nombre réel de devis (corrige les désyncs)
   if (limits.quotesPerYear != null && limits.quotesPerYear !== -1) {
     try {
-      const billingPeriod = saasData.billingPeriod || {};
-      const yearStart = billingPeriod.yearStart ? new Date(billingPeriod.yearStart) : new Date(new Date().getFullYear(), 0, 1);
-      const yearEnd = billingPeriod.yearEnd ? new Date(billingPeriod.yearEnd) : new Date(new Date().getFullYear(), 11, 31, 23, 59, 59, 999);
-      const startTs = Timestamp.fromDate(yearStart);
-      const endTs = Timestamp.fromDate(yearEnd);
-
+      // 1. Requête simple (saasAccountId seul) - pas besoin d'index composite pour range
       let actualCount = 0;
       try {
         const countSnap = await firestore
           .collection("quotes")
           .where("saasAccountId", "==", saasAccountId)
-          .where("createdAt", ">=", startTs)
-          .where("createdAt", "<=", endTs)
           .count()
           .get();
         actualCount = countSnap.data().count ?? 0;
       } catch (countErr) {
-        // Fallback si count() non supporté ou index manquant: utiliser .get().size
+        // Fallback: .get().size (compatible toutes versions Firebase)
         const snap = await firestore
           .collection("quotes")
           .where("saasAccountId", "==", saasAccountId)
-          .where("createdAt", ">=", startTs)
-          .where("createdAt", "<=", endTs)
           .get();
         actualCount = snap.size;
       }
+      // 2. Filtrer par année courante si billingPeriod existe (évite de compter les anciennes années)
+      const billingPeriod = saasData.billingPeriod || {};
+      const yearStart = billingPeriod.yearStart ? new Date(billingPeriod.yearStart) : new Date(new Date().getFullYear(), 0, 1);
+      const yearEnd = billingPeriod.yearEnd ? new Date(billingPeriod.yearEnd) : new Date(new Date().getFullYear(), 11, 31, 23, 59, 59, 999);
+      let countThisYear = actualCount;
+      if (actualCount > 0) {
+        try {
+          const startTs = Timestamp.fromDate(yearStart);
+          const endTs = Timestamp.fromDate(yearEnd);
+          const rangeSnap = await firestore
+            .collection("quotes")
+            .where("saasAccountId", "==", saasAccountId)
+            .where("createdAt", ">=", startTs)
+            .where("createdAt", "<=", endTs)
+            .get();
+          countThisYear = rangeSnap.size;
+        } catch (rangeErr) {
+          // Si index manquant, utiliser le total (mieux que 0)
+          console.warn("[featureFlags] Filtre année ignoré, utilisation total devis:", rangeErr.message);
+        }
+      }
       const storedUsage = usage.quotesUsedThisYear ?? 0;
-      usage.quotesUsedThisYear = Math.max(storedUsage, actualCount);
+      usage.quotesUsedThisYear = Math.max(storedUsage, countThisYear, actualCount);
     } catch (err) {
       console.warn("[featureFlags] Recalcul usage devis échoué, utilisation valeur stockée:", err.message);
     }

@@ -20,18 +20,20 @@ export interface FeaturesData {
   } | null;
 }
 
-async function fetchFeatures(): Promise<FeaturesData> {
-  const res = await authenticatedFetch("/api/features");
+async function fetchFeatures(saasAccountId?: string): Promise<FeaturesData> {
+  const headers: Record<string, string> = {};
+  if (saasAccountId) headers["X-Saas-Account-Id"] = saasAccountId;
+  const res = await authenticatedFetch("/api/features", { headers });
   if (!res.ok) {
     throw new Error("Impossible de charger les fonctionnalités");
   }
   return res.json();
 }
 
-export function useFeatures() {
+export function useFeatures(saasAccountId?: string) {
   return useQuery<FeaturesData>({
-    queryKey: ["features"],
-    queryFn: fetchFeatures,
+    queryKey: ["features", saasAccountId ?? "default"],
+    queryFn: () => fetchFeatures(saasAccountId),
     staleTime: 1000 * 30, // 30 s pour que le quota devis reste à jour
     refetchOnWindowFocus: true,
   });

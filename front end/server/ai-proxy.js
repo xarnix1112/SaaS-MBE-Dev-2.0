@@ -9808,11 +9808,26 @@ app.get("/api/features", requireAuth, async (req, res) => {
   if (!firestore) {
     return res.status(500).json({ error: 'Firestore non configuré' });
   }
-  if (!req.saasAccountId) {
+  let saasAccountId = req.saasAccountId;
+  // Fallback: X-Saas-Account-Id si le backend n'a pas trouvé (même logique que DELETE /api/account)
+  if (!saasAccountId) {
+    const headerId = req.headers['x-saas-account-id'];
+    if (headerId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(headerId).get();
+        if (saasDoc.exists && saasDoc.data()?.ownerUid === req.uid) {
+          saasAccountId = headerId;
+        }
+      } catch (e) {
+        console.warn('[API] Fallback saasAccountId /api/features:', e.message);
+      }
+    }
+  }
+  if (!saasAccountId) {
     return res.status(400).json({ error: 'Compte SaaS non configuré' });
   }
   try {
-    const data = await getAccountFeaturesAndLimits(firestore, req.saasAccountId);
+    const data = await getAccountFeaturesAndLimits(firestore, saasAccountId);
     return res.json(data);
   } catch (error) {
     console.error('[API] Erreur /api/features:', error);

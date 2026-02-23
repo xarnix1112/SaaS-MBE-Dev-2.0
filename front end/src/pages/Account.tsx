@@ -27,7 +27,7 @@ import { AppHeader } from '@/components/layout/AppHeader';
 export default function Account() {
   const navigate = useNavigate();
   const { saasAccount, user, isLoading } = useAuth();
-  const { data: featuresData } = useFeatures();
+  const { data: featuresData } = useFeatures(saasAccount?.id);
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
