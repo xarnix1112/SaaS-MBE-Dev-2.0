@@ -4,12 +4,14 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
+import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
+import { useFeatures } from '@/hooks/use-features';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 
@@ -74,6 +76,8 @@ export default function Settings() {
   const [typeformStatus, setTypeformStatus] = useState<TypeformStatus | null>(null);
   const [isLoadingTypeform, setIsLoadingTypeform] = useState(false);
   const [settingsTab, setSettingsTab] = useState('emails');
+  const { data: featuresData } = useFeatures();
+  const canCustomizeAutoEmails = featuresData?.features?.customizeAutoEmails === true;
 
   // État Paytweak / Payment Provider (feature customPaytweak)
   const [paymentSettings, setPaymentSettings] = useState<{
@@ -772,6 +776,12 @@ export default function Settings() {
               <Globe className="w-4 h-4" />
               MBE Hub
             </TabsTrigger>
+            {canCustomizeAutoEmails && (
+              <TabsTrigger value="auto-emails" className="gap-2">
+                <Send className="w-4 h-4" />
+                Emails automatiques
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="emails" className="space-y-6">
@@ -1520,6 +1530,11 @@ export default function Settings() {
           </TabsContent>
 
           {/* MBE Hub - plans Pro et Ultra */}
+          {canCustomizeAutoEmails && (
+            <TabsContent value="auto-emails" className="space-y-6">
+              <AutoEmailsSettings />
+            </TabsContent>
+          )}
           <TabsContent value="mbehub" className="space-y-6">
             <Card>
               <CardHeader>

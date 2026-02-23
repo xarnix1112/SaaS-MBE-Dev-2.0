@@ -113,6 +113,7 @@ const PLANS = {
       supportPrioritaire: true,
       supportVisioOnboarding: true,
       supportContactDirect: true,
+      customizeAutoEmails: true,
     },
     limits: {
       quotesPerYear: 12000,

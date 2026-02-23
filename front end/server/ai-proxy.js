@@ -59,6 +59,22 @@ import {
   getPaytweakApiKey,
   createPaytweakLinkForAccount,
 } from "./payment-provider.js";
+import {
+  sendPaymentReceivedEmail,
+  sendAwaitingCollectionEmail,
+  sendCollectedEmail,
+  sendAwaitingShipmentEmail,
+  sendShippedEmail,
+} from "./quote-automatic-emails.js";
+import {
+  getTemplatesForAccount,
+  validateTemplate,
+  DEFAULT_TEMPLATES,
+  EMAIL_TYPES,
+  EMAIL_TYPE_LABELS,
+  PLACEHOLDERS,
+  LIMITS,
+} from "./email-templates.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -1043,7 +1059,7 @@ app.post("/api/stripe/webhook", async (req, res) => {
       const stripeConnectModule = await import('./stripe-connect.js');
       // Créer un objet req/res modifié avec l'event déjà construit
       const modifiedReq = { ...req, stripeEvent: event };
-      await stripeConnectModule.handleStripeWebhook(modifiedReq, res, firestore);
+      await stripeConnectModule.handleStripeWebhook(modifiedReq, res, firestore, { sendEmail });
       return; // Important : ne pas continuer le traitement Payment Link
     }
 
@@ -1181,6 +1197,34 @@ app.post("/api/stripe/webhook", async (req, res) => {
             reference: ref || quoteData.reference,
             linksUpdated: updatedPaymentLinks.length,
           });
+
+          // Email automatique au client (paiement reçu - Payment Link)
+          try {
+            const saasAccountId = quoteData.saasAccountId;
+            let commercialName = "votre MBE";
+            if (saasAccountId && firestore) {
+              const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+              if (saasDoc.exists && saasDoc.data().commercialName) {
+                commercialName = saasDoc.data().commercialName;
+              }
+            }
+            const amountEur = amount != null ? Number(amount) / 100 : null;
+            const quoteForEmail = {
+              ...quoteData,
+              id: quoteDoc.id,
+              saasAccountId,
+              _saasCommercialName: commercialName,
+              client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail || quoteData.delivery?.contact?.email },
+              delivery: quoteData.delivery,
+              reference: quoteData.reference,
+            };
+            await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, {
+              amount: amountEur,
+              isPrincipal: true,
+            });
+          } catch (emailErr) {
+            console.error("[ai-proxy] ⚠️ Email paiement reçu non envoyé:", emailErr.message);
+          }
         } else {
           console.warn("[ai-proxy] ⚠️  Devis non trouvé pour référence:", ref, "linkId:", linkId);
         }
@@ -5160,7 +5204,7 @@ L'équipe MBE
  * POST /api/send-collection-email
  * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }
  */
-app.post('/api/send-collection-email', async (req, res) => {
+app.post('/api/send-collection-email', requireAuth, async (req, res) => {
   console.log('[AI Proxy] 📥 POST /api/send-collection-email appelé');
   try {
     const { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note } = req.body;
@@ -5314,6 +5358,41 @@ app.post('/api/send-collection-email', async (req, res) => {
     });
 
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);
+
+    // Envoyer un email automatique à chaque client pour les devis concernés
+    const effectiveSaasId = saasAccountId || (quotes && quotes[0]?.saasAccountId);
+    if (quotes && quotes.length > 0 && firestore) {
+      for (const q of quotes) {
+        try {
+          const quoteId = q.id;
+          if (!quoteId) continue;
+          const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+          if (!quoteDoc.exists) continue;
+          const quoteData = quoteDoc.data();
+          const qSaasId = quoteData.saasAccountId || effectiveSaasId;
+          let commercialName = 'votre MBE';
+          if (qSaasId) {
+            const saasDoc = await firestore.collection('saasAccounts').doc(qSaasId).get();
+            if (saasDoc.exists && saasDoc.data().commercialName) {
+              commercialName = saasDoc.data().commercialName;
+            }
+          }
+          const quoteForEmail = {
+            ...quoteData,
+            id: quoteId,
+            saasAccountId: qSaasId,
+            _saasCommercialName: commercialName,
+            client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail || quoteData.delivery?.contact?.email },
+            delivery: quoteData.delivery,
+            reference: quoteData.reference,
+          };
+          await sendAwaitingCollectionEmail(firestore, sendEmail, quoteForEmail);
+        } catch (emailErr) {
+          console.error('[AI Proxy] ⚠️ Email automatique (demande collecte) non envoyé pour devis:', q?.id, emailErr.message);
+        }
+      }
+    }
+
     res.json({ 
       success: true, 
       messageId: result.id, 
@@ -6988,6 +7067,94 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
     console.error('[API] Erreur lors de la mise à jour du carton:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Routes: Mise à jour de statut de devis + emails automatiques au client
+const STATUS_DESCRIPTIONS = {
+  collected: 'Lot collecté auprès de la salle des ventes',
+  awaiting_shipment: 'En attente d\'expédition',
+  shipped: 'Expédié',
+};
+
+async function updateQuoteStatusAndSendEmail(req, res, targetStatus, extraFields = {}, emailFn) {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const quoteId = req.params.id;
+  const devisDoc = await firestore.collection('quotes').doc(quoteId).get();
+  if (!devisDoc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+  const devis = devisDoc.data();
+  if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+  const existingTimeline = devis.timeline || [];
+  const desc = STATUS_DESCRIPTIONS[targetStatus] || targetStatus;
+  const timelineEvent = {
+    id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    date: Timestamp.now(),
+    status: targetStatus,
+    description: desc,
+    user: 'Système',
+  };
+  const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
+  const isDuplicate = existingTimeline.some(
+    (e) => e.status === targetStatus && e.description === desc &&
+      (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
+  );
+  const updatedTimeline = isDuplicate ? existingTimeline : [...existingTimeline, timelineEvent];
+
+  const updateData = {
+    status: targetStatus,
+    timeline: updatedTimeline,
+    updatedAt: Timestamp.now(),
+    ...extraFields,
+  };
+
+  await firestore.collection('quotes').doc(quoteId).update(updateData);
+
+  if (emailFn) {
+    try {
+      const saasDoc = await firestore.collection('saasAccounts').doc(devis.saasAccountId).get();
+      const commercialName = saasDoc.exists && saasDoc.data().commercialName ? saasDoc.data().commercialName : 'votre MBE';
+      const quoteForEmail = {
+        ...devis,
+        id: quoteId,
+        saasAccountId: devis.saasAccountId,
+        _saasCommercialName: commercialName,
+        client: devis.client || { name: devis.clientName, email: devis.clientEmail || devis.delivery?.contact?.email },
+        delivery: devis.delivery,
+        reference: devis.reference,
+      };
+      await emailFn(firestore, sendEmail, quoteForEmail, extraFields);
+    } catch (emailErr) {
+      console.error('[API] ⚠️ Email automatique non envoyé:', emailErr.message);
+    }
+  }
+  return res.json({ success: true, status: targetStatus });
+
+}
+
+async function emailCollected(fs, se, q) { await sendCollectedEmail(fs, se, q); }
+async function emailAwaitingShipment(fs, se, q) { await sendAwaitingShipmentEmail(fs, se, q); }
+async function emailShipped(fs, se, q, opts) {
+  await sendShippedEmail(fs, se, q, { trackingNumber: opts?.trackingNumber, carrier: opts?.carrier });
+}
+
+app.post('/api/devis/:id/mark-collected', requireAuth, async (req, res) => {
+  return updateQuoteStatusAndSendEmail(req, res, 'collected', { collectedAt: Timestamp.now() }, emailCollected);
+});
+
+app.post('/api/devis/:id/mark-awaiting-shipment', requireAuth, async (req, res) => {
+  return updateQuoteStatusAndSendEmail(req, res, 'awaiting_shipment', {}, emailAwaitingShipment);
+});
+
+app.post('/api/devis/:id/mark-shipped', requireAuth, async (req, res) => {
+  const { carrier, shippingOption, trackingNumber } = req.body || {};
+  const extraFields = {
+    carrier: carrier || null,
+    shippingOption: shippingOption || null,
+    trackingNumber: trackingNumber || null,
+    shippedAt: Timestamp.now(),
+  };
+  return updateQuoteStatusAndSendEmail(req, res, 'shipped', extraFields, emailShipped);
 });
 
 // Route: Désactiver un carton (soft delete)
@@ -10187,6 +10354,133 @@ app.get("/api/features", requireAuth, async (req, res) => {
   }
 });
 
+// ===== EMAILS AUTOMATIQUES PERSONNALISABLES (plan Ultra) =====
+const checkCustomizeAutoEmails = checkFeature(firestore, 'customizeAutoEmails');
+
+app.get('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates || null : null;
+    const templates = getTemplatesForAccount(emailTemplates);
+    return res.json({
+      templates,
+      customTemplates: emailTemplates,
+      meta: { EMAIL_TYPE_LABELS, PLACEHOLDERS, LIMITS, DEFAULT_TEMPLATES },
+    });
+  } catch (err) {
+    console.error('[API] Erreur GET email-templates:', err);
+    return res.status(500).json({ error: 'Erreur récupération templates' });
+  }
+});
+
+app.put('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type, subject, signature, tone } = req.body || {};
+  if (!type || !EMAIL_TYPES.includes(type)) {
+    return res.status(400).json({ error: 'Type d\'email invalide' });
+  }
+  const errors = validateTemplate(type, { subject, signature });
+  if (errors.length > 0) {
+    return res.status(400).json({ error: errors.join(' ') });
+  }
+  if (tone && !['formel', 'amical'].includes(tone)) {
+    return res.status(400).json({ error: 'Ton invalide (formel ou amical)' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const prev = current[type] || {};
+    const history = prev.history || [];
+    if (history.length >= 10) history.pop();
+    history.unshift({
+      subject: prev.subject,
+      signature: prev.signature,
+      tone: prev.tone,
+      updatedAt: prev.updatedAt,
+    });
+    const updated = {
+      ...current,
+      [type]: {
+        subject: subject ?? prev.subject ?? DEFAULT_TEMPLATES[type].subject,
+        signature: signature ?? prev.signature ?? DEFAULT_TEMPLATES[type].signature,
+        tone: tone ?? prev.tone ?? DEFAULT_TEMPLATES[type].tone,
+        history,
+        updatedAt: Timestamp.now(),
+      },
+    };
+    await saasRef.update({ emailTemplates: updated, updatedAt: Timestamp.now() });
+    return res.json({
+      success: true,
+      templates: getTemplatesForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur PUT email-templates:', err);
+    return res.status(500).json({ error: 'Erreur sauvegarde templates' });
+  }
+});
+
+app.post('/api/email-templates/reset', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    let updated;
+    if (type && EMAIL_TYPES.includes(type)) {
+      const { [type]: _removed, ...rest } = current;
+      updated = rest;
+    } else {
+      updated = {};
+    }
+    await saasRef.update({ emailTemplates: updated, updatedAt: Timestamp.now() });
+    return res.json({
+      success: true,
+      templates: getTemplatesForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur reset email-templates:', err);
+    return res.status(500).json({ error: 'Erreur réinitialisation' });
+  }
+});
+
+app.post('/api/email-templates/preview', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  if (!type || !EMAIL_TYPES.includes(type)) return res.status(400).json({ error: 'Type invalide' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const commercialName = saasDoc.exists ? saasDoc.data().commercialName : 'Mon MBE';
+    const templates = getTemplatesForAccount(emailTemplates);
+    const t = templates[type];
+    const sample = {
+      reference: 'DEV-2024-00123',
+      clientName: 'Jean Dupont',
+      mbeName: commercialName,
+      amount: '125.50',
+    };
+    const subject = (t.subject || '')
+      .replace(/{reference}/g, sample.reference)
+      .replace(/{clientName}/g, sample.clientName)
+      .replace(/{mbeName}/g, sample.mbeName)
+      .replace(/{amount}/g, sample.amount);
+    const signature = (t.signature || '')
+      .replace(/{reference}/g, sample.reference)
+      .replace(/{clientName}/g, sample.clientName)
+      .replace(/{mbeName}/g, sample.mbeName)
+      .replace(/{amount}/g, sample.amount);
+    return res.json({ subject, signature, tone: t.tone, sample });
+  } catch (err) {
+    console.error('[API] Erreur preview email-templates:', err);
+    return res.status(500).json({ error: 'Erreur prévisualisation' });
+  }
+});
+
 // ===== ROUTE RÉCUPÉRATION DEVIS (FILTRÉS PAR SAAS ACCOUNT) =====
 
 // Récupérer tous les devis pour le compte SaaS connecté
@@ -10647,7 +10941,7 @@ app.post("/webhooks/stripe", (req, res) => {
     'user-agent': req.headers['user-agent'],
   });
   console.log('[AI Proxy] 📥 Body reçu:', req.body ? (Buffer.isBuffer(req.body) ? `${req.body.length} bytes (Buffer)` : typeof req.body) : 'empty');
-  handleStripeWebhook(req, res, firestore);
+  handleStripeWebhook(req, res, firestore, { sendEmail });
 });
 
 console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
@@ -10738,8 +11032,15 @@ const expectedRoutes = [
   'POST /api/devis/:id/search-bordereau',
   'POST /api/devis/:id/process-bordereau-from-link',
   'POST /api/devis/:id/recalculate',
+  'POST /api/devis/:id/mark-collected',
+  'POST /api/devis/:id/mark-awaiting-shipment',
+  'POST /api/devis/:id/mark-shipped',
   'GET /api/email-accounts',
   'DELETE /api/email-accounts/:accountId',
+  'GET /api/email-templates',
+  'PUT /api/email-templates',
+  'POST /api/email-templates/reset',
+  'POST /api/email-templates/preview',
   'GET /api/devis/:devisId/messages',
   'GET /api/notifications',
   'GET /api/notifications/count',

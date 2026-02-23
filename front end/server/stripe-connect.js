@@ -16,6 +16,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { createNotification, NOTIFICATION_TYPES } from "./notifications.js";
+import { sendPaymentReceivedEmail } from "./quote-automatic-emails.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -832,7 +833,7 @@ export async function handleCancelPaiement(req, res, firestore) {
  * POST /webhooks/stripe
  * Webhook Stripe UNIQUE pour tous les comptes connectés
  */
-export async function handleStripeWebhook(req, res, firestore) {
+export async function handleStripeWebhook(req, res, firestore, options = {}) {
   console.log("[stripe-connect] 🔵 handleStripeWebhook appelé");
   console.log("[stripe-connect] 🔵 Configuration:", {
     stripe: Boolean(stripe),
@@ -1229,6 +1230,30 @@ export async function handleStripeWebhook(req, res, firestore) {
         // Recalculer le statut du devis (va passer à awaiting_collection si paiement principal)
         await updateDevisStatus(firestore, devisId);
         console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
+
+        // Email automatique au client (paiement reçu)
+        const sendEmailFn = options?.sendEmail;
+        if (sendEmailFn) {
+          try {
+            const saasAccountDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+            const commercialName = saasAccountDoc.exists ? saasAccountDoc.data().commercialName : null;
+            const quoteForEmail = {
+              ...devis,
+              id: devisId,
+              saasAccountId,
+              _saasCommercialName: commercialName || "votre MBE",
+              client: devis.client || { name: devis.clientName, email: devis.clientEmail || devis.delivery?.contact?.email },
+              delivery: devis.delivery,
+              reference: devis.reference,
+            };
+            await sendPaymentReceivedEmail(firestore, sendEmailFn, quoteForEmail, {
+              amount: paiement.amount,
+              isPrincipal: paiement.type === "PRINCIPAL",
+            });
+          } catch (emailErr) {
+            console.error("[stripe-connect] ⚠️ Email paiement reçu non envoyé:", emailErr.message);
+          }
+        }
       }
     } else {
       // Log pour les événements non traités (pour débogage)

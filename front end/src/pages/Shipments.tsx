@@ -9,11 +9,9 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { useQuotes } from "@/hooks/use-quotes";
-import { doc, setDoc, Timestamp, getDoc } from "firebase/firestore";
-import { db } from "@/lib/firebase";
+import { authenticatedFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
-import { createTimelineEvent, getStatusDescription, timelineEventToFirestore } from "@/lib/quoteTimeline";
 import {
   Table,
   TableBody,
@@ -82,44 +80,18 @@ export default function Shipments() {
     }
 
     try {
-      const quoteDoc = await getDoc(doc(db, 'quotes', selectedQuote.id));
-      const existingData = quoteDoc.data();
-      const existingTimeline = existingData?.timeline || selectedQuote.timeline || [];
-
-      const timelineEvent = createTimelineEvent(
-        'shipped',
-        'Colis expédié'
-      );
-
-      const firestoreEvent = timelineEventToFirestore(timelineEvent);
-
-      // Éviter les doublons (même description et statut dans les 5 dernières minutes)
-      const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
-      const isDuplicate = existingTimeline.some(
-        (e: any) =>
-          e.status === 'shipped' &&
-          e.description === timelineEvent.description &&
-          (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
-      );
-
-      const updatedTimeline = isDuplicate 
-        ? existingTimeline 
-        : [...existingTimeline, firestoreEvent];
-
-      await setDoc(
-        doc(db, 'quotes', selectedQuote.id),
-        {
-          status: 'shipped',
+      const res = await authenticatedFetch(`/api/devis/${selectedQuote.id}/mark-shipped`, {
+        method: 'POST',
+        body: JSON.stringify({
           carrier: shipmentData.carrier,
           shippingOption: shipmentData.shippingOption,
           trackingNumber: shipmentData.trackingNumber || null,
-          shippedAt: Timestamp.now(),
-          timeline: updatedTimeline,
-          updatedAt: Timestamp.now(),
-        },
-        { merge: true }
-      );
-
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la mise à jour');
+      }
       queryClient.invalidateQueries({ queryKey: ['quotes'] });
       toast.success('Colis marqué comme expédié');
       setIsShipmentDialogOpen(false);
