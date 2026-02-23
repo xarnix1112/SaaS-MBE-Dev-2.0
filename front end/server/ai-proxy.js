@@ -9560,6 +9560,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       address,
       phone,
       email,
+      planId: requestedPlanId,
     } = req.body;
 
     // Validation
@@ -9612,7 +9613,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       createdAt: Timestamp.now(),
       isActive: true,
       plan: 'free',
-      planId: 'starter',
+      planId: ['starter', 'pro', 'ultra'].includes(requestedPlanId) ? requestedPlanId : 'starter',
       customFeatures: {},
       usage: { quotesUsedThisYear: 0 },
       billingPeriod: (() => {
@@ -9666,6 +9667,120 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       ? 'La base de données Firestore n\'est pas configurée. Allez dans la console Firebase (Build → Firestore Database) et créez la base de données si nécessaire.'
       : (error.message || 'Erreur lors de la création du compte');
     return res.status(500).json({ error: userMessage });
+  }
+});
+
+/**
+ * DELETE /api/account
+ * Supprime toutes les données du compte (Firestore) - pour les tests de création de compte.
+ * L'utilisateur doit ensuite supprimer son compte Firebase Auth côté frontend.
+ */
+app.delete("/api/account", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  const uid = req.uid;
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) {
+    return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  }
+
+  try {
+    const BATCH_SIZE = 400; // Firestore batch limit 500
+    let totalDeleted = 0;
+
+    const deleteQueryBatch = async (query) => {
+      const snapshot = await query.limit(BATCH_SIZE).get();
+      if (snapshot.empty) return 0;
+      const batch = firestore.batch();
+      snapshot.docs.forEach((doc) => { batch.delete(doc.ref); });
+      await batch.commit();
+      return snapshot.size;
+    };
+
+    // 1. Paiements (liés aux devis du compte)
+    const quotesSnap = await firestore.collection('quotes').where('saasAccountId', '==', saasAccountId).get();
+    const quoteIds = quotesSnap.docs.map((d) => d.id);
+    for (const devisId of quoteIds) {
+      const paiementsSnap = await firestore.collection('paiements').where('devisId', '==', devisId).get();
+      const batch = firestore.batch();
+      paiementsSnap.docs.forEach((d) => batch.delete(d.ref));
+      if (!paiementsSnap.empty) await batch.commit();
+      totalDeleted += paiementsSnap.size;
+    }
+
+    // 2. Quotes
+    let quotesQuery = firestore.collection('quotes').where('saasAccountId', '==', saasAccountId);
+    while (true) {
+      const n = await deleteQueryBatch(quotesQuery);
+      totalDeleted += n;
+      if (n < BATCH_SIZE) break;
+    }
+
+    // 3. Notifications
+    const notifSnap = await firestore.collection('notifications').where('clientSaasId', '==', saasAccountId).get();
+    if (!notifSnap.empty) {
+      const batch = firestore.batch();
+      notifSnap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      totalDeleted += notifSnap.size;
+    }
+
+    // 4. Autres collections par saasAccountId
+    const collections = [
+      { name: 'auctionHouses', field: 'saasAccountId' },
+      { name: 'cartons', field: 'saasAccountId' },
+      { name: 'shipmentGroups', field: 'saasAccountId' },
+      { name: 'shippingZones', field: 'saasAccountId' },
+      { name: 'shippingServices', field: 'saasAccountId' },
+      { name: 'weightBrackets', field: 'saasAccountId' },
+      { name: 'shippingRates', field: 'saasAccountId' },
+      { name: 'shippingSettings', field: 'saasAccountId' },
+    ];
+    for (const { name, field } of collections) {
+      let q = firestore.collection(name).where(field, '==', saasAccountId);
+      while (true) {
+        const n = await deleteQueryBatch(q);
+        totalDeleted += n;
+        if (n < BATCH_SIZE) break;
+      }
+    }
+
+    // 5. Bordereaux
+    let bordQ = firestore.collection('bordereaux').where('saasAccountId', '==', saasAccountId);
+    while (true) {
+      const n = await deleteQueryBatch(bordQ);
+      totalDeleted += n;
+      if (n < BATCH_SIZE) break;
+    }
+
+    // 6. EmailMessages (si liés au saasAccountId)
+    try {
+      const emailMsgSnap = await firestore.collection('emailMessages').where('saasAccountId', '==', saasAccountId).get();
+      if (!emailMsgSnap.empty) {
+        const batch = firestore.batch();
+        emailMsgSnap.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        totalDeleted += emailMsgSnap.size;
+      }
+    } catch (e) {
+      console.warn('[API] emailMessages delete skipped:', e.message);
+    }
+
+    // 7. saasAccount
+    await firestore.collection('saasAccounts').doc(saasAccountId).delete();
+    totalDeleted += 1;
+
+    // 8. user
+    await firestore.collection('users').doc(uid).delete();
+    totalDeleted += 1;
+
+    invalidateSaasAccountCache(uid);
+    console.log(`[API] ✅ Compte supprimé: uid=${uid}, saasAccountId=${saasAccountId}, ${totalDeleted} docs`);
+    return res.json({ success: true, deleted: totalDeleted });
+  } catch (error) {
+    console.error('[API] Erreur suppression compte:', error);
+    return res.status(500).json({ error: error.message || 'Erreur lors de la suppression' });
   }
 });
 

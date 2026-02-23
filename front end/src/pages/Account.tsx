@@ -1,11 +1,23 @@
 import { useEffect, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { logout } from '@/lib/firebase';
+import { logout, deleteCurrentUser } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
+import { authenticatedFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from '@/components/ui/alert-dialog';
 import { Separator } from '@/components/ui/separator';
-import { Building2, Mail, Phone, MapPin, LogOut, Loader2 } from 'lucide-react';
+import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppHeader } from '@/components/layout/AppHeader';
 
@@ -13,6 +25,7 @@ export default function Account() {
   const navigate = useNavigate();
   const { saasAccount, user, isLoading } = useAuth();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
 
   useEffect(() => {
     // Si pas de compte SaaS chargé et pas en chargement, rediriger
@@ -32,6 +45,25 @@ export default function Account() {
       toast.error('Erreur lors de la déconnexion');
     } finally {
       setIsLoggingOut(false);
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    try {
+      setIsDeleting(true);
+      const res = await authenticatedFetch('/api/account', { method: 'DELETE' });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.error || 'Erreur lors de la suppression');
+      }
+      await deleteCurrentUser();
+      toast.success('Compte supprimé définitivement');
+      navigate('/welcome', { replace: true });
+    } catch (error: unknown) {
+      console.error('[Account] Erreur suppression compte:', error);
+      toast.error(error instanceof Error ? error.message : 'Erreur lors de la suppression du compte');
+    } finally {
+      setIsDeleting(false);
     }
   };
 
@@ -211,24 +243,66 @@ export default function Account() {
               </CardDescription>
             </CardHeader>
             <CardContent>
-              <Button
-                variant="destructive"
-                onClick={handleLogout}
-                disabled={isLoggingOut}
-                className="w-full sm:w-auto"
-              >
-                {isLoggingOut ? (
-                  <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Déconnexion...
-                  </>
-                ) : (
-                  <>
-                    <LogOut className="mr-2 h-4 w-4" />
-                    Se déconnecter
-                  </>
-                )}
-              </Button>
+              <div className="flex flex-wrap gap-3">
+                <Button
+                  variant="destructive"
+                  onClick={handleLogout}
+                  disabled={isLoggingOut || isDeleting}
+                  className="sm:w-auto"
+                >
+                  {isLoggingOut ? (
+                    <>
+                      <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                      Déconnexion...
+                    </>
+                  ) : (
+                    <>
+                      <LogOut className="mr-2 h-4 w-4" />
+                      Se déconnecter
+                    </>
+                  )}
+                </Button>
+                <AlertDialog>
+                  <AlertDialogTrigger asChild>
+                    <Button
+                      variant="outline"
+                      className="border-destructive text-destructive hover:bg-destructive/10 sm:w-auto"
+                      disabled={isLoggingOut || isDeleting}
+                    >
+                      <Trash2 className="mr-2 h-4 w-4" />
+                      Supprimer compte
+                    </Button>
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Supprimer votre compte ?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        Cette action est irréversible. Toutes vos données (devis, paiements, paramètres…)
+                        seront définitivement supprimées. Souhaitez-vous continuer ?
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Annuler</AlertDialogCancel>
+                      <AlertDialogAction
+                        onClick={(e) => {
+                          e.preventDefault();
+                          handleDeleteAccount();
+                        }}
+                        className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+                      >
+                        {isDeleting ? (
+                          <>
+                            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                            Suppression...
+                          </>
+                        ) : (
+                          'Oui, supprimer'
+                        )}
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
             </CardContent>
           </Card>
         </div>

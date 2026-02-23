@@ -43,7 +43,7 @@ export default function Welcome() {
             // Cela inclut les cas où :
             // - L'utilisateur vient de se connecter mais n'a pas encore de document user
             // - L'utilisateur a un document user mais pas de saasAccountId
-            navigate('/setup-mbe', { replace: true });
+            navigate('/choose-plan', { replace: true });
           }
         }
         // Si pas connecté, rester sur Welcome pour permettre la connexion/inscription

@@ -40,8 +40,8 @@ export default function Login() {
           // Cela inclut les cas où :
           // - L'utilisateur vient de se connecter mais n'a pas encore de document user (userDoc === null)
           // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
-          console.log('[Login] Redirection vers /setup-mbe pour compléter le setup');
-          navigate('/setup-mbe', { replace: true });
+          console.log('[Login] Redirection vers /choose-plan pour compléter le setup');
+          navigate('/choose-plan', { replace: true });
         }
         setLoginSuccess(false); // Reset pour éviter les redirections multiples
       }, 1500); // Attendre 1.5 secondes pour que useAuth charge les données

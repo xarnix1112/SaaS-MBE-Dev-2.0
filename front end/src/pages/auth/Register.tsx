@@ -47,7 +47,7 @@ export default function Register() {
     try {
       await registerWithEmail(email, password);
       toast.success('Compte créé avec succès !');
-      navigate('/setup-mbe');
+      navigate('/choose-plan');
     } catch (err: any) {
       console.error('[Register] Erreur:', err);
       let errorMessage = 'Erreur lors de la création du compte';

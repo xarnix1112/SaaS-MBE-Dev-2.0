@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore } from "firebase/firestore";
 import { getAnalytics, isSupported } from "firebase/analytics";
-import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, deleteUser, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail } from "firebase/auth";
 
 const env = import.meta.env as Record<string, string | undefined>;
 
@@ -152,6 +152,12 @@ export const logout = async () => {
 
 export const resetPassword = async (email: string) => {
   return await sendPasswordResetEmail(auth, email);
+};
+
+export const deleteCurrentUser = async () => {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Aucun utilisateur connecté');
+  return await deleteUser(user);
 };
 
 // Analytics (optionnel; only in browser and if supported)
