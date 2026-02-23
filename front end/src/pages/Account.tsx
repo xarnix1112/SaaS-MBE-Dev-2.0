@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, Link } from 'react-router-dom';
 import { logout, deleteCurrentUser, reauthenticateWithPassword } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { useFeatures } from '@/hooks/use-features';
@@ -20,7 +20,7 @@ import {
 } from '@/components/ui/alert-dialog';
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
-import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2 } from 'lucide-react';
+import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2, ArrowRightCircle } from 'lucide-react';
 import { toast } from 'sonner';
 import { AppHeader } from '@/components/layout/AppHeader';
 
@@ -166,9 +166,17 @@ export default function Account() {
                   <Label className="text-sm font-medium text-muted-foreground">
                     Plan
                   </Label>
-                  <p className="text-base font-semibold text-foreground mt-1">
-                    {featuresData?.planName ?? (saasAccount.planId === 'pro' ? 'Pro' : saasAccount.planId === 'ultra' ? 'Ultra' : 'Starter')}
-                  </p>
+                  <div className="flex items-center gap-3 mt-1">
+                    <p className="text-base font-semibold text-foreground">
+                      {featuresData?.planName ?? (saasAccount.planId === 'pro' ? 'Pro' : saasAccount.planId === 'ultra' ? 'Ultra' : 'Starter')}
+                    </p>
+                    <Button variant="outline" size="sm" asChild>
+                      <Link to="/choose-plan">
+                        <ArrowRightCircle className="mr-1.5 h-4 w-4" />
+                        Changer de plan
+                      </Link>
+                    </Button>
+                  </div>
                   {featuresData?.limits?.quotesPerYear != null && (
                     <div className="mt-3 w-full max-w-sm space-y-2">
                       <div className="flex items-center justify-between gap-2">

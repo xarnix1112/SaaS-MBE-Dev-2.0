@@ -9801,6 +9801,43 @@ app.delete("/api/account", requireAuth, async (req, res) => {
   }
 });
 
+/**
+ * PATCH /api/account/plan
+ * Met à jour le plan du compte SaaS (upgrade/downgrade).
+ * Pour l'instant sans Stripe - mise à jour directe du planId.
+ */
+app.patch("/api/account/plan", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) {
+    return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  }
+  const { planId } = req.body;
+  if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
+    return res.status(400).json({ error: 'Plan invalide. Valeurs acceptées: starter, pro, ultra' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) {
+      return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+    }
+    await saasRef.update({
+      planId,
+      plan: planId === 'pro' || planId === 'ultra' ? 'pro' : 'free',
+      updatedAt: Timestamp.now(),
+    });
+    invalidateSaasAccountCache(req.uid);
+    console.log(`[API] ✅ Plan mis à jour: saasAccountId=${saasAccountId}, planId=${planId}`);
+    return res.json({ success: true, planId });
+  } catch (error) {
+    console.error('[API] Erreur mise à jour plan:', error);
+    return res.status(500).json({ error: error.message || 'Erreur lors de la mise à jour du plan' });
+  }
+});
+
 // ===== ROUTE FEATURE FLAGS / PLANS =====
 
 // Récupérer les features, limites et usage du compte SaaS connecté

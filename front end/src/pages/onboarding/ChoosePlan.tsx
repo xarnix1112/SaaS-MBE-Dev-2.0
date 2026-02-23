@@ -1,16 +1,19 @@
 /**
  * Page de sélection du plan
  *
- * Affiche les plans Starter, Pro, Ultra et permet à l'utilisateur
- * de choisir avant de créer son compte MBE
+ * - Nouveau compte : choisir avant de créer son MBE → setup-mbe
+ * - Compte existant : changer de plan → PATCH /api/account/plan → /account
  */
 
-import { useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useEffect, useState } from 'react';
+import { useNavigate, Link } from 'react-router-dom';
 import { auth } from '@/lib/firebase';
+import { useAuth } from '@/hooks/useAuth';
+import { authenticatedFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Check, Zap, Crown, Sparkles } from 'lucide-react';
+import { Check, Zap, Crown, Sparkles, Loader2 } from 'lucide-react';
+import { toast } from 'sonner';
 
 const PLANS = [
   {
@@ -71,6 +74,8 @@ const PLANS = [
 
 export default function ChoosePlan() {
   const navigate = useNavigate();
+  const { saasAccount, isLoading } = useAuth();
+  const [updatingPlanId, setUpdatingPlanId] = useState<string | null>(null);
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
@@ -81,20 +86,51 @@ export default function ChoosePlan() {
     return () => unsubscribe();
   }, [navigate]);
 
-  const handleSelectPlan = (planId: string) => {
-    navigate('/setup-mbe', { state: { planId } });
+  const handleSelectPlan = async (planId: string) => {
+    if (saasAccount) {
+      try {
+        setUpdatingPlanId(planId);
+        const res = await authenticatedFetch('/api/account/plan', {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ planId }),
+        });
+        if (!res.ok) {
+          const data = await res.json().catch(() => ({}));
+          throw new Error(data.error || 'Erreur lors du changement de plan');
+        }
+        toast.success(`Plan ${planId === 'starter' ? 'Starter' : planId === 'pro' ? 'Pro' : 'Ultra'} activé`);
+        navigate('/account', { replace: true });
+      } catch (error) {
+        console.error('[ChoosePlan] Erreur changement plan:', error);
+        toast.error(error instanceof Error ? error.message : 'Erreur lors du changement de plan');
+      } finally {
+        setUpdatingPlanId(null);
+      }
+    } else {
+      navigate('/setup-mbe', { state: { planId } });
+    }
   };
 
   return (
     <div className="min-h-screen flex flex-col items-center justify-center bg-gradient-to-br from-blue-50 via-indigo-50 to-purple-50 p-4">
       <div className="w-full max-w-5xl space-y-8">
+        {saasAccount && (
+          <div className="text-left">
+            <Link to="/account" className="text-sm text-muted-foreground hover:text-primary hover:underline">
+              ← Retour à Mon compte
+            </Link>
+          </div>
+        )}
         {/* En-tête */}
         <div className="text-center space-y-2">
           <h1 className="text-3xl font-bold text-gray-900">
-            Choisissez votre plan
+            {saasAccount ? 'Changer de plan' : 'Choisissez votre plan'}
           </h1>
           <p className="text-muted-foreground max-w-xl mx-auto">
-            Sélectionnez l&apos;offre qui correspond à vos besoins. Vous pourrez changer de plan plus tard.
+            {saasAccount
+              ? "Sélectionnez le plan qui vous convient. Le changement est effectif immédiatement."
+              : "Sélectionnez l'offre qui correspond à vos besoins. Vous pourrez changer de plan plus tard."}
           </p>
         </div>
 
@@ -142,12 +178,22 @@ export default function ChoosePlan() {
                   <Button
                     className="w-full"
                     variant={plan.popular ? 'default' : 'outline'}
+                    disabled={updatingPlanId !== null}
                     onClick={(e) => {
                       e.stopPropagation();
                       handleSelectPlan(plan.id);
                     }}
                   >
-                    Choisir {plan.name}
+                    {updatingPlanId === plan.id ? (
+                      <>
+                        <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                        Mise à jour...
+                      </>
+                    ) : saasAccount ? (
+                      `Passer à ${plan.name}`
+                    ) : (
+                      `Choisir ${plan.name}`
+                    )}
                   </Button>
                 </CardContent>
               </Card>
@@ -155,9 +201,11 @@ export default function ChoosePlan() {
           })}
         </div>
 
-        <p className="text-center text-sm text-muted-foreground">
-          Vous pourrez configurer les informations de votre MBE à l&apos;étape suivante.
-        </p>
+        {!saasAccount && (
+          <p className="text-center text-sm text-muted-foreground">
+            Vous pourrez configurer les informations de votre MBE à l&apos;étape suivante.
+          </p>
+        )}
       </div>
     </div>
   );
