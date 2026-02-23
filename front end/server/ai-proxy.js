@@ -270,7 +270,7 @@ app.use(express.json());
 // CORS pour permettre les requêtes depuis le frontend (toujours envoyer, même en erreur)
 const corsHeaders = (res) => {
   res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Dev');
 };
 app.use((req, res, next) => {

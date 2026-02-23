@@ -138,13 +138,14 @@ export default function ChoosePlan() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {PLANS.map((plan) => {
             const Icon = plan.icon;
+            const isCurrentPlan = saasAccount?.planId === plan.id;
             return (
               <Card
                 key={plan.id}
-                className={`relative cursor-pointer transition-all hover:shadow-lg hover:border-primary/50 ${
+                className={`relative transition-all hover:shadow-lg hover:border-primary/50 ${
                   plan.popular ? 'border-primary ring-2 ring-primary/20' : ''
-                }`}
-                onClick={() => handleSelectPlan(plan.id)}
+                } ${isCurrentPlan ? '' : 'cursor-pointer'}`}
+                onClick={() => !isCurrentPlan && handleSelectPlan(plan.id)}
               >
                 {plan.popular && (
                   <div className="absolute -top-3 left-1/2 -translate-x-1/2">
@@ -177,11 +178,11 @@ export default function ChoosePlan() {
                   </ul>
                   <Button
                     className="w-full"
-                    variant={plan.popular ? 'default' : 'outline'}
-                    disabled={updatingPlanId !== null}
+                    variant={plan.popular && !isCurrentPlan ? 'default' : 'outline'}
+                    disabled={updatingPlanId !== null || isCurrentPlan}
                     onClick={(e) => {
                       e.stopPropagation();
-                      handleSelectPlan(plan.id);
+                      if (!isCurrentPlan) handleSelectPlan(plan.id);
                     }}
                   >
                     {updatingPlanId === plan.id ? (
@@ -189,6 +190,8 @@ export default function ChoosePlan() {
                         <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                         Mise à jour...
                       </>
+                    ) : isCurrentPlan ? (
+                      'Plan actuellement utilisé'
                     ) : saasAccount ? (
                       `Passer à ${plan.name}`
                     ) : (
