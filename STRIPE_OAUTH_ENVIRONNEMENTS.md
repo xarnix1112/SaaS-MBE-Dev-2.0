@@ -137,4 +137,38 @@ Chaque endpoint webhook Stripe a son **propre** secret (`whsec_xxx`). Le secret 
 
 ---
 
+## Erreur "Erreur Stripe" (400) lors de la création d'un lien de paiement
+
+Si tu obtiens une erreur 400 "Erreur Stripe" en cliquant sur "Créer le lien de paiement" :
+
+### 1. Voir le message d'erreur détaillé
+
+Depuis la mise à jour du 23 fév. 2026, le message Stripe exact est affiché dans le toast d'erreur. **Redéploie le backend** pour en bénéficier.
+
+### 2. Vérifier les variables Railway (production)
+
+| Variable        | Valeur attendue           |
+|-----------------|---------------------------|
+| `APP_URL`       | `https://api.mbe-sdv.fr`   |
+| `FRONTEND_URL`  | `https://www.mbe-sdv.fr`   |
+
+Optionnel (si `APP_URL` ne correspond pas au domaine backend) :
+- `STRIPE_SUCCESS_URL` = `https://api.mbe-sdv.fr/payment/success`
+- `STRIPE_CANCEL_URL` = `https://api.mbe-sdv.fr/payment/cancel`
+
+### 3. Causes fréquentes
+
+| Message Stripe | Action |
+|----------------|--------|
+| "account or business name" | Aller sur [Stripe Dashboard → Paramètres du compte](https://dashboard.stripe.com/settings/account) et remplir le **Business name** |
+| "charges_disabled" ou "charges not enabled" | Compléter l'onboarding du compte connecté Stripe |
+| "Invalid URL" | Vérifier `APP_URL` dans Railway |
+| Clé API / compte en **mode Test** alors que le frontend est en production | Utiliser les clés **Live** dans Railway pour la production |
+
+### 4. Logs backend
+
+Dans Railway → ton service production → **Deployments** → **View logs** : cherche `[stripe-connect] ❌ Erreur Stripe Checkout:` pour voir le détail.
+
+---
+
 **Date :** 23 février 2026

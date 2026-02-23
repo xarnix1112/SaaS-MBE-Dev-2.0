@@ -79,7 +79,11 @@ export async function createPaiement(
 
   if (!response.ok) {
     const error = await response.json().catch(() => ({ error: "Erreur inconnue" }));
-    throw new Error(error.error || "Erreur lors de la création du paiement");
+    // Priorité au message détaillé Stripe (error.message) pour faciliter le diagnostic
+    const message = error.message || error.error || "Erreur lors de la création du paiement";
+    const err = new Error(message) as Error & { apiError?: Record<string, unknown> };
+    err.apiError = error; // Garde error/action pour les toasts personnalisés
+    throw err;
   }
 
   return response.json();

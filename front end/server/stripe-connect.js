@@ -37,6 +37,9 @@ const STRIPE_CONNECT_CLIENT_ID = process.env.STRIPE_CONNECT_CLIENT_ID;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
 const APP_URL = process.env.APP_URL || "http://localhost:8080";
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
+// URLs de redirection Stripe : priorité aux variables dédiées (utile si APP_URL ≠ backend)
+const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL || `${APP_URL}/payment/success`;
+const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL || `${APP_URL}/payment/cancel`;
 
 if (!STRIPE_SECRET_KEY) {
   console.warn("[stripe-connect] ⚠️  STRIPE_SECRET_KEY non définie");
@@ -507,8 +510,8 @@ export async function handleCreatePaiement(req, res, firestore) {
               quantity: 1,
             },
           ],
-          success_url: `${APP_URL}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
-          cancel_url: `${APP_URL}/payment/cancel`,
+          success_url: `${STRIPE_SUCCESS_URL.replace(/\?.*$/, '')}?session_id={CHECKOUT_SESSION_ID}`,
+          cancel_url: STRIPE_CANCEL_URL,
           metadata: {
             devisId,
             paiementType: type,
@@ -520,10 +523,12 @@ export async function handleCreatePaiement(req, res, firestore) {
         }
       );
     } catch (stripeError) {
-      console.error("[stripe-connect] ❌ Erreur Stripe Checkout:", stripeError.message);
+      const errMsg = stripeError.message || String(stripeError);
+      const errCode = stripeError.code || stripeError.raw?.code;
+      console.error("[stripe-connect] ❌ Erreur Stripe Checkout:", errMsg, "code:", errCode);
       
       // Message d'erreur spécifique pour le nom d'entreprise manquant
-      if (stripeError.message && stripeError.message.includes("account or business name")) {
+      if (errMsg.includes("account or business name")) {
         return res.status(400).json({
           error: "Configuration Stripe incomplète",
           message: "⚠️ Votre compte Stripe connecté doit avoir un nom d'entreprise configuré.",
@@ -532,11 +537,27 @@ export async function handleCreatePaiement(req, res, firestore) {
         });
       }
       
+      // Erreur compte restreint ou non activé (charges_disabled, etc.)
+      if (errMsg.includes("charges_disabled") || errMsg.includes("charges not enabled")) {
+        return res.status(400).json({
+          error: "Compte Stripe non activé",
+          message: "Votre compte Stripe connecté n'est pas encore activé pour accepter les paiements. Complétez la configuration dans le Dashboard Stripe.",
+          details: errMsg,
+        });
+      }
+      // Erreur URL invalide
+      if (errMsg.includes("Invalid URL") || errCode === "invalid_request_error") {
+        return res.status(400).json({
+          error: "Configuration backend incorrecte",
+          message: `Vérifiez APP_URL (ou STRIPE_SUCCESS_URL/STRIPE_CANCEL_URL) dans les variables d'environnement. Valeur actuelle: ${APP_URL}`,
+          details: errMsg,
+        });
+      }
       // Autres erreurs Stripe
       return res.status(400).json({
         error: "Erreur Stripe",
-        message: stripeError.message,
-        details: stripeError.raw?.message || stripeError.message,
+        message: errMsg,
+        details: stripeError.raw?.message || errMsg,
       });
     }
 

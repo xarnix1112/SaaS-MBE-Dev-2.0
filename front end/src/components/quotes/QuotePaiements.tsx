@@ -209,11 +209,12 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       window.location.href = response.url;
     } catch (error: any) {
       console.error('[QuotePaiements] Erreur création:', error);
+      const apiError = error.apiError || error.response?.data;
       
       // Message d'erreur spécifique pour la configuration Stripe incomplète
-      if (error.response?.data?.error === 'Configuration Stripe incomplète') {
+      if (apiError?.error === 'Configuration Stripe incomplète' || error.message?.includes('nom d\'entreprise')) {
         toast.error('Configuration Stripe incomplète', {
-          description: error.response.data.action || 'Vous devez configurer le nom de votre entreprise dans Stripe.',
+          description: apiError?.action || 'Vous devez configurer le nom de votre entreprise dans Stripe.',
           action: {
             label: 'Ouvrir Stripe',
             onClick: () => window.open('https://dashboard.stripe.com/settings/account', '_blank'),
@@ -221,7 +222,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
           duration: 15000,
         });
       } else {
-        const errorMessage = error.response?.data?.message || error.message || 'Erreur lors de la création du paiement';
+        const errorMessage = apiError?.message || error.message || 'Erreur lors de la création du paiement';
         toast.error(errorMessage);
       }
       
