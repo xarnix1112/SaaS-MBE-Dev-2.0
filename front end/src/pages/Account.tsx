@@ -181,7 +181,7 @@ export default function Account() {
                             : (() => {
                                 const max = featuresData.limits!.quotesPerYear!;
                                 const used = featuresData.usage?.quotesUsedThisYear ?? 0;
-                                const remaining = featuresData.remaining?.quotesPerYear ?? Math.max(0, max - used);
+                                const remaining = Math.max(0, max - used);
                                 return `${remaining} restants / ${max}`;
                               })()}
                         </span>
