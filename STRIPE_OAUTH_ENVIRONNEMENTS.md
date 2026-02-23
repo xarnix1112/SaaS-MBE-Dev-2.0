@@ -171,4 +171,20 @@ Dans Railway → ton service production → **Deployments** → **View logs** : 
 
 ---
 
+## Erreur "livemode API key but authorization code only supports returning test keys"
+
+Tu vois cette erreur ET la page Stripe affiche "Vous utilisez un compte test" :
+
+**Cause :** Le frontend (www.mbe-sdv.fr) appelait le **backend staging** pour `/api/stripe/connect` (clés test), mais le callback arrivait sur le **backend production** (clés live). Stripe refuse ce mélange.
+
+**Solution :** Le code force désormais www.mbe-sdv.fr à utiliser `api.mbe-sdv.fr` pour tous les appels API. Vérifie :
+
+1. **Vercel** : redéploie le frontend (ou push sur master) pour appliquer la correction
+2. **Railway production** : `STRIPE_SECRET_KEY` = `sk_live_...`, `APP_URL` = `https://api.mbe-sdv.fr`
+3. **Stripe Dashboard** (mode Live) : Redirect URI = `https://api.mbe-sdv.fr/stripe/callback`
+
+Après redéploiement, déconnecte le compte Stripe puis reconnecte : tu ne devrais plus voir "compte test" sur la page Stripe.
+
+---
+
 **Date :** 23 février 2026

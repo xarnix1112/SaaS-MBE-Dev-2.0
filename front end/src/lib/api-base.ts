@@ -16,6 +16,12 @@
  */
 const STAGING_BACKEND = 'https://saas-mbe-dev-staging-staging.up.railway.app';
 
+/**
+ * URL du backend Railway PRODUCTION.
+ * Utilisé quand on est sur www.mbe-sdv.fr pour garantir Stripe Live (évite test/live mix).
+ */
+const PRODUCTION_BACKEND = 'https://api.mbe-sdv.fr';
+
 function isStagingEnvironment(): boolean {
   // 1. Build configuré pour staging (Vercel Preview avec env staging)
   const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
@@ -36,6 +42,13 @@ function isStagingEnvironment(): boolean {
 export function getApiBaseUrl(): string {
   if (isStagingEnvironment()) {
     return STAGING_BACKEND;
+  }
+  // Production (www.mbe-sdv.fr) : forcer le backend production pour Stripe Live
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    if (host === 'www.mbe-sdv.fr' || host === 'mbe-sdv.fr') {
+      return PRODUCTION_BACKEND;
+    }
   }
   return (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
 }

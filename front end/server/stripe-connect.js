@@ -340,7 +340,10 @@ export async function handleStripeConnect(req, res) {
       return res.status(400).json({ error: "Compte SaaS non configuré. Veuillez compléter la configuration MBE." });
     }
 
-    // Générer l'URL OAuth Stripe
+    // Générer l'URL OAuth Stripe (le mode test/live dépend de STRIPE_SECRET_KEY)
+    const isLiveMode = STRIPE_SECRET_KEY && STRIPE_SECRET_KEY.startsWith("sk_live_");
+    console.log("[stripe-connect] Mode OAuth:", isLiveMode ? "LIVE (production)" : "TEST (staging)", "| redirect_uri:", `${APP_URL}/stripe/callback`);
+
     const url = stripe.oauth.authorizeUrl({
       response_type: "code",
       client_id: STRIPE_CONNECT_CLIENT_ID,
