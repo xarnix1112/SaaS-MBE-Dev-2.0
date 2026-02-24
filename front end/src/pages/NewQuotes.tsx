@@ -21,16 +21,20 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-type FilterStatus = 'all' | 'new' | 'to_verify' | 'verified';
+type FilterStatus = 'all' | 'new' | 'to_verify' | 'verified' | 'payment_link_sent';
 
 export default function NewQuotes() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const { data: quotes = [], isLoading, isError } = useQuotes();
 
+  // Devis pas encore ouverts ou n'ayant pas le statut "en attente de paiement"
+  // = tous les devis AVANT awaiting_payment (new, to_verify, verified, payment_link_sent)
   const newQuotes = useMemo(
     () =>
-      quotes.filter((q) => ["new", "to_verify", "verified"].includes(q.status)),
+      quotes.filter((q) =>
+        ["new", "to_verify", "verified", "payment_link_sent"].includes(q.status)
+      ),
     [quotes]
   );
 
@@ -144,6 +148,7 @@ export default function NewQuotes() {
               <SelectItem value="new">Nouveaux</SelectItem>
               <SelectItem value="to_verify">À vérifier</SelectItem>
               <SelectItem value="verified">Vérifiés</SelectItem>
+              <SelectItem value="payment_link_sent">Lien envoyé</SelectItem>
             </SelectContent>
           </Select>
         </div>
