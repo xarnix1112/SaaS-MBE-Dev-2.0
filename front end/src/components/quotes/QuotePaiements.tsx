@@ -191,8 +191,8 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   const syncAttemptedRef = useRef(false);
   useEffect(() => {
     if (!quote || !devisId || paiements.length === 0 || isLoading) return;
-    const cartonPrice = quote.auctionSheet?.recommendedCarton?.price ||
-      (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? null;
+      const cartonPrice = (quote.auctionSheet?.recommendedCarton?.price ||
+        (quote.auctionSheet?.recommendedCarton as any)?.priceTTC) ?? null;
     const packagingPrice = cartonPrice !== null ? cartonPrice : (quote.options?.packagingPrice || 0);
     const shippingPrice = quote.options?.shippingPrice || 0;
     const insuranceAmount = computeInsuranceAmount(
