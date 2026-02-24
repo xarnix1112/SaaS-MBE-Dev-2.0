@@ -1756,6 +1756,8 @@ function extractSalleVenteFromHeader(lines) {
     "adjudication",
     "buyer",
     "premium",
+    "vos réfs",
+    "vos refs",
   ];
   const candidates = header
     .map((l) => {
@@ -2202,7 +2204,7 @@ function extractLotsFromTable(lines, template = null) {
           if (current) lots.push(current);
           current = {
             numero_lot: lotNumber,
-            description: description.trim(),
+            description: cleanBoisgirardDescription(description),
             prix_marteau: prix_marteau ?? null,
           };
         } else {
@@ -2212,7 +2214,7 @@ function extractLotsFromTable(lines, template = null) {
         // Continuation de description (ligne suivante sans prix)
         const cont = row.text.trim();
         if (cont && !footerStop.test(cont)) {
-          current.description = `${current.description} ${cont}`.trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(cont)}`.trim();
         }
       }
     }
@@ -2223,7 +2225,7 @@ function extractLotsFromTable(lines, template = null) {
     return lots
       .map((l) => ({
         numero_lot: l.numero_lot !== null && l.numero_lot !== undefined ? String(l.numero_lot) : null,
-        description: (l.description || "").replace(/\s+/g, " ").trim(),
+        description: cleanBoisgirardDescription(l.description || ""),
         prix_marteau: l.prix_marteau,
       }))
       .filter((l) => {
@@ -2570,11 +2572,28 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     }
   }
 
-  // Correction: seulement pour Millon — si "Millon" ou "Riviera" dans le doc ET salle erronée → imposer Millon Riviera
+  // Correction Millon — si "Millon" ou "Riviera" dans le doc ET salle erronée → imposer Millon Riviera
   const docHasMillon = ocrRawText && (/millon/i.test(ocrRawText) || /riviera/i.test(ocrRawText));
   const salleLooksWrong = result.salle_vente && /buyer|number|china|^\d+$/i.test(result.salle_vente);
   if (docHasMillon && (!result.salle_vente || salleLooksWrong)) {
     result.salle_vente = "Millon Riviera";
+  }
+
+  // Correction Boisgirard — si doc Boisgirard ET salle = "Vos réfs", adresse, ou similaire → imposer Boisgirard Antonini
+  const docHasBoisgirard = ocrRawText && (/boisgirard/i.test(ocrRawText) || /bordereau\s*acquereur/i.test(ocrRawText));
+  const salleBoisgirardWrong = result.salle_vente && (
+    /vos\s*réfs|issy|adresse|^\d{5}\s|^\d+\s+[a-z]/i.test(result.salle_vente) ||
+    (result.numero_bordereau && result.salle_vente.includes(result.numero_bordereau))
+  );
+  if (docHasBoisgirard && (!result.salle_vente || salleBoisgirardWrong)) {
+    result.salle_vente = "Boisgirard Antonini";
+  }
+
+  // Correction total — si total = numéro bordereau (ex: 32320), le rejeter
+  if (result.numero_bordereau && result.total != null && String(Math.round(result.total)) === String(result.numero_bordereau).replace(/\D/g, "")) {
+    result.total = null;
+    const regle = ocrRawText.match(/\bRéglé\s+le\b[\s\S]{0,150}?\bmontant\s+de\b\s*([0-9][0-9\s\u00A0.,]*\d)\s*(?:€|EUR)?/i);
+    if (regle) result.total = normalizeAmountStrict(regle[1]);
   }
 
   return { result, ocrRawText };
@@ -2601,9 +2620,20 @@ function normalizePriceToNumber(raw) {
   return Number.isFinite(n) ? n : 0;
 }
 
+/** Retire les codes de référence (XF5, A12, etc.) en fin de description */
+function cleanBoisgirardDescription(desc) {
+  if (!desc || typeof desc !== "string") return (desc || "").trim();
+  return desc
+    .replace(/\s*:\s*[A-Z]{2,}[A-Z0-9]*\s*$/i, "")  // ": XF5" en fin
+    .replace(/\s+[A-Z]{2,}[A-Z0-9]*\s*$/i, "")      // " XF5" en fin
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 /**
  * Extraction Boisgirard depuis texte OCR avec zoning strict.
  * Zone lots = entre "Ligne/Description/Adjudication" et "Taux/Base/Total HT/Frais"
+ * Gestion multi-lignes : description complète jusqu'au prix, codes (XF5) exclus
  */
 function extractLotsFromOcrTextBoisgirard(ocrText) {
   const lines = ocrText.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
@@ -2628,27 +2658,62 @@ function extractLotsFromOcrTextBoisgirard(ocrText) {
   const lots = [];
   let current = null;
   const priceAtEnd = /(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?$/i;
+  const lotStartPattern = /^(\d{1,4})\s+(\d{1,4})\s+(.*)$/;
   const baPattern = /^(\d{1,4})\s+(\d{1,4})\s+(.+?)\s+(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?/i;
 
   for (const line of zoneLines) {
     const low = line.toLowerCase();
     if (financialRe.test(low)) continue;
 
-    const match = line.match(baPattern);
-    if (match) {
-      const [, ligne, ref, description, priceStr] = match;
+    const matchFull = line.match(baPattern);
+    if (matchFull) {
+      const [, ligne, ref, description, priceStr] = matchFull;
       if (ligne === ref && parseInt(ligne, 10) <= 5000) {
         if (current) lots.push(current);
         current = {
           numero_lot: ligne,
-          description: description.trim(),
+          description: cleanBoisgirardDescription(description),
           prix_marteau: normalizeAmountStrict(priceStr),
         };
       } else if (current) {
-        current.description = `${current.description} ${line}`.trim();
+        const priceM = line.match(priceAtEnd);
+        if (priceM) {
+          const beforePrice = line.replace(priceAtEnd, "").trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(beforePrice)}`.trim();
+          if (!current.prix_marteau) current.prix_marteau = normalizeAmountStrict(priceM[1]);
+        } else {
+          current.description = `${current.description} ${line}`.trim();
+        }
       }
-    } else if (current) {
-      current.description = `${current.description} ${line}`.trim();
+    } else {
+      const startM = line.match(lotStartPattern);
+      if (startM && startM[1] === startM[2] && parseInt(startM[1], 10) <= 5000) {
+        const priceM = line.match(priceAtEnd);
+        if (current) lots.push(current);
+        if (priceM) {
+          const beforePrice = line.replace(lotStartPattern, "$3").replace(priceAtEnd, "").trim();
+          current = {
+            numero_lot: startM[1],
+            description: cleanBoisgirardDescription(beforePrice),
+            prix_marteau: normalizeAmountStrict(priceM[1]),
+          };
+        } else {
+          current = {
+            numero_lot: startM[1],
+            description: cleanBoisgirardDescription(startM[3] || ""),
+            prix_marteau: null,
+          };
+        }
+      } else if (current) {
+        const priceM = line.match(priceAtEnd);
+        if (priceM) {
+          const beforePrice = line.replace(priceAtEnd, "").trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(beforePrice)}`.trim();
+          if (!current.prix_marteau) current.prix_marteau = normalizeAmountStrict(priceM[1]);
+        } else {
+          current.description = `${current.description} ${line}`.trim();
+        }
+      }
     }
   }
   if (current) lots.push(current);
@@ -2657,7 +2722,7 @@ function extractLotsFromOcrTextBoisgirard(ocrText) {
     .filter((l) => (l.description || "").trim().length > 0 || (l.prix_marteau != null && l.prix_marteau > 0))
     .map((l) => ({
       numero_lot: l.numero_lot,
-      description: (l.description || "").replace(/\s+/g, " ").trim(),
+      description: cleanBoisgirardDescription(l.description || ""),
       prix_marteau: l.prix_marteau,
     }));
 }
@@ -2949,10 +3014,7 @@ function extractLotsFromOcrWords(words, template = null) {
         .join(" ")
         .trim();
       
-      // Nettoyer la description (enlever codes comme "XF5")
-      let description = descriptionWords
-        .replace(/^[A-Z]{2,}[A-Z0-9]*\s*/i, "") // Enlever codes comme "XF5"
-        .trim();
+      let description = cleanBoisgirardDescription(descriptionWords);
       
       const prix_marteau = normalizePriceToNumber(priceInfo.price);
       
@@ -3132,11 +3194,14 @@ function extractLotsFromOcrWords(words, template = null) {
   if (current) lots.push(current);
 
   return lots
-    .map((l) => ({
-      lotNumber: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
-      description: (Array.isArray(l.description) ? l.description.join(" ") : String(l.description || "")).replace(/\s+/g, " ").trim(),
-      value: typeof l.value === "number" && Number.isFinite(l.value) ? l.value : 0,
-    }))
+    .map((l) => {
+      const rawDesc = (Array.isArray(l.description) ? l.description.join(" ") : String(l.description || "")).replace(/\s+/g, " ").trim();
+      return {
+        lotNumber: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: isBoisgirard ? cleanBoisgirardDescription(rawDesc) : rawDesc,
+        value: typeof l.value === "number" && Number.isFinite(l.value) ? l.value : 0,
+      };
+    })
     // IMPORTANT: Ne pas rejeter les lots sans numéro de lot - accepter si description ou prix présent
     .filter((l) => {
       const hasDesc = (l.description || "").trim().length > 0;
@@ -3172,6 +3237,8 @@ function extractAuctionHouseFromOcrText(ocrText) {
     "total invoice",
     "facture total",
     "total",
+    "vos réfs",
+    "vos refs",
   ];
   const candidates = lines.filter((l) => {
     const low = l.toLowerCase();
@@ -3244,6 +3311,9 @@ function extractAuctionHouseFromOcrWords(words) {
     "invoice",
     "facture",
     "china",
+    "vos réfs",
+    "vos refs",
+    "issy-les-moulineaux",
   ];
 
   // Noms connus de salles (priorité absolue) — ne jamais confondre avec "Sale No." ou titre de vente
@@ -3292,17 +3362,26 @@ function extractAuctionDateFromOcrText(ocrText) {
 }
 
 function extractInvoiceTotalFromOcrText(ocrText) {
-  const lines = ocrText
+  const text = String(ocrText || "");
+  const lines = text
     .split("\n")
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  const key = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc)/i;
+  // Priorité Boisgirard / FR: "Réglé le ... montant de 77,00 €"
+  const regle = text.match(/\bRéglé\s+le\b[\s\S]{0,150}?\bmontant\s+de\b\s*([0-9][0-9\s\u00A0.,]*\d)\s*(?:€|EUR)?/i);
+  if (regle) {
+    const v = normalizeAmountStrict(regle[1]);
+    if (v != null && v > 0) return { raw: regle[1], value: v };
+  }
+
+  const key = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\btotal\b)/i;
   const price = /(\d[\d\s.,]*\d)\s*(?:€|EUR)?/i;
 
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     if (!key.test(l)) continue;
+    if (/total\s+ht\s*$/i.test(l)) continue;
 
     const m1 = l.match(price);
     if (m1) return { raw: m1[0], value: normalizePriceToNumber(m1[0]) };
