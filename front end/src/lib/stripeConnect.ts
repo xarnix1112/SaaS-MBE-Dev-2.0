@@ -168,3 +168,27 @@ export async function cancelPaiement(paiementId: string): Promise<void> {
   }
 }
 
+/**
+ * Synchronise le montant du lien de paiement principal avec le total du devis.
+ * Si le total a changé (ex: modification du carton), annule les anciens liens
+ * et crée un nouveau lien avec le bon montant.
+ */
+export async function syncPaymentAmount(devisId: string): Promise<{
+  success: boolean;
+  synced: boolean;
+  newAmount?: number;
+  message?: string;
+}> {
+  const response = await authenticatedFetch(
+    `${getApiBaseUrl()}/api/devis/${devisId}/sync-payment-amount`,
+    { method: "POST" }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({ error: "Erreur inconnue" }));
+    throw new Error(error.error || error.details || "Erreur lors de la synchronisation");
+  }
+
+  return response.json();
+}
+

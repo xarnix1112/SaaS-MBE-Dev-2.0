@@ -767,6 +767,147 @@ export async function handleGetPaiements(req, res, firestore) {
 }
 
 /**
+ * Calcule le montant d'assurance (même logique que QuotePaiements)
+ */
+function computeInsuranceAmount(lotValue = 0, insuranceEnabled, explicitAmount) {
+  if (!insuranceEnabled) return 0;
+  if (explicitAmount !== null && explicitAmount !== undefined && explicitAmount > 0) {
+    const decimal = explicitAmount % 1;
+    if (decimal >= 0.5) return Math.ceil(explicitAmount);
+    if (decimal > 0) return Math.floor(explicitAmount) + 0.5;
+    return explicitAmount;
+  }
+  const raw = Math.max(lotValue * 0.025, lotValue < 500 ? 12 : 0);
+  const decimal = raw % 1;
+  if (decimal >= 0.5) return Math.ceil(raw);
+  if (decimal > 0) return Math.floor(raw) + 0.5;
+  return raw;
+}
+
+/**
+ * Calcule le montant attendu pour le paiement principal (emballage + expédition + assurance).
+ * Les surcoûts sont des paiements séparés (type SURCOUT), donc exclus du principal.
+ */
+function computeExpectedPrincipalAmount(devis) {
+  const carton = devis.auctionSheet?.recommendedCarton;
+  const cartonPrice = carton?.price ?? carton?.priceTTC ?? null;
+  const packagingPrice = cartonPrice !== null ? cartonPrice : (devis.options?.packagingPrice || 0);
+  const shippingPrice = devis.options?.shippingPrice || 0;
+  const insuranceAmount = computeInsuranceAmount(
+    devis.lot?.value || 0,
+    devis.options?.insurance,
+    devis.options?.insuranceAmount
+  );
+  return packagingPrice + shippingPrice + insuranceAmount;
+}
+
+/**
+ * POST /api/devis/:id/sync-payment-amount
+ * Synchronise le montant du lien de paiement principal avec le total du devis.
+ * Si le total du devis a changé (ex: modification du carton/emballage), annule les anciens
+ * liens PRINCIPAL en attente et crée un nouveau lien avec le bon montant.
+ */
+export async function handleSyncPaymentAmount(req, res, firestore) {
+  try {
+    if (!firestore) {
+      return res.status(500).json({ error: "Firestore non initialisé" });
+    }
+    const { id: devisId } = req.params;
+    const devis = await getDevisById(firestore, devisId);
+    const paiements = await getPaiementsByDevisId(firestore, devisId);
+    const expectedTotal = computeExpectedPrincipalAmount(devis);
+
+    if (expectedTotal <= 0) {
+      return res.status(400).json({ error: "Total du devis invalide (0 ou négatif)" });
+    }
+
+    const principalPending = paiements.filter(
+      (p) => p.type === 'PRINCIPAL' && p.status === 'PENDING'
+    );
+    const tolerance = 0.01;
+    const needsSync = principalPending.some(
+      (p) => Math.abs(p.amount - expectedTotal) > tolerance
+    );
+
+    if (!needsSync) {
+      return res.json({ success: true, synced: false, message: "Montants déjà cohérents" });
+    }
+
+    // Annuler les liens principal en attente avec un mauvais montant
+    for (const p of principalPending) {
+      if (Math.abs(p.amount - expectedTotal) <= tolerance) continue;
+      const paiementRef = firestore.collection("paiements").doc(p.id);
+      await paiementRef.update({
+        status: 'CANCELLED',
+        updatedAt: Timestamp.now(),
+      });
+      const quoteRef = firestore.collection('quotes').doc(devisId);
+      const quoteSnap = await quoteRef.get();
+      if (quoteSnap.exists) {
+        const quoteData = quoteSnap.data();
+        const links = (quoteData.paymentLinks || []).map((l) =>
+          l.id === p.id ? { ...l, status: 'inactive' } : l
+        );
+        await quoteRef.update({
+          paymentLinks: links,
+          updatedAt: Timestamp.now(),
+        });
+      }
+      await addTimelineEventToQuote(firestore, devisId, {
+        id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        date: Timestamp.now(),
+        status: 'awaiting_payment',
+        description: `Lien de paiement annulé (${p.amount.toFixed(2)}€) - Principal (resync ${expectedTotal.toFixed(2)}€)`,
+        user: 'Système',
+      });
+    }
+
+    // Créer un nouveau paiement principal avec le bon montant
+    const description = `Paiement principal du devis ${devis.reference || devisId}`;
+    const fakeReq = {
+      params: { id: devisId },
+      body: { amount: expectedTotal, type: 'PRINCIPAL', description },
+      saasAccountId: devis.saasAccountId || req.saasAccountId,
+    };
+    const resState = { statusCode: 200, body: null };
+    const fakeRes = {
+      status: (code) => {
+        resState.statusCode = code;
+        return fakeRes;
+      },
+      json: (data) => {
+        resState.body = data;
+        return fakeRes;
+      },
+    };
+    await handleCreatePaiement(fakeReq, fakeRes, firestore);
+
+    if (resState.statusCode >= 400) {
+      const errMsg = resState.body?.error || resState.body?.message || "Échec création lien";
+      console.error("[stripe-connect] ❌ Sync: création nouveau paiement échouée:", resState.body);
+      return res.status(500).json({
+        error: "Impossible de créer le nouveau lien de paiement",
+        details: errMsg,
+      });
+    }
+
+    console.log("[stripe-connect] ✅ Sync paiement terminée: ancien annulé, nouveau créé à", expectedTotal, "€");
+    return res.json({
+      success: true,
+      synced: true,
+      newAmount: expectedTotal,
+      message: "Lien de paiement régénéré avec le bon montant",
+    });
+  } catch (error) {
+    console.error("[stripe-connect] ❌ Erreur sync paiement:", error);
+    return res.status(500).json({
+      error: "Erreur lors de la synchronisation du paiement",
+      details: error.message,
+    });
+  }
+}
+
+/**
  * POST /api/paiement/:id/cancel
  * Annule un paiement
  */

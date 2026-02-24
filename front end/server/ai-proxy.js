@@ -30,6 +30,7 @@ import {
   handleCreatePaiement,
   handleGetPaiements,
   handleCancelPaiement,
+  handleSyncPaymentAmount,
   handleCreateGroupPaiement,
   handleStripeWebhook,
   handleStripeStatus,
@@ -7013,6 +7014,34 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Ce carton n\'est plus actif' });
     }
 
+    // Recalculer le poids volumétrique avec les dimensions du nouveau carton
+    const length = Number(carton.inner_length) || 0;
+    const width = Number(carton.inner_width) || 0;
+    const height = Number(carton.inner_height) || 0;
+    const volumetricWeight = length && width && height
+      ? Math.ceil((length * width * height) / 5000)
+      : 0;
+
+    // Recalculer le tarif d'expédition selon la grille tarifaire
+    let shippingPrice = devis.options?.shippingPrice || 0;
+    if (volumetricWeight > 0) {
+      const deliveryCountry = devis.delivery?.address?.country || '';
+      const addressLine = devis.delivery?.address?.line1 || '';
+      let countryCode = mapCountryToCode(deliveryCountry);
+      if (!countryCode && addressLine) {
+        const match = addressLine.match(/\b([A-Z]{2})\b/);
+        if (match) countryCode = match[1];
+      }
+      if (countryCode) {
+        shippingPrice = await calculateShippingPriceFromGrid(
+          firestore, req.saasAccountId, countryCode, volumetricWeight
+        );
+        if (shippingPrice > 0) {
+          console.log(`[API] ✅ Prix expédition recalculé: ${shippingPrice}€ (poids vol: ${volumetricWeight}kg, pays: ${countryCode})`);
+        }
+      }
+    }
+
     // Mettre à jour le devis avec le nouveau carton
     const cartonInfo = {
       id: cartonId,
@@ -7023,26 +7052,29 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
       price: carton.packaging_price
     };
 
+    const packagingPrice = carton.packaging_price;
+    const insuranceAmount = devis.options?.insuranceAmount || 0;
+    const totalAmount = (devis.options?.collectePrice || 0) + packagingPrice + shippingPrice + insuranceAmount;
+
     const updateData = {
       cartonId: cartonId,
-      'options.packagingPrice': carton.packaging_price,
+      'options.packagingPrice': packagingPrice,
+      'options.shippingPrice': shippingPrice,
       'auctionSheet.recommendedCarton': cartonInfo,
+      'lot.dimensions': {
+        ...(devis.lot?.dimensions || {}),
+        length, width, height,
+        weight: volumetricWeight,
+      },
+      totalAmount,
       updatedAt: Timestamp.now(),
       timeline: FieldValue.arrayUnion({
         id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         date: Timestamp.now(),
         status: devis.status || 'calculated',
-        description: `Carton modifié: ${carton.carton_ref} (${carton.packaging_price}€)`
+        description: `Carton modifié: ${carton.carton_ref} (${carton.packaging_price}€), expédition: ${shippingPrice}€`
       })
     };
-
-    // Recalculer le total
-    const collectePrice = 0;
-    const packagingPrice = carton.packaging_price;
-    const shippingPrice = devis.options?.shippingPrice || 0;
-    const insuranceAmount = devis.options?.insuranceAmount || 0;
-    const totalAmount = collectePrice + packagingPrice + shippingPrice + insuranceAmount;
-    updateData.totalAmount = totalAmount;
 
     await firestore.collection('quotes').doc(devisId).update(updateData);
 
@@ -9783,6 +9815,12 @@ app.post("/api/paiement/:id/cancel", (req, res) => {
   handleCancelPaiement(req, res, firestore);
 });
 
+// Synchroniser le montant du lien de paiement avec le total du devis
+app.post("/api/devis/:id/sync-payment-amount", requireAuth, (req, res) => {
+  console.log('[AI Proxy] 📥 POST /api/devis/:id/sync-payment-amount appelé');
+  handleSyncPaymentAmount(req, res, firestore);
+});
+
 // ===== ROUTES NOTIFICATIONS =====
 
 // Récupérer les notifications d'un client (authentification requise)
@@ -10842,6 +10880,8 @@ import {
   handleGetSettings,
   handleUpdateSettings,
   handleGetGrid,
+  calculateShippingPriceFromGrid,
+  mapCountryToCode,
 } from './shipping-rates.js';
 
 // Zones d'expédition

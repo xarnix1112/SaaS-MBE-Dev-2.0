@@ -467,21 +467,26 @@ export default function QuoteDetail() {
 
   // FORCER l'application des dimensions INTERNES du carton (dimensions du colis)
   // Ce useEffect garantit que les dimensions du carton sont TOUJOURS affichées
+  // Supporte inner/required OU inner_length, inner_width, inner_height
   useEffect(() => {
     if (!quote?.auctionSheet?.recommendedCarton) return;
     
-    // PRIORITÉ aux dimensions internes (inner) car ce sont les dimensions du colis
-    // Si inner n'existe pas, utiliser required
-    const cartonDims = quote.auctionSheet.recommendedCarton.inner || quote.auctionSheet.recommendedCarton.required;
+    const c = quote.auctionSheet.recommendedCarton;
+    // PRIORITÉ: inner/required (format objet) puis inner_length/inner_width/inner_height (format plat)
+    const cartonDims = c.inner || c.required || (
+      (c.inner_length != null || c.inner_width != null || c.inner_height != null)
+        ? { length: c.inner_length, width: c.inner_width, height: c.inner_height }
+        : null
+    );
     if (!cartonDims) {
       console.log('[QuoteDetail] Aucune dimension de carton disponible:', quote.auctionSheet.recommendedCarton);
       return;
     }
     
     const currentDims = quote.lot?.dimensions || { length: 0, width: 0, height: 0, weight: 0 };
-    const cartonLength = Number(cartonDims.length);
-    const cartonWidth = Number(cartonDims.width);
-    const cartonHeight = Number(cartonDims.height);
+    const cartonLength = Number(cartonDims.length ?? c.inner_length ?? 0);
+    const cartonWidth = Number(cartonDims.width ?? c.inner_width ?? 0);
+    const cartonHeight = Number(cartonDims.height ?? c.inner_height ?? 0);
     
     // Vérifier si les dimensions actuelles ne correspondent PAS aux dimensions du carton
     const needsUpdate = 
