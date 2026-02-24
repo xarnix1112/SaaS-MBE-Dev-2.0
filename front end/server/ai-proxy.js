@@ -9545,11 +9545,11 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ✅ Devis ${devisId} calculé: ${totalAmount}€, ${mappedLots.length} lots extraits, ${cartonsInfo.length} carton(s) (${packagingPrice}€)${shippingPrice > 0 ? `, Expédition: ${shippingPrice}€` : ''}`);
 
     // 🔥 AUTO-GÉNÉRATION DU LIEN DE PAIEMENT
-    // Vérifier si toutes les conditions sont remplies pour générer automatiquement un lien de paiement
-    const shouldAutoGeneratePayment = 
-      packagingPrice > 0 && // Emballage renseigné
-      shippingPrice > 0 && // Expédition renseignée
-      totalAmount > 0; // Total > 0
+    // Conditions : emballage ET expédition calculés ; si le client a demandé l'assurance, elle doit être calculée aussi
+    const hasPackagingAndShipping = packagingPrice > 0 && shippingPrice > 0;
+    const clientWantsInsurance = devis.options?.insurance === true;
+    const insuranceOk = !clientWantsInsurance || (clientWantsInsurance && insuranceAmount > 0);
+    const shouldAutoGeneratePayment = hasPackagingAndShipping && insuranceOk && totalAmount > 0;
     
     if (shouldAutoGeneratePayment) {
       try {
@@ -9711,7 +9711,12 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         // Ne pas bloquer le reste du processus si la génération du paiement échoue
       }
     } else {
-      console.log(`[Calcul] ⚠️  Conditions non remplies pour auto-génération du lien de paiement (emballage: ${packagingPrice}€, expédition: ${shippingPrice}€, total: ${totalAmount}€)`);
+      const reason = !hasPackagingAndShipping
+        ? `emballage (${packagingPrice}€) et/ou expédition (${shippingPrice}€) non calculés`
+        : !insuranceOk
+          ? `assurance demandée mais non calculée (${insuranceAmount}€)`
+          : `total = 0`;
+      console.log(`[Calcul] ⚠️  Conditions non remplies pour auto-génération: ${reason}`);
     }
   } catch (error) {
     console.error('[Calcul] Erreur:', error);
