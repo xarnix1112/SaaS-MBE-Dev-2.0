@@ -3608,293 +3608,140 @@ async function analyzeWithGroq(fileBuffer, mimeType, apiKey) {
 }
 
 /**
- * Estime les dimensions d'un objet en interrogeant l'IA
+ * Système de prompt pour estimation des dimensions (logistique ventes aux enchères)
  */
-async function estimateDimensionsForObject(description, apiKey) {
-  console.log(`[Dimensions] 🔍 Estimation dimensions pour: "${description.substring(0, 100)}..."`);
-  
-  // Détection préalable du type d'objet pour adapter le prompt
-  const descLower = description.toLowerCase();
-  // Détection robuste des livres (in-8, in 8, in-8°, in 8°, in-4, etc.)
-  const isBook = /livre|ouvrage|traité|manuel|in[\s-]?8|in[\s-]?4|in[\s-]?12|in[\s-]?16|in[\s-]?folio|folio|quarto|octavo|édition|volume|tome/i.test(descLower);
-  const isSmallObject = /bijou|montre|bague|médaille|pièce|petit|petite/i.test(descLower);
-  const isTableau = /tableau|peinture|affiche|toile|cadre/i.test(descLower);
-  
-  // Détection spécifique du format de livre
-  let bookFormat = null;
-  if (isBook) {
-    if (/in[\s-]?folio|folio/i.test(descLower)) {
-      bookFormat = 'folio';
-    } else if (/in[\s-]?4|quarto/i.test(descLower)) {
-      bookFormat = 'in-4';
-    } else if (/in[\s-]?8|octavo/i.test(descLower)) {
-      bookFormat = 'in-8';
-    } else if (/in[\s-]?12/i.test(descLower)) {
-      bookFormat = 'in-12';
-    } else if (/in[\s-]?16/i.test(descLower)) {
-      bookFormat = 'in-16';
-    } else {
-      bookFormat = 'in-8'; // Format par défaut (le plus courant)
-    }
-    console.log(`[Dimensions] 📚 Livre détecté, format: ${bookFormat}`);
-  }
-  
-  // Exemples spécifiques selon le type d'objet
-  let examplesSection = '';
-  if (isBook && bookFormat) {
-    // Exemples très précis selon le format détecté
-    const formatExamples = {
-      'in-8': `Livre in-8° (format le plus courant) : length=22-25 cm, width=15-18 cm, height=2-4 cm, weight=0.3-0.8 kg\n` +
-               `⚠️ CRITIQUE: Un livre in-8° fait environ 23x17x3 cm et pèse 0.5 kg, JAMAIS 70x50x50 cm !`,
-      'in-4': `Livre in-4° (format grand) : length=28-32 cm, width=20-24 cm, height=3-6 cm, weight=0.8-1.5 kg`,
-      'in-12': `Livre in-12° (petit format) : length=15-18 cm, width=10-12 cm, height=1.5-3 cm, weight=0.2-0.5 kg`,
-      'in-16': `Livre in-16° (très petit) : length=12-15 cm, width=8-10 cm, height=1-2 cm, weight=0.1-0.3 kg`,
-      'folio': `Livre in-folio (très grand) : length=35-45 cm, width=25-30 cm, height=5-10 cm, weight=2-5 kg`,
-    };
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR LES LIVRES (format détecté: ${bookFormat}):\n` +
-      formatExamples[bookFormat] + `\n\n` +
-      `Si le format n'est pas clair, utilise les dimensions d'un livre in-8° (23x17x3 cm, 0.5 kg).\n\n`;
-  } else if (isBook) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR LES LIVRES:\n` +
-      `- Livre in-8° (format le plus courant) : length=22-25 cm, width=15-18 cm, height=2-4 cm, weight=0.3-0.8 kg\n` +
-      `- Livre in-4° (plus grand) : length=28-32 cm, width=20-24 cm, height=3-6 cm, weight=0.8-1.5 kg\n` +
-      `- Livre in-12° (petit format) : length=15-18 cm, width=10-12 cm, height=1.5-3 cm, weight=0.2-0.5 kg\n` +
-      `- Livre in-folio (très grand) : length=35-45 cm, width=25-30 cm, height=5-10 cm, weight=2-5 kg\n` +
-      `⚠️ ATTENTION: Un livre in-8° standard fait environ 23x17x3 cm et pèse 0.5 kg, PAS 70x50x50 cm !\n` +
-      `Si le format n'est pas précisé, assume un format in-8° (le plus courant).\n\n`;
-  } else if (isSmallObject) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR PETITS OBJETS:\n` +
-      `- Bijou/montre : length=5-10 cm, width=5-10 cm, height=2-5 cm, weight=0.05-0.2 kg\n` +
-      `- Médaille : length=5-8 cm, width=5-8 cm, height=0.5-1 cm, weight=0.05-0.1 kg\n\n`;
-  } else if (isTableau) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR TABLEAUX:\n` +
-      `- Petit tableau : length=30-50 cm, width=25-40 cm, height=2-5 cm, weight=1-3 kg\n` +
-      `- Tableau moyen : length=50-80 cm, width=40-60 cm, height=3-8 cm, weight=3-8 kg\n` +
-      `- Grand tableau : length=80-150 cm, width=60-100 cm, height=5-15 cm, weight=8-20 kg\n\n`;
-  } else {
-    examplesSection = `EXEMPLES GÉNÉRAUX:\n` +
-      `- Livre in-8° : 22x16x3 cm, 0.5 kg\n` +
-      `- Petit tableau : 40x30x5 cm, 2 kg\n` +
-      `- Vase : 25x25x35 cm, 1.5 kg\n` +
-      `- Sculpture moyenne : 30x25x40 cm, 5 kg\n\n`;
-  }
-  
-  const dimensionPrompt =
-    `Tu es un expert en estimation logistique pour transport d'objets (art/antiquités).\n\n` +
-    `Objet (description OCR) :\n"""${description}"""\n\n` +
-    `Question : Quels sont les dimensions 3D les plus précises (L, l, h) en CENTIMÈTRES (cm) et le poids en KILOGRAMMES (kg) de cet objet pour le transport ?\n\n` +
-    `${examplesSection}` +
-    `RÈGLES CRITIQUES:\n` +
-    `- Réponds UNIQUEMENT en JSON valide.\n` +
-    `- Valeurs numériques UNIQUEMENT en CENTIMÈTRES (cm) pour les dimensions.\n` +
-    `- Valeurs numériques UNIQUEMENT en KILOGRAMMES (kg) pour le poids.\n` +
-    `- Les dimensions doivent être en CENTIMÈTRES, PAS en mètres, PAS en millimètres.\n` +
-    `- Donne des estimations PRUDENTES et RÉALISTES basées sur les exemples ci-dessus.\n` +
-    `- Si la description contient déjà des dimensions (cm/mm), convertis-les en cm si nécessaire.\n` +
-    `- Si mm: divise par 10. Si mètres: multiplie par 100.\n` +
-    `- Pour les livres, utilise les dimensions typiques selon le format (in-8°, in-4°, etc.).\n\n` +
-    `FORMAT STRICT:\n` +
-    `{\n  "length": <nombre en cm, max 500>,\n  "width": <nombre en cm, max 500>,\n  "height": <nombre en cm, max 500>,\n  "weight": <nombre en kg, max 50>\n}\n\n` +
-    `IMPORTANT: retourne la dimension la plus grande dans "length" (longueur >= largeur >= hauteur).`;
+const DIMENSIONS_SYSTEM_PROMPT = `You are a professional auction logistics expert specialized in books, paintings, luxury bags, jewelry and art objects.
 
-  const normalizeAndSort = (dims) => {
+Your task is to estimate realistic TRANSPORT dimensions (object + protective packaging) and weight.
+
+The result will be used for real shipping box selection and logistics calculation.
+Accuracy and realism are critical.
+
+--------------------------------
+STEP 1 — CHECK EXPLICIT DATA
+--------------------------------
+If the description contains dimensions:
+- Extract them exactly
+- Convert everything to centimeters
+- Respect original proportions
+- Add protective packaging margin:
+
+  Books: +5%
+  Paintings (framed): +8%
+  Sculptures / fragile objects: +10%
+  Jewelry: minimal margin (5%)
+  Bags: +8%
+
+If weight is explicitly written, use it.
+
+--------------------------------
+STEP 2 — IF DIMENSIONS ARE MISSING
+--------------------------------
+Identify the object category:
+
+BOOK:
+- Small book: 20x13x3 cm approx
+- Large art book: 30x24x5 cm approx
+- Add small packaging margin
+
+PAINTING:
+- Assume depth 5–8 cm framed
+- Maintain realistic proportions
+
+LUXURY BAG:
+- Handbag typical range:
+  20–40 cm length
+  10–20 cm width
+  15–30 cm height
+
+JEWELRY:
+- Small box size:
+  8–15 cm typical
+- Very low weight
+
+ART OBJECT:
+- Estimate realistic size
+- Avoid extreme assumptions
+- Use auction price as weight clue
+
+--------------------------------
+STEP 3 — PHYSICAL COHERENCE
+--------------------------------
+Ensure:
+- length ≥ width ≥ height
+- Weight matches size logically
+- No unrealistic densities
+- No extreme or exaggerated values
+
+--------------------------------
+STEP 4 — MULTIPLE ITEMS
+--------------------------------
+If multiple items:
+- Stack logically if possible
+- Otherwise estimate combined transport size
+
+--------------------------------
+OUTPUT FORMAT (STRICT JSON ONLY)
+--------------------------------
+
+{
+  "length_cm": number,
+  "width_cm": number,
+  "height_cm": number,
+  "weight_kg": number,
+  "confidence": number (0-1),
+  "category_detected": "BOOK | PAINTING | BAG | JEWELRY | ART_OBJECT"
+}
+
+Return ONLY valid JSON.
+No explanation.
+No text outside JSON.`;
+
+/**
+ * Estime les dimensions d'un objet en interrogeant Groq
+ * @param {string} description - Description du/des lot(s)
+ * @param {string} apiKey - Clé API Groq
+ * @param {Object} context - Contexte utile (auctionHouse, price, date)
+ */
+async function estimateDimensionsForObject(description, apiKey, context = {}) {
+  console.log(`[Dimensions] 🔍 Estimation dimensions pour: "${(description || '').substring(0, 100)}..."`);
+
+  const contextParts = [];
+  if (context.auctionHouse) contextParts.push(`Auction house: ${context.auctionHouse}`);
+  if (context.price != null && context.price !== '') contextParts.push(`Auction price (hammer): ${context.price}€`);
+  if (context.date) contextParts.push(`Sale date: ${context.date}`);
+
+  const userContent = contextParts.length > 0
+    ? `LOT DESCRIPTION:\n"""${description || ''}"""\n\nUSEFUL CONTEXT:\n${contextParts.join('\n')}`
+    : `LOT DESCRIPTION:\n"""${description || ''}"""`;
+
+  const normalizeResponse = (parsed) => {
     const toNum = (v) => {
-      const n = Number.parseFloat(String(v).replace(",", "."));
+      const n = Number.parseFloat(String(v).replace(',', '.'));
       return Number.isFinite(n) ? n : null;
     };
-    const l = toNum(dims?.length);
-    const w = toNum(dims?.width);
-    const h = toNum(dims?.height);
-    const weight = toNum(dims?.weight);
+    const l = toNum(parsed?.length_cm ?? parsed?.length);
+    const w = toNum(parsed?.width_cm ?? parsed?.width);
+    const h = toNum(parsed?.height_cm ?? parsed?.height);
+    const weight = toNum(parsed?.weight_kg ?? parsed?.weight);
 
-    console.log(`[Dimensions] 📊 Valeurs brutes reçues:`, { l, w, h, weight });
-
-    // Validation: si les valeurs sont > 500 cm, elles sont probablement en mm ou mètres
-    // Convertir automatiquement si nécessaire
-    const convertIfNeeded = (val) => {
-      if (!val || val <= 0) return null;
-      // Si > 500 cm, probablement en mm (diviser par 10)
-      if (val > 500 && val < 10000) {
-        console.log(`[Dimensions] ⚠️  Valeur ${val} semble être en mm, conversion en cm: ${val / 10}`);
-        return val / 10;
-      }
-      // Si > 10 mètres (1000 cm), probablement en mètres (multiplier par 100 serait absurde, donc c'est déjà en cm mais très grand)
-      // On garde tel quel mais on log
-      if (val > 1000) {
-        console.warn(`[Dimensions] ⚠️  Valeur ${val} cm semble très grande, vérification nécessaire`);
-      }
-      return val;
-    };
-
-    const lConverted = convertIfNeeded(l);
-    const wConverted = convertIfNeeded(w);
-    const hConverted = convertIfNeeded(h);
-
-    // Détection des valeurs aberrantes pour petits objets (livres, bijoux, etc.)
-    // Utiliser descLower, isBook, isSmallObject et bookFormat de la portée externe
-    
-    // Validation spécifique pour les livres avec correction automatique
-    if (isBook) {
-      // Déterminer les dimensions typiques selon le format
-      let typicalDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-      if (bookFormat === 'in-4') {
-        typicalDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-      } else if (bookFormat === 'in-12') {
-        typicalDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-      } else if (bookFormat === 'in-16') {
-        typicalDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-      } else if (bookFormat === 'folio') {
-        typicalDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-      }
-      
-      // Un livre ne devrait jamais dépasser 50 cm en longueur (même un in-folio peut aller jusqu'à 45 cm)
-      // Si les valeurs sont > 50 cm, c'est probablement une erreur
-      if (lConverted && lConverted > 50) {
-        console.warn(`[Dimensions] ⚠️  Dimension anormale pour un livre (${lConverted} cm). Correction automatique vers format ${bookFormat || 'in-8'}.`);
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques:`, typicalDims);
-        return typicalDims;
-      }
-      
-      // Si la longueur est > 35 cm mais pas un folio, c'est suspect
-      if (lConverted && lConverted > 35 && bookFormat !== 'folio') {
-        console.warn(`[Dimensions] ⚠️  Dimension suspecte pour un livre non-folio (${lConverted} cm). Correction.`);
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques:`, typicalDims);
-        return typicalDims;
-      }
-      
-      // Si la hauteur est > 10 cm pour un livre non-folio, c'est suspect
-      if (hConverted && hConverted > 10 && bookFormat !== 'folio' && lConverted && lConverted < 35) {
-        console.warn(`[Dimensions] ⚠️  Hauteur anormale pour un livre (${hConverted} cm). Limitation à 5 cm.`);
-        const correctedH = Math.min(hConverted, 5);
-        const arr = [lConverted, wConverted, correctedH].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-        if (arr.length >= 2) {
-          arr.sort((a, b) => b - a);
-          return {
-            length: Math.round(arr[0]),
-            width: Math.round(arr[1] ?? Math.min(arr[0], 18)),
-            height: Math.round(correctedH),
-            weight: weight && weight > 0 && weight <= 5 ? Number(weight.toFixed(1)) : typicalDims.weight,
-          };
-        }
-      }
-      
-      // Si toutes les dimensions sont cohérentes mais le poids est aberrant (> 5 kg pour un livre)
-      if (weight && weight > 5 && lConverted && lConverted < 50) {
-        console.warn(`[Dimensions] ⚠️  Poids anormal pour un livre (${weight} kg). Correction à ${typicalDims.weight} kg.`);
-        const arr = [lConverted, wConverted, hConverted].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-        if (arr.length >= 2) {
-          arr.sort((a, b) => b - a);
-          return {
-            length: Math.round(arr[0]),
-            width: Math.round(arr[1] ?? Math.min(arr[0], 18)),
-            height: Math.round(arr[2] ?? Math.min(arr[1] ?? arr[0], 5)),
-            weight: typicalDims.weight,
-          };
-        }
-      }
-    }
-    
-    // Validation pour petits objets
-    if (isSmallObject) {
-      if (lConverted && lConverted > 15) {
-        console.warn(`[Dimensions] ⚠️  Dimension anormale pour un petit objet: ${lConverted} cm. Correction automatique.`);
-        const smallDims = { length: 8, width: 8, height: 3, weight: 0.1 };
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques petit objet:`, smallDims);
-        return smallDims;
-      }
+    if (l == null && w == null && h == null) {
+      return null;
     }
 
-    const arr = [lConverted, wConverted, hConverted].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-    if (arr.length === 0) {
-      // Fallback intelligent selon le type d'objet
-      if (isBook) {
-        // Utiliser les dimensions typiques selon le format détecté
-        let bookDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-        if (bookFormat === 'in-4') {
-          bookDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-        } else if (bookFormat === 'in-12') {
-          bookDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-        } else if (bookFormat === 'in-16') {
-          bookDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-        } else if (bookFormat === 'folio') {
-          bookDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-        }
-        console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation dimensions typiques livre ${bookFormat || 'in-8'}`);
-        return bookDims;
-      } else if (isSmallObject) {
-        console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation dimensions typiques petit objet`);
-        return { length: 8, width: 8, height: 3, weight: 0.1 };
-      }
-      console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation des valeurs par défaut`);
-      return { length: 50, width: 40, height: 30, weight: 5 };
-    }
+    const arr = [l, w, h].filter((x) => x != null && x > 0 && x <= 500);
+    if (arr.length === 0) return null;
+
     arr.sort((a, b) => b - a);
-    let length = Math.min(arr[0], 500); // Limiter à 500 cm max
-    let width = Math.min(arr[1] ?? Math.min(length, 40), 500);
-    let height = Math.min(arr[2] ?? Math.min(width, 30), 500);
-    
-    // Validation finale : détecter les valeurs aberrantes même après normalisation
-    if (isBook) {
-      // Déterminer les dimensions typiques selon le format
-      let typicalDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-      if (bookFormat === 'in-4') {
-        typicalDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-      } else if (bookFormat === 'in-12') {
-        typicalDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-      } else if (bookFormat === 'in-16') {
-        typicalDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-      } else if (bookFormat === 'folio') {
-        typicalDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-      }
-      
-      // Si les dimensions sont > 2x les dimensions typiques, c'est suspect
-      const tolerance = 2.0; // tolérance de 2x
-      if (length > typicalDims.length * tolerance || 
-          width > typicalDims.width * tolerance || 
-          height > typicalDims.height * tolerance) {
-        console.warn(`[Dimensions] ⚠️  Dimensions anormalement grandes pour un livre (${length}x${width}x${height} cm). Correction automatique.`);
-        console.log(`[Dimensions] ✅ Remplacement par dimensions typiques ${bookFormat || 'in-8'}:`, typicalDims);
-        return typicalDims;
-      }
-    }
-    
-    // Poids intelligent selon le type
-    let finalWeight = 5; // défaut
-    if (weight && weight > 0 && weight <= 50) {
-      finalWeight = Number(weight.toFixed(1));
-      // Validation du poids pour les livres
-      if (isBook && finalWeight > 5) {
-        console.warn(`[Dimensions] ⚠️  Poids anormal pour un livre (${finalWeight} kg). Correction.`);
-        let typicalWeight = 0.5;
-        if (bookFormat === 'in-4') typicalWeight = 1.0;
-        else if (bookFormat === 'in-12') typicalWeight = 0.3;
-        else if (bookFormat === 'in-16') typicalWeight = 0.2;
-        else if (bookFormat === 'folio') typicalWeight = 3.0;
-        finalWeight = typicalWeight;
-      }
-    } else {
-      // Fallback intelligent selon le type
-      if (isBook) {
-        let typicalWeight = 0.5;
-        if (bookFormat === 'in-4') typicalWeight = 1.0;
-        else if (bookFormat === 'in-12') typicalWeight = 0.3;
-        else if (bookFormat === 'in-16') typicalWeight = 0.2;
-        else if (bookFormat === 'folio') typicalWeight = 3.0;
-        finalWeight = typicalWeight;
-      } else if (isSmallObject) {
-        finalWeight = 0.1;
-      } else {
-        finalWeight = 5;
-      }
-    }
+    const length = Math.round(Math.min(arr[0], 500));
+    const width = Math.round(Math.min(arr[1] ?? length, 500));
+    const height = Math.round(Math.min(arr[2] ?? width, 500));
 
-    const result = {
-      length: Math.round(length),
-      width: Math.round(width),
-      height: Math.round(height),
-      weight: finalWeight,
-    };
+    const finalWeight = (weight != null && weight > 0 && weight <= 50)
+      ? Number(weight.toFixed(1))
+      : 5;
 
+    const result = { length, width, height, weight: finalWeight };
     console.log(`[Dimensions] ✅ Dimensions normalisées:`, result);
     return result;
   };
@@ -3909,16 +3756,10 @@ async function estimateDimensionsForObject(description, apiKey) {
       body: JSON.stringify({
         model: 'llama-3.1-8b-instant',
         messages: [
-          {
-            role: 'system',
-            content: 'Tu es un expert en estimation de dimensions d\'objets pour transport. Tu retournes UNIQUEMENT du JSON valide avec des dimensions en CENTIMÈTRES (cm) et poids en KILOGRAMMES (kg).',
-          },
-          {
-            role: 'user',
-            content: dimensionPrompt,
-          },
+          { role: 'system', content: DIMENSIONS_SYSTEM_PROMPT },
+          { role: 'user', content: userContent },
         ],
-        max_tokens: 200,
+        max_tokens: 250,
         temperature: 0.0,
       }),
     });
@@ -3931,24 +3772,21 @@ async function estimateDimensionsForObject(description, apiKey) {
 
     const data = await response.json();
     const contentText = data.choices[0]?.message?.content;
-    
-    console.log(`[Dimensions] 📥 Réponse brute de Groq:`, contentText?.substring(0, 200));
-    
+
     if (!contentText) {
       console.warn('[Dimensions] ⚠️  Aucune réponse de Groq');
       return { length: 50, width: 40, height: 30, weight: 5 };
     }
 
-    // Extraire le JSON
     const jsonMatch = contentText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         console.log(`[Dimensions] 📋 JSON parsé:`, parsed);
-        return normalizeAndSort(parsed);
+        const normalized = normalizeResponse(parsed);
+        if (normalized) return normalized;
       } catch (parseError) {
         console.error('[Dimensions] ❌ Erreur parsing JSON:', parseError.message);
-        console.error('[Dimensions] Contenu:', jsonMatch[0]);
       }
     } else {
       console.warn('[Dimensions] ⚠️  Aucun JSON trouvé dans la réponse');
@@ -3957,38 +3795,6 @@ async function estimateDimensionsForObject(description, apiKey) {
     console.error('[Dimensions] ❌ Erreur estimation:', error.message);
   }
 
-  // Valeurs par défaut en cas d'erreur (avec détection du type d'objet)
-  // Utiliser descLower, isBook, isSmallObject et bookFormat déjà déclarés au début de la fonction
-  if (isBook) {
-    // Détecter le format pour utiliser les bonnes dimensions
-    let bookFormat = 'in-8'; // défaut
-    if (/in[\s-]?folio|folio/i.test(descLower)) {
-      bookFormat = 'folio';
-    } else if (/in[\s-]?4|quarto/i.test(descLower)) {
-      bookFormat = 'in-4';
-    } else if (/in[\s-]?12/i.test(descLower)) {
-      bookFormat = 'in-12';
-    } else if (/in[\s-]?16/i.test(descLower)) {
-      bookFormat = 'in-16';
-    }
-    
-    let bookDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-    if (bookFormat === 'in-4') {
-      bookDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-    } else if (bookFormat === 'in-12') {
-      bookDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-    } else if (bookFormat === 'in-16') {
-      bookDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-    } else if (bookFormat === 'folio') {
-      bookDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-    }
-    console.warn(`[Dimensions] ⚠️  Utilisation dimensions typiques livre ${bookFormat} (fallback)`);
-    return bookDims;
-  } else if (isSmallObject) {
-    console.warn('[Dimensions] ⚠️  Utilisation dimensions typiques petit objet (fallback)');
-    return { length: 8, width: 8, height: 3, weight: 0.1 };
-  }
-  
   console.warn('[Dimensions] ⚠️  Utilisation des valeurs par défaut');
   return { length: 50, width: 40, height: 30, weight: 5 };
 }
@@ -4065,7 +3871,7 @@ async function analyzeWithGroqFallback(fileBuffer, mimeType, apiKey, prompt) {
   const lotsWithDimensions = await Promise.all(
     initialResult.lots.map(async (lot) => {
       if (lot.description) {
-        const dimensions = await estimateDimensionsForObject(lot.description, apiKey);
+        const dimensions = await estimateDimensionsForObject(lot.description, apiKey, {});
         return {
           ...lot,
           estimatedDimensions: dimensions,
@@ -4211,7 +4017,12 @@ app.post('/api/analyze-auction-sheet', upload.single('file'), async (req, res) =
         const target = lots[targetIdx];
         if (target?.description && target.description.trim().length > 0) {
           console.log(`[Analyze] 🔍 Estimation dimensions pour lot ${targetIdx + 1}: "${target.description.substring(0, 80)}..."`);
-          const dims = await estimateDimensionsForObject(target.description, groqKey);
+          const ctx = {
+            auctionHouse: extracted.salle_vente || undefined,
+            price: target.value,
+            date: extracted.date || undefined,
+          };
+          const dims = await estimateDimensionsForObject(target.description, groqKey, ctx);
           console.log(`[Analyze] ✅ Dimensions estimées de l'objet:`, dims);
           lots = lots.map((l, idx) =>
             idx === targetIdx ? { ...l, estimatedDimensions: dims } : l
@@ -9332,25 +9143,10 @@ async function estimateDimensionsWithGroq(description, groqApiKey, context = {})
   }
 
   try {
-    // Enrichir la description avec le contexte
-    let enrichedDescription = description;
-    
-    if (context.auctionHouse || context.price || context.date) {
-      console.log(`[Groq] 📊 Contexte enrichi:`, context);
-      
-      const contextParts = [];
-      if (context.auctionHouse) contextParts.push(`Salle: ${context.auctionHouse}`);
-      if (context.price) contextParts.push(`Prix adjudication: ${context.price}€`);
-      if (context.date) contextParts.push(`Date: ${context.date}`);
-      
-      enrichedDescription = `${description}\n\nCONTEXTE: ${contextParts.join(', ')}`;
-      
-      console.log(`[Groq] 🤖 Estimation avec contexte pour: "${description.substring(0, 80)}..."`);
-    } else {
-      console.log(`[Groq] 🤖 Estimation des dimensions pour: "${description.substring(0, 80)}..."`);
+    if (context.auctionHouse || context.price != null || context.date) {
+      console.log(`[Groq] 📊 Contexte:`, context);
     }
-    
-    const dimensions = await estimateDimensionsForObject(enrichedDescription, groqApiKey);
+    const dimensions = await estimateDimensionsForObject(description, groqApiKey, context);
     
     console.log('[Groq] ✅ Dimensions estimées:', dimensions);
     return dimensions;
