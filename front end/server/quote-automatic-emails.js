@@ -166,7 +166,7 @@ async function sendAutoEmail(firestore, sendEmailFn, quote, subject, htmlContent
         devisId: quote.id,
         clientEmail,
         direction: 'OUT',
-        source: 'RESEND',
+        source: result?.source || 'RESEND',
         subject,
         bodyText: textContent || '',
         bodyHtml: htmlContent,

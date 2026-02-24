@@ -4141,11 +4141,106 @@ app.post('/api/bordereau/extract', upload.single('file'), async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Email SMTP - Supporte Gmail (gratuit) et Uno Send
+// Email SMTP - Supporte Gmail (staging) et Resend (production)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Envoie un email via Resend API
+ * Détecte si on est en environnement staging
+ */
+function isStagingEnv() {
+  return process.env.NODE_ENV === 'staging';
+}
+
+/**
+ * Envoie un email via l'API Gmail (compte connecté dans les paramètres)
+ * Utilisé uniquement en staging. Nécessite saasAccountId et un compte Gmail connecté.
+ * @param {Object} params - idem sendEmail
+ * @returns {Promise<{ id: string, messageId: string, source: 'GMAIL' }>}
+ */
+async function sendEmailViaGmail({ to, subject, text, html, saasAccountId }) {
+  if (!firestore || !saasAccountId) {
+    throw new Error('En staging, un compte Gmail doit être connecté. Connectez un compte Gmail dans Paramètres > Compte Email.');
+  }
+
+  const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
+  const saasAccountDoc = await saasAccountRef.get();
+  if (!saasAccountDoc.exists) {
+    throw new Error('Compte SaaS introuvable.');
+  }
+
+  const gmailIntegration = saasAccountDoc.data().integrations?.gmail;
+  if (!gmailIntegration?.connected || !gmailIntegration?.email) {
+    throw new Error('Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email pour envoyer des emails en staging.');
+  }
+
+  const toEmail = extractEmailAddress(to);
+  if (!isValidEmail(toEmail)) {
+    throw new Error(`Email destinataire invalide: ${to}`);
+  }
+
+  const fromEmail = gmailIntegration.email;
+  let fromDisplayName = 'MBE Devis';
+  const saasData = saasAccountDoc.data();
+  if (saasData.commercialName) {
+    fromDisplayName = `${saasData.commercialName} Devis`;
+  }
+
+  const content = (html && html.trim()) ? html.trim() : (text && text.trim()) ? text.trim() : '';
+  if (!content) {
+    throw new Error('Au moins text ou html doit être fourni');
+  }
+
+  const contentType = (html && html.trim()) ? 'text/html' : 'text/plain';
+  const subjectEncoded = `=?UTF-8?B?${Buffer.from((subject || 'Sans sujet').trim(), 'utf8').toString('base64')}?=`;
+  const mimeLines = [
+    `From: "${fromDisplayName}" <${fromEmail}>`,
+    `To: ${toEmail}`,
+    `Subject: ${subjectEncoded}`,
+    'MIME-Version: 1.0',
+    `Content-Type: ${contentType}; charset=UTF-8`,
+    '',
+    content,
+  ].join('\r\n');
+
+  const raw = Buffer.from(mimeLines, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  const tokens = {
+    access_token: gmailIntegration.accessToken,
+    refresh_token: gmailIntegration.refreshToken,
+    expiry_date: gmailIntegration.expiresAt
+      ? (gmailIntegration.expiresAt instanceof Date ? gmailIntegration.expiresAt.getTime() : gmailIntegration.expiresAt.toDate?.()?.getTime?.() ?? new Date(gmailIntegration.expiresAt).getTime())
+      : null,
+  };
+
+  if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
+    throw new Error('Gmail OAuth non configuré sur le serveur (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET).');
+  }
+
+  const client = new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI);
+  client.setCredentials(tokens);
+
+  if (tokens.expiry_date && Date.now() > tokens.expiry_date - 60000) {
+    const { credentials } = await client.refreshAccessToken();
+    await saasAccountRef.update({
+      'integrations.gmail.accessToken': credentials.access_token,
+      'integrations.gmail.expiresAt': credentials.expiry_date ? new Date(credentials.expiry_date) : null,
+    });
+    client.setCredentials(credentials);
+  }
+
+  const gmail = google.gmail({ version: 'v1', auth: client });
+  const result = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: { raw },
+  });
+
+  const messageId = result.data.id;
+  console.log('[Gmail] ✅ Email envoyé via compte connecté:', fromEmail, '→', toEmail, 'messageId:', messageId);
+  return { id: messageId, messageId, source: 'GMAIL', from: fromEmail };
+}
+
+/**
+ * Envoie un email via Resend API (production) ou Gmail (staging)
  * @param {Object} params
  * @param {string} params.to - Email destinataire
  * @param {string} params.subject - Sujet
@@ -4155,6 +4250,13 @@ app.post('/api/bordereau/extract', upload.single('file'), async (req, res) => {
  * @returns {Promise<Object>} Réponse avec messageId
  */
 async function sendEmail({ to, subject, text, html, saasAccountId }) {
+  if (isStagingEnv()) {
+    if (!saasAccountId) {
+      throw new Error('En staging, le saasAccountId est requis. Connectez un compte Gmail dans Paramètres > Compte Email.');
+    }
+    return sendEmailViaGmail({ to, subject, text, html, saasAccountId });
+  }
+
   console.log('[Resend] ===== DÉBUT sendEmail =====');
   console.log('[Resend] Paramètres reçus:', {
     to: typeof to === 'string' ? to.substring(0, 50) : String(to),
@@ -4310,7 +4412,9 @@ async function sendEmail({ to, subject, text, html, saasAccountId }) {
     
     return { 
       id: data.id, 
-      messageId: data.id 
+      messageId: data.id,
+      source: 'RESEND',
+      from: fromValue
     };
   } catch (error) {
     const errorMessage = error.message || String(error);
@@ -4334,7 +4438,9 @@ async function sendEmail({ to, subject, text, html, saasAccountId }) {
         console.log('[Resend] ===== FIN sendEmail (succès via HTTP direct) =====');
         return {
           id: directResult.id,
-          messageId: directResult.id
+          messageId: directResult.id,
+          source: 'RESEND',
+          from: fromValue
         };
       } catch (directError) {
         console.error('[Resend] ❌ Échec aussi avec HTTP direct:', directError.message);
@@ -4802,8 +4908,8 @@ L'équipe MBE
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: 'RESEND',
-          from: EMAIL_FROM || 'devis@mbe-sdv.fr',
+          source: result.source || 'RESEND',
+          from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: `Votre devis de transport - ${reference}`,
           bodyText: textContent,
@@ -5099,8 +5205,8 @@ L'équipe MBE
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: 'RESEND',
-          from: EMAIL_FROM || 'devis@mbe-sdv.fr',
+          source: result.source || 'RESEND',
+          from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: `Surcoût supplémentaire - Devis ${reference}`,
           bodyText: textContent,
@@ -5404,36 +5510,39 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
 /**
  * Route de test: Envoyer un email de test
  * POST /api/test-email
- * Body: { to: "email@example.com" } (optionnel, utilise EMAIL_FROM par défaut)
+ * Body: { to: "email@example.com" } (optionnel)
+ * En staging : requiert auth + compte Gmail connecté (saasAccountId)
  */
-app.post('/api/test-email', async (req, res) => {
+app.post('/api/test-email', requireAuth, async (req, res) => {
   console.log('[Test Email] Route appelée');
   try {
     const { to } = req.body || {};
-    const testEmail = to || EMAIL_FROM;
-    
+    const testEmail = to || (!isStagingEnv() ? EMAIL_FROM : null);
+
     if (!testEmail || !isValidEmail(testEmail)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Email de test invalide',
-        hint: `Fournissez un email valide: { "to": "email@example.com" }`
+        hint: isStagingEnv()
+          ? 'En staging, fournissez un destinataire: { "to": "email@example.com" }'
+          : `Fournissez un email valide: { "to": "email@example.com" }`,
       });
     }
 
-    if (!resendClient) {
+    if (!isStagingEnv() && !resendClient) {
       return res.status(400).json({ 
         error: 'Resend non configuré',
         hint: 'Vérifiez RESEND_API_KEY dans .env.local'
       });
     }
 
-    if (!EMAIL_FROM) {
-      return res.status(400).json({ 
+    if (!isStagingEnv() && !EMAIL_FROM) {
+      return res.status(400).json({
         error: 'EMAIL_FROM non configuré',
-        hint: 'Configure EMAIL_FROM dans .env.local'
+        hint: 'Configure EMAIL_FROM dans .env.local',
       });
     }
 
-    console.log(`[Test Email] Envoi email de test à ${testEmail}...`);
+    console.log(`[Test Email] Envoi email de test à ${testEmail}... (staging=${isStagingEnv()})`);
     
     // Pour les emails de test, utiliser req.saasAccountId si disponible
     const saasAccountId = req.saasAccountId;
@@ -5444,11 +5553,10 @@ app.post('/api/test-email', async (req, res) => {
 
 Ceci est un email de test depuis l'application MBE Devis.
 
-Si vous recevez cet email, cela signifie que la configuration Resend fonctionne correctement !
+Si vous recevez cet email, cela signifie que la configuration email fonctionne correctement !
 
 Configuration:
-- Provider: Resend
-- From: ${EMAIL_FROM}
+- Provider: ${isStagingEnv() ? 'Gmail (compte connecté)' : 'Resend'}
 - Date: ${new Date().toLocaleString('fr-FR')}
 
 Cordialement,
@@ -5626,11 +5734,13 @@ app.get('/auth/gmail/start', requireAuth, (req, res) => {
   }
 
   // Passer le saasAccountId dans le state pour le récupérer au callback
+  // gmail.send : requis pour envoyer des emails via le compte connecté (staging)
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
     scope: [
       'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/userinfo.email'
     ],
     state: req.saasAccountId // Passer le saasAccountId dans le state
