@@ -7910,6 +7910,13 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
       return res.json({ generated: false, reason: 'Un paiement PRINCIPAL existe déjà' });
     }
 
+    // Vérifier qu'aucun lien actif n'existe déjà (évite triple génération en cas d'appels concurrents)
+    const existingLinks = devis.paymentLinks || [];
+    const hasActiveLink = existingLinks.some((l) => (l?.status === 'active' || l?.status === 'pending'));
+    if (hasActiveLink) {
+      return res.json({ generated: false, reason: 'Un lien de paiement actif existe déjà' });
+    }
+
     const saasAccountDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
     if (!saasAccountDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
 
@@ -7933,18 +7940,35 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
         description,
         customer: { name: devis.client?.name || '', email: devis.client?.email || '', phone: devis.client?.phone || '' },
       }, baseUrl);
-      const paiementRef = await firestore.collection('paiements').add({
-        devisId, amount: totalAmount, type: 'PRINCIPAL', status: 'PENDING',
-        url: paytweakResult.url, saasAccountId: req.saasAccountId, paymentProvider: 'paytweak',
-        createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
-      });
-      const existingLinks = (devisDoc.data().paymentLinks || []);
-      await firestore.collection('quotes').doc(devisId).update({
-        paymentLinks: [...existingLinks, { id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
-        status: 'awaiting_payment',
-        timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
-        updatedAt: Timestamp.now(),
-      });
+      const paiementRef = firestore.collection('paiements').doc();
+      try {
+        await firestore.runTransaction(async (t) => {
+          const freshDevis = await t.get(firestore.collection('quotes').doc(devisId));
+          const freshLinks = (freshDevis.data()?.paymentLinks || []);
+          if (freshLinks.some((l) => l?.status === 'active' || l?.status === 'pending')) {
+            throw new Error('Lien actif déjà présent');
+          }
+          const paiementsSnap = await t.get(firestore.collection('paiements').where('devisId', '==', devisId).where('type', '==', 'PRINCIPAL').limit(1));
+          const hasNonCancelled = paiementsSnap.docs.some((d) => d.data().status !== 'CANCELLED');
+          if (hasNonCancelled) throw new Error('Paiement PRINCIPAL déjà existant');
+          t.set(paiementRef, {
+            devisId, amount: totalAmount, type: 'PRINCIPAL', status: 'PENDING',
+            url: paytweakResult.url, saasAccountId: req.saasAccountId, paymentProvider: 'paytweak',
+            createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+          });
+          t.update(firestore.collection('quotes').doc(devisId), {
+            paymentLinks: FieldValue.arrayUnion({ id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }),
+            status: 'awaiting_payment',
+            timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+            updatedAt: Timestamp.now(),
+          });
+        });
+      } catch (txErr) {
+        if (txErr.message?.includes('Lien actif') || txErr.message?.includes('déjà existant')) {
+          return res.json({ generated: false, reason: txErr.message });
+        }
+        throw txErr;
+      }
       console.log(`[API] ✅ Lien Paytweak auto-généré (try-auto-payment): ${paytweakResult.url}`);
       return res.json({ generated: true, url: paytweakResult.url, paiementId: paiementRef.id });
     }
@@ -7964,19 +7988,35 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
       { stripeAccount: stripeAccountId }
     );
 
-    const paiementRef = await firestore.collection('paiements').add({
-      devisId, stripeSessionId: session.id, stripeAccountId, amount: totalAmount,
-      type: 'PRINCIPAL', status: 'PENDING', url: session.url, saasAccountId: req.saasAccountId,
-      createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
-    });
-
-    const existingLinks = (devisDoc.data().paymentLinks || []);
-    await firestore.collection('quotes').doc(devisId).update({
-      paymentLinks: [...existingLinks, { id: paiementRef.id, url: session.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
-      status: 'awaiting_payment',
-      timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien de paiement généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
-      updatedAt: Timestamp.now(),
-    });
+    const paiementRef = firestore.collection('paiements').doc();
+    try {
+      await firestore.runTransaction(async (t) => {
+        const freshDevis = await t.get(firestore.collection('quotes').doc(devisId));
+        const freshLinks = (freshDevis.data()?.paymentLinks || []);
+        if (freshLinks.some((l) => l?.status === 'active' || l?.status === 'pending')) {
+          throw new Error('Lien actif déjà présent');
+        }
+        const paiementsSnap = await t.get(firestore.collection('paiements').where('devisId', '==', devisId).where('type', '==', 'PRINCIPAL').limit(1));
+        const hasNonCancelled = paiementsSnap.docs.some((d) => d.data().status !== 'CANCELLED');
+        if (hasNonCancelled) throw new Error('Paiement PRINCIPAL déjà existant');
+        t.set(paiementRef, {
+          devisId, stripeSessionId: session.id, stripeAccountId, amount: totalAmount,
+          type: 'PRINCIPAL', status: 'PENDING', url: session.url, saasAccountId: req.saasAccountId,
+          createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+        });
+        t.update(firestore.collection('quotes').doc(devisId), {
+          paymentLinks: FieldValue.arrayUnion({ id: paiementRef.id, url: session.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }),
+          status: 'awaiting_payment',
+          timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien de paiement généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+          updatedAt: Timestamp.now(),
+        });
+      });
+    } catch (txErr) {
+      if (txErr.message?.includes('Lien actif') || txErr.message?.includes('déjà existant')) {
+        return res.json({ generated: false, reason: txErr.message });
+      }
+      throw txErr;
+    }
 
     console.log(`[API] ✅ Lien de paiement auto-généré (try-auto-payment): ${session.url}`);
     return res.json({ generated: true, url: session.url, paiementId: paiementRef.id });

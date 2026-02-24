@@ -746,21 +746,8 @@ export default function QuoteDetail() {
                         { merge: true }
                       );
                       console.log(`[QuoteDetail] ✅ Prix expédition sauvegardé dans Firestore: ${newShippingPrice}€`);
-                      // Tenter la génération auto du lien de paiement si emballage+expédition prêts et pas encore de lien
-                      const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
-                      const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
-                      if (packagingPrice > 0 && newShippingPrice > 0 && !hasPaymentLink) {
-                        try {
-                          const res = await authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' });
-                          const data = await res.json().catch(() => ({}));
-                          if (data?.generated && data?.url) {
-                            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré');
-                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
-                          }
-                        } catch (autoPayErr) {
-                          console.warn('[QuoteDetail] try-auto-payment:', autoPayErr);
-                        }
-                      }
+                      // Note: La génération auto du lien de paiement est gérée uniquement par le useEffect au chargement
+                      // pour éviter plusieurs appels simultanés (triple génération)
                     } catch (e) {
                       console.error("[QuoteDetail] ❌ Erreur sauvegarde shippingPrice:", e);
                     }

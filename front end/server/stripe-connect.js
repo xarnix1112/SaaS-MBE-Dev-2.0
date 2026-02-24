@@ -806,6 +806,22 @@ export async function handleCancelPaiement(req, res, firestore) {
       updatedAt: Timestamp.now(),
     });
 
+    // Mettre à jour paymentLinks dans le devis : passer le lien correspondant en inactive
+    if (paiement.devisId) {
+      const quoteRef = firestore.collection('quotes').doc(paiement.devisId);
+      const quoteSnap = await quoteRef.get();
+      if (quoteSnap.exists) {
+        const quoteData = quoteSnap.data();
+        const links = (quoteData.paymentLinks || []).map((l) =>
+          l.id === paiementId ? { ...l, status: 'inactive' } : l
+        );
+        await quoteRef.update({
+          paymentLinks: links,
+          updatedAt: Timestamp.now(),
+        });
+      }
+    }
+
     console.log("[stripe-connect] ✅ Paiement annulé:", paiementId);
 
     // Ajouter un événement à l'historique du devis

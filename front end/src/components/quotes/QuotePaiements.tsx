@@ -36,6 +36,7 @@ import {
   Clock,
   ExternalLink,
   Loader2,
+  Ban,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
@@ -522,16 +523,36 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
                     <div className="flex items-center gap-2">
                       {paiement.status === 'PENDING' && (
                         <>
-                          {paiement.stripeCheckoutUrl ? (
+                          {(paiement.url || paiement.stripeCheckoutUrl) ? (
                             <>
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="gap-2"
-                                onClick={() => window.open(paiement.stripeCheckoutUrl!, '_blank')}
+                                onClick={() => window.open((paiement.url || paiement.stripeCheckoutUrl)!, '_blank')}
                               >
                                 <ExternalLink className="w-4 h-4" />
                                 Voir le lien
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Mise en inactif...', { id: 'deactivate' });
+                                    await cancelPaiement(paiement.id);
+                                    toast.success('Lien mis en inactif', { id: 'deactivate' });
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur mise en inactif:', error);
+                                    toast.error('Erreur lors de la mise en inactif', { id: 'deactivate' });
+                                  }
+                                }}
+                                title="Mettre le lien en inactif (il ne pourra plus être utilisé)"
+                              >
+                                <Ban className="w-4 h-4" />
+                                Mettre en inactif
                               </Button>
                               <Button
                                 variant="ghost"
@@ -568,39 +589,61 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
                               </Button>
                             </>
                           ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="gap-2"
-                              onClick={async () => {
-                                try {
-                                  toast.loading('Génération du nouveau lien...', { id: 'regenerate' });
-                                  
-                                  // 1. Annuler l'ancien paiement
-                                  await cancelPaiement(paiement.id);
-                                  console.log('[QuotePaiements] Ancien paiement annulé:', paiement.id);
-                                  
-                                  // 2. Créer un nouveau paiement
-                                  const response = await createPaiement(devisId, {
-                                    amount: paiement.amount,
-                                    type: paiement.type,
-                                    description: paiement.description || `Régénération: ${paiement.type === 'PRINCIPAL' ? 'Paiement principal' : 'Surcoût'}`,
-                                  });
-                                  
-                                  toast.success('Nouveau lien généré', { id: 'regenerate' });
-                                  window.open(response.url, '_blank');
-                                  
-                                  // 3. Recharger les paiements
-                                  await loadPaiements();
-                                } catch (error) {
-                                  console.error('[QuotePaiements] Erreur régénération:', error);
-                                  toast.error('Erreur lors de la régénération du lien', { id: 'regenerate' });
-                                }
-                              }}
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                              Régénérer le lien
-                            </Button>
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Mise en inactif...', { id: 'deactivate' });
+                                    await cancelPaiement(paiement.id);
+                                    toast.success('Lien mis en inactif', { id: 'deactivate' });
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur mise en inactif:', error);
+                                    toast.error('Erreur lors de la mise en inactif', { id: 'deactivate' });
+                                  }
+                                }}
+                                title="Mettre le lien en inactif (il ne pourra plus être utilisé)"
+                              >
+                                <Ban className="w-4 h-4" />
+                                Mettre en inactif
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Génération du nouveau lien...', { id: 'regenerate' });
+                                    
+                                    // 1. Annuler l'ancien paiement
+                                    await cancelPaiement(paiement.id);
+                                    console.log('[QuotePaiements] Ancien paiement annulé:', paiement.id);
+                                    
+                                    // 2. Créer un nouveau paiement
+                                    const response = await createPaiement(devisId, {
+                                      amount: paiement.amount,
+                                      type: paiement.type,
+                                      description: paiement.description || `Régénération: ${paiement.type === 'PRINCIPAL' ? 'Paiement principal' : 'Surcoût'}`,
+                                    });
+                                    
+                                    toast.success('Nouveau lien généré', { id: 'regenerate' });
+                                    window.open(response.url, '_blank');
+                                    
+                                    // 3. Recharger les paiements
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur régénération:', error);
+                                    toast.error('Erreur lors de la régénération du lien', { id: 'regenerate' });
+                                  }
+                                }}
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                                Régénérer le lien
+                              </Button>
+                            </>
                           )}
                         </>
                       )}
