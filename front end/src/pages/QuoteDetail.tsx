@@ -442,6 +442,29 @@ export default function QuoteDetail() {
     });
   }, [foundQuote?.id, foundQuote?.auctionSheet, foundQuote?.options?.packagingPrice, foundQuote?.options?.shippingPrice, foundQuote?.paymentLinks, foundQuote?.timeline, foundQuote?.client?.email, foundQuote?.client?.name, isSaving, lastSaveTime]);
 
+  // Tenter la génération auto du lien de paiement au chargement si emballage+expédition prêts et pas encore de lien
+  const hasAttemptedAutoPayment = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!quote?.id) return;
+    const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
+    const shippingPrice = quote.options?.shippingPrice ?? 0;
+    const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
+    if (packagingPrice > 0 && shippingPrice > 0 && !hasPaymentLink && !hasAttemptedAutoPayment.current.has(quote.id)) {
+      hasAttemptedAutoPayment.current.add(quote.id);
+      authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' })
+        .then((res) => res.json().catch(() => ({})))
+        .then((data) => {
+          if (data?.generated) {
+            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré au chargement');
+            queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          } else {
+            hasAttemptedAutoPayment.current.delete(quote.id);
+          }
+        })
+        .catch(() => { hasAttemptedAutoPayment.current.delete(quote.id); });
+    }
+  }, [quote?.id, quote?.options?.packagingPrice, quote?.options?.shippingPrice, quote?.paymentLinks, quote?.auctionSheet?.recommendedCarton, queryClient]);
+
   // FORCER l'application des dimensions INTERNES du carton (dimensions du colis)
   // Ce useEffect garantit que les dimensions du carton sont TOUJOURS affichées
   useEffect(() => {
@@ -723,6 +746,21 @@ export default function QuoteDetail() {
                         { merge: true }
                       );
                       console.log(`[QuoteDetail] ✅ Prix expédition sauvegardé dans Firestore: ${newShippingPrice}€`);
+                      // Tenter la génération auto du lien de paiement si emballage+expédition prêts et pas encore de lien
+                      const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
+                      const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
+                      if (packagingPrice > 0 && newShippingPrice > 0 && !hasPaymentLink) {
+                        try {
+                          const res = await authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' });
+                          const data = await res.json().catch(() => ({}));
+                          if (data?.generated && data?.url) {
+                            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré');
+                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                          }
+                        } catch (autoPayErr) {
+                          console.warn('[QuoteDetail] try-auto-payment:', autoPayErr);
+                        }
+                      }
                     } catch (e) {
                       console.error("[QuoteDetail] ❌ Erreur sauvegarde shippingPrice:", e);
                     }

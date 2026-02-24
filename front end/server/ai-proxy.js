@@ -7863,6 +7863,129 @@ app.post('/api/devis/:id/recalculate', requireAuth, async (req, res) => {
   }
 });
 
+// Route: Tenter la génération automatique du lien de paiement (appelée par le frontend quand packaging+shipping sont calculés)
+app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+
+  const devisId = req.params.id;
+
+  try {
+    const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+
+    const devis = devisDoc.data();
+    if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+    const packagingPrice = devis.options?.packagingPrice ?? devis.packagingPrice ?? 0;
+    const shippingPrice = devis.options?.shippingPrice ?? devis.shippingPrice ?? 0;
+    const insuranceAmount = devis.options?.insuranceAmount ?? 0;
+    const clientWantsInsurance = devis.options?.insurance === true;
+    const insuranceOk = !clientWantsInsurance || (clientWantsInsurance && insuranceAmount > 0);
+    const totalAmount = packagingPrice + shippingPrice + insuranceAmount;
+
+    const hasPackagingAndShipping = packagingPrice > 0 && shippingPrice > 0;
+    const shouldGenerate = hasPackagingAndShipping && insuranceOk && totalAmount > 0;
+
+    if (!shouldGenerate) {
+      return res.json({
+        generated: false,
+        reason: !hasPackagingAndShipping
+          ? 'emballage et/ou expédition manquants'
+          : !insuranceOk
+            ? 'assurance demandée mais non calculée'
+            : 'total = 0',
+      });
+    }
+
+    const existingPaiements = await firestore
+      .collection('paiements')
+      .where('devisId', '==', devisId)
+      .where('type', '==', 'PRINCIPAL')
+      .where('status', '!=', 'CANCELLED')
+      .limit(1)
+      .get();
+
+    if (!existingPaiements.empty) {
+      return res.json({ generated: false, reason: 'Un paiement PRINCIPAL existe déjà' });
+    }
+
+    const saasAccountDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasAccountDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const saasAccount = saasAccountDoc.data();
+    const stripeAccountId = saasAccount.integrations?.stripe?.stripeAccountId;
+    const paymentConfig = await getPaymentProviderConfig(firestore, req.saasAccountId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    const clientName = devis.client?.name || 'Client';
+    const bordereauNumber = devis.auctionSheet?.bordereauNumber || '';
+    const auctionHouse = devis.lot?.auctionHouse || devis.auctionSheet?.auctionHouse || '';
+    const description = [clientName, bordereauNumber, auctionHouse].filter(Boolean).join(' | ') || `Devis ${devis.reference || devisId} - PRINCIPAL`;
+
+    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+
+    if (usePaytweak) {
+      const paytweakResult = await createPaytweakLinkForAccount(firestore, req.saasAccountId, {
+        amount: totalAmount,
+        currency: 'EUR',
+        reference: devis.reference || devisId,
+        description,
+        customer: { name: devis.client?.name || '', email: devis.client?.email || '', phone: devis.client?.phone || '' },
+      }, baseUrl);
+      const paiementRef = await firestore.collection('paiements').add({
+        devisId, amount: totalAmount, type: 'PRINCIPAL', status: 'PENDING',
+        url: paytweakResult.url, saasAccountId: req.saasAccountId, paymentProvider: 'paytweak',
+        createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+      });
+      const existingLinks = (devisDoc.data().paymentLinks || []);
+      await firestore.collection('quotes').doc(devisId).update({
+        paymentLinks: [...existingLinks, { id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
+        status: 'awaiting_payment',
+        timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+        updatedAt: Timestamp.now(),
+      });
+      console.log(`[API] ✅ Lien Paytweak auto-généré (try-auto-payment): ${paytweakResult.url}`);
+      return res.json({ generated: true, url: paytweakResult.url, paiementId: paiementRef.id });
+    }
+
+    if (!stripeAccountId || !stripe) {
+      return res.json({ generated: false, reason: 'Stripe non connecté ou non configuré' });
+    }
+
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'payment',
+        line_items: [{ price_data: { currency: 'eur', product_data: { name: description }, unit_amount: Math.round(totalAmount * 100) }, quantity: 1 }],
+        success_url: `${baseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${baseUrl}/payment/cancel`,
+        metadata: { devisId, paiementType: 'PRINCIPAL', saasAccountId: req.saasAccountId },
+      },
+      { stripeAccount: stripeAccountId }
+    );
+
+    const paiementRef = await firestore.collection('paiements').add({
+      devisId, stripeSessionId: session.id, stripeAccountId, amount: totalAmount,
+      type: 'PRINCIPAL', status: 'PENDING', url: session.url, saasAccountId: req.saasAccountId,
+      createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+    });
+
+    const existingLinks = (devisDoc.data().paymentLinks || []);
+    await firestore.collection('quotes').doc(devisId).update({
+      paymentLinks: [...existingLinks, { id: paiementRef.id, url: session.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
+      status: 'awaiting_payment',
+      timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien de paiement généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+      updatedAt: Timestamp.now(),
+    });
+
+    console.log(`[API] ✅ Lien de paiement auto-généré (try-auto-payment): ${session.url}`);
+    return res.json({ generated: true, url: session.url, paiementId: paiementRef.id });
+  } catch (err) {
+    console.error('[API] Erreur try-auto-payment:', err);
+    return res.status(500).json({ error: err.message || 'Erreur lors de la génération du lien' });
+  }
+});
+
 // Route: Forcer la resynchronisation
 app.post('/api/google-sheets/resync', requireAuth, async (req, res) => {
   if (!firestore) {
@@ -11230,6 +11353,7 @@ const expectedRoutes = [
   'POST /api/devis/:id/search-bordereau',
   'POST /api/devis/:id/process-bordereau-from-link',
   'POST /api/devis/:id/recalculate',
+  'POST /api/devis/:id/try-auto-payment',
   'POST /api/devis/:id/mark-collected',
   'POST /api/devis/:id/mark-awaiting-shipment',
   'POST /api/devis/:id/mark-shipped',
