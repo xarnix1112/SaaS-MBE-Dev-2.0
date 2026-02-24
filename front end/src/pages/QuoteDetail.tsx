@@ -166,6 +166,7 @@ export default function QuoteDetail() {
   const [surchargePaiements, setSurchargePaiements] = useState<Paiement[]>([]);
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
   const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
+  const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -349,6 +350,23 @@ export default function QuoteDetail() {
 
     loadSurchargePaiements();
   }, [id]);
+
+  // Charger si le paiement principal est payé quand on ouvre le popup de modification
+  useEffect(() => {
+    if (!isEditDialogOpen || !quote?.id) return;
+    const checkPrincipalPaid = async () => {
+      try {
+        const paiements = await getPaiements(quote.id);
+        const principalPaid = paiements.some(
+          (p) => p.type === 'PRINCIPAL' && p.status === 'PAID'
+        );
+        setIsPrincipalPaidForEdit(principalPaid);
+      } catch {
+        setIsPrincipalPaidForEdit(false);
+      }
+    };
+    checkPrincipalPaid();
+  }, [isEditDialogOpen, quote?.id]);
 
   // IMPORTANT: la liste de devis (useQuotes) se met à jour après merge Firestore.
   // Sans resync, la page détail peut rester bloquée sur l'ancien état (bordereau invisible).
@@ -2852,6 +2870,7 @@ export default function QuoteDetail() {
           {quote && (
             <EditQuoteForm
               quote={quote}
+              isPrincipalPaid={isPrincipalPaidForEdit}
               onPaymentLinkCreated={() => {
                 // Forcer le rechargement des paiements dans QuotePaiements
                 setPaiementsRefreshKey(prev => prev + 1);
@@ -3255,9 +3274,10 @@ interface EditQuoteFormProps {
   onCancel: () => void;
   isSaving: boolean;
   onPaymentLinkCreated?: () => void; // Callback appelé après la création d'un nouveau paiement
+  isPrincipalPaid?: boolean; // Si true, on ne peut plus modifier les prix (emballage, expédition)
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
@@ -3864,7 +3884,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                 <CartonSelector
                   selectedCartonId={selectedCartonId}
                   onCartonSelect={handleCartonSelect}
-                  disabled={isSaving}
+                  disabled={isSaving || isPrincipalPaid}
                 />
               </div>
 
@@ -4048,9 +4068,11 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                 <div className="space-y-2">
                   <div className="flex items-center justify-between mb-1">
                     <Label htmlFor="packagingPrice">Prix d'emballage (€)</Label>
-                    <Badge variant="secondary" className="text-xs">
-                      Depuis le carton
-                    </Badge>
+                    {!isPrincipalPaid && (
+                      <Badge variant="secondary" className="text-xs">
+                        Modifiable pour ce devis uniquement
+                      </Badge>
+                    )}
                   </div>
                   <Input
                     id="packagingPrice"
@@ -4058,11 +4080,14 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                     step="0.01"
                     min="0"
                     value={formData.packagingPrice}
-                    disabled
-                    className="bg-muted"
+                    disabled={isPrincipalPaid}
+                    onChange={(e) => setFormData({ ...formData, packagingPrice: parseFloat(e.target.value) || 0 })}
+                    className={isPrincipalPaid ? 'bg-muted' : ''}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Le prix est défini par le carton sélectionné
+                    {isPrincipalPaid
+                      ? 'Le paiement principal est effectué, le prix ne peut plus être modifié'
+                      : 'Valeur initiale du carton. La modification n\'affecte pas les Paramètres.'}
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -4073,8 +4098,15 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                     step="0.01"
                     min="0"
                     value={formData.shippingPrice}
+                    disabled={isPrincipalPaid}
                     onChange={(e) => setFormData({ ...formData, shippingPrice: parseFloat(e.target.value) || 0 })}
+                    className={isPrincipalPaid ? 'bg-muted' : ''}
                   />
+                  {isPrincipalPaid && (
+                    <p className="text-xs text-muted-foreground">
+                      Le paiement principal est effectué, le prix ne peut plus être modifié
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2 col-span-2">
                   <div className="flex items-center space-x-2">
@@ -4083,6 +4115,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                       id="insurance"
                       checked={formData.insurance}
                       onChange={(e) => setFormData({ ...formData, insurance: e.target.checked })}
+                      disabled={isPrincipalPaid}
                       className="h-4 w-4 rounded border-gray-300"
                     />
                     <Label htmlFor="insurance">Assurance</Label>
@@ -4097,6 +4130,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                       step="0.01"
                       min="0"
                       value={formData.insuranceAmount}
+                      disabled={isPrincipalPaid}
                       onChange={(e) => setFormData({ ...formData, insuranceAmount: parseFloat(e.target.value) || 0 })}
                     />
                   </div>

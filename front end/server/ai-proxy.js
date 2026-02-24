@@ -226,8 +226,9 @@ if (!process.env.RESEND_API_KEY && fs.existsSync(envLocalPath)) {
 }
 
 // Initialiser le client Resend avec les valeurs finales
+// En staging : Resend n'est jamais utilisé (emails via Gmail uniquement)
 let resendClient = null;
-if (RESEND_API_KEY) {
+if (process.env.NODE_ENV !== 'staging' && RESEND_API_KEY) {
   // Vérifier que la clé API commence par "re_"
   if (!RESEND_API_KEY.startsWith('re_')) {
     console.error('[Config] ❌ Format de clé API Resend invalide (doit commencer par "re_")');
@@ -249,7 +250,11 @@ if (RESEND_API_KEY) {
     }
   }
 } else {
-  console.log('[Config] ⚠️  Resend non configuré (RESEND_API_KEY requis)');
+  if (process.env.NODE_ENV === 'staging') {
+    console.log('[Config] ℹ️  Staging: Resend désactivé (emails via Gmail uniquement)');
+  } else {
+    console.log('[Config] ⚠️  Resend non configuré (RESEND_API_KEY requis)');
+  }
 }
 
 // Les variables Resend sont maintenant disponibles globalement
