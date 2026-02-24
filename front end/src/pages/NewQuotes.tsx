@@ -21,20 +21,35 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-type FilterStatus = 'all' | 'new' | 'to_verify' | 'verified' | 'payment_link_sent';
+// Statuts des devis considérés comme "ayant atteint ou dépassé en attente de paiement"
+// Tout ce qui n'est pas dans cette liste = nouveau devis (visible dans cet onglet)
+const STATUS_APRES_ATTENTE_PAIEMENT = [
+  'awaiting_payment',
+  'paid',
+  'awaiting_collection',
+  'collected',
+  'preparation',
+  'awaiting_shipment',
+  'shipped',
+  'completed',
+] as const;
+
+type FilterStatus = 'all' | 'new' | 'to_verify' | 'verified' | 'payment_link_sent' | 'calculated' | 'bordereau_linked' | 'waiting_for_slip' | 'other';
 
 export default function NewQuotes() {
   const [search, setSearch] = useState('');
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const { data: quotes = [], isLoading, isError } = useQuotes();
 
-  // Devis pas encore ouverts ou n'ayant pas le statut "en attente de paiement"
-  // = tous les devis AVANT awaiting_payment (new, to_verify, verified, payment_link_sent)
+  // Devis sans action jusqu'au statut "en attente de paiement" = tous ceux dont le statut
+  // n'a PAS encore atteint awaiting_payment (ni au-delà). Inclut: new, to_verify, verified,
+  // payment_link_sent, calculated, bordereau_linked, waiting_for_slip, ou tout statut inconnu.
   const newQuotes = useMemo(
     () =>
-      quotes.filter((q) =>
-        ["new", "to_verify", "verified", "payment_link_sent"].includes(q.status)
-      ),
+      quotes.filter((q) => {
+        const status = q.status || 'new';
+        return !STATUS_APRES_ATTENTE_PAIEMENT.includes(status as typeof STATUS_APRES_ATTENTE_PAIEMENT[number]);
+      }),
     [quotes]
   );
 
@@ -49,8 +64,12 @@ export default function NewQuotes() {
           (quote.lot?.description?.toLowerCase() || '').includes(searchLower) ||
           (quote.delivery?.contact?.name?.toLowerCase() || '').includes(searchLower);
 
+        const status = quote.status || 'new';
         const matchesStatus =
-          filterStatus === "all" || quote.status === filterStatus;
+          filterStatus === "all" ||
+          (filterStatus === "other"
+            ? !['new', 'to_verify', 'verified', 'payment_link_sent', 'calculated', 'bordereau_linked', 'waiting_for_slip'].includes(status)
+            : status === filterStatus);
 
         return matchesSearch && matchesStatus;
       }),
@@ -149,6 +168,10 @@ export default function NewQuotes() {
               <SelectItem value="to_verify">À vérifier</SelectItem>
               <SelectItem value="verified">Vérifiés</SelectItem>
               <SelectItem value="payment_link_sent">Lien envoyé</SelectItem>
+              <SelectItem value="calculated">Calculé</SelectItem>
+              <SelectItem value="bordereau_linked">Bordereau lié</SelectItem>
+              <SelectItem value="waiting_for_slip">En attente bordereau</SelectItem>
+              <SelectItem value="other">Autre</SelectItem>
             </SelectContent>
           </Select>
         </div>
