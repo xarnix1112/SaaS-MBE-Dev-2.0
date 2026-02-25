@@ -5632,8 +5632,16 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);
 
     // Envoyer un email automatique à chaque client pour les devis concernés
+    // + Enregistrer collectionPlannedAt sur chaque devis
     const effectiveSaasId = saasAccountId || (quotes && quotes[0]?.saasAccountId);
     if (quotes && quotes.length > 0 && firestore) {
+      const now = Timestamp.now();
+      const timelineEvent = {
+        id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        date: now,
+        status: 'awaiting_collection',
+        description: `Collecte planifiée - Demande envoyée à ${auctionHouse || 'la salle des ventes'}`,
+      };
       for (const q of quotes) {
         try {
           const quoteId = q.id;
@@ -5659,6 +5667,16 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
             reference: quoteData.reference,
           };
           await sendAwaitingCollectionEmail(firestore, sendEmail, quoteForEmail);
+
+          // Enregistrer que la collecte a été planifiée (permettre le bouton "Lot non récupéré")
+          const quoteRef = firestore.collection('quotes').doc(quoteId);
+          await quoteRef.update({
+            collectionPlannedAt: now,
+            collectionPlannedDate: plannedDate || null,
+            collectionPlannedTime: plannedTime || null,
+            timeline: FieldValue.arrayUnion(timelineEvent),
+            updatedAt: now,
+          });
         } catch (emailErr) {
           console.error('[AI Proxy] ⚠️ Email automatique (demande collecte) non envoyé pour devis:', q?.id, emailErr.message);
         }
@@ -5678,6 +5696,149 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
       success: false, 
       error: error.message || 'Erreur lors de l\'envoi de l\'email' 
     });
+  }
+});
+
+/**
+ * Route: Notifier le client qu'un lot n'a pas pu être récupéré
+ * POST /api/devis/:id/notify-collection-failed
+ * Body: { reason: string } (obligatoire, max 250 caractères)
+ * Prérequis: devis avec collectionPlannedAt (collecte planifiée), status awaiting_collection
+ */
+app.post('/api/devis/:id/notify-collection-failed', requireAuth, async (req, res) => {
+  const devisId = req.params.id;
+  const { reason } = req.body || {};
+
+  if (!devisId) {
+    return res.status(400).json({ error: 'ID devis requis' });
+  }
+  if (!reason || typeof reason !== 'string' || !reason.trim()) {
+    return res.status(400).json({ error: 'La raison est obligatoire' });
+  }
+  const reasonTrimmed = reason.trim();
+  if (reasonTrimmed.length > 250) {
+    return res.status(400).json({ error: 'La raison ne doit pas dépasser 250 caractères' });
+  }
+
+  try {
+    const quoteRef = firestore.collection('quotes').doc(devisId);
+    const quoteDoc = await quoteRef.get();
+    if (!quoteDoc.exists) {
+      return res.status(404).json({ error: 'Devis introuvable' });
+    }
+
+    const quoteData = quoteDoc.data();
+    const status = quoteData?.status;
+    const collectionPlannedAt = quoteData?.collectionPlannedAt;
+
+    if (status !== 'awaiting_collection') {
+      return res.status(400).json({ error: 'Ce devis n\'est pas en attente de collecte' });
+    }
+    if (!collectionPlannedAt) {
+      return res.status(400).json({ error: 'Aucune collecte n\'a été planifiée pour ce devis. Planifiez d\'abord une collecte.' });
+    }
+
+    const clientEmail = quoteData?.client?.email || quoteData?.clientEmail || quoteData?.delivery?.contact?.email;
+    if (!clientEmail || !isValidEmail(clientEmail)) {
+      return res.status(400).json({ error: 'Aucun email client valide pour ce devis' });
+    }
+
+    // Récupérer les numéros de lots (single ou multi)
+    let lotNumbers = [];
+    if (quoteData?.auctionSheet?.lots?.length > 0) {
+      lotNumbers = quoteData.auctionSheet.lots.map((l) => l.lotNumber || l.numero_lot || '').filter(Boolean);
+    }
+    if (lotNumbers.length === 0 && quoteData?.lot?.number) {
+      lotNumbers = [quoteData.lot.number];
+    }
+    const lotDisplay = lotNumbers.length === 0
+      ? 'votre lot'
+      : lotNumbers.length === 1
+        ? `le lot ${lotNumbers[0]}`
+        : `les lots ${lotNumbers.join(', ')}`;
+
+    // Récupérer la salle des ventes (nom + coordonnées)
+    const auctionHouseName = quoteData?.lot?.auctionHouse || quoteData?.auctionSheet?.auctionHouse || quoteData?.lotAuctionHouse || 'la salle des ventes';
+    let houseEmail = '';
+    let houseContact = '';
+
+    const housesSnap = await firestore.collection('auctionHouses').get();
+    const normalizedSearch = (auctionHouseName || '').trim().toLowerCase();
+    const houseDoc = housesSnap.docs.find((d) => {
+      const name = (d.data().name || '').trim().toLowerCase();
+      return name === normalizedSearch;
+    });
+    if (houseDoc) {
+      const houseData = houseDoc.data();
+      houseEmail = houseData.email || '';
+      houseContact = houseData.contact || '';
+    }
+
+    const contactBlock = [
+      auctionHouseName,
+      houseEmail ? `Email : ${houseEmail}` : '',
+      houseContact ? `Contact : ${houseContact}` : '',
+    ].filter(Boolean).join('\n');
+
+    // Tronquer la raison pour l'affichage (email + timeline) - ~80 caractères
+    const reasonTruncated = reasonTrimmed.length > 80 ? reasonTrimmed.substring(0, 77) + '...' : reasonTrimmed;
+
+    const reference = quoteData?.reference || devisId;
+    const clientName = quoteData?.client?.name || quoteData?.clientName || 'Client';
+
+    let commercialName = 'votre MBE';
+    if (quoteData?.saasAccountId) {
+      const saasDoc = await firestore.collection('saasAccounts').doc(quoteData.saasAccountId).get();
+      if (saasDoc.exists && saasDoc.data().commercialName) {
+        commercialName = saasDoc.data().commercialName;
+      }
+    }
+
+    const htmlContent = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <p>Bonjour ${clientName},</p>
+  <p>${lotDisplay.charAt(0).toUpperCase() + lotDisplay.slice(1)} n'a pas pu être récupéré auprès de la salle des ventes.</p>
+  <p><strong>Raison :</strong> ${reasonTruncated.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
+  <p>Merci de contacter la salle des ventes pour faire débloquer la situation.</p>
+  <div style="background: #f3f4f6; padding: 16px; border-radius: 8px; margin: 20px 0;">
+    <p style="margin: 0 0 8px 0; font-weight: 600;">Coordonnées de la salle des ventes :</p>
+    <pre style="margin: 0; white-space: pre-wrap; font-family: inherit;">${contactBlock.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
+  </div>
+  <p style="color: #6b7280; font-size: 14px;">Référence : ${reference}</p>
+  <p>Cordialement,<br><strong>${commercialName}</strong></p>
+</body>
+</html>`.trim();
+
+    const saasAccountId = quoteData.saasAccountId || req.saasAccountId;
+    await sendEmail({
+      to: clientEmail,
+      subject: `Lot non récupéré auprès de la salle des ventes - ${reference}`,
+      text: `${lotDisplay.charAt(0).toUpperCase() + lotDisplay.slice(1)} n'a pas pu être récupéré. Raison : ${reasonTruncated}. Merci de contacter la salle des ventes : ${contactBlock}`,
+      html: htmlContent,
+      saasAccountId,
+    });
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'awaiting_collection',
+      description: `Lot non récupéré auprès de la salle des ventes. Raison : ${reasonTruncated}`,
+    };
+
+    await quoteRef.update({
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    console.log('[API] ✅ Notifié client collection failed:', devisId, '→', clientEmail);
+
+    res.json({ success: true, message: 'Client notifié par email' });
+  } catch (error) {
+    console.error('[API] Erreur notify-collection-failed:', error);
+    res.status(500).json({ error: error.message || 'Erreur lors de la notification' });
   }
 });
 
