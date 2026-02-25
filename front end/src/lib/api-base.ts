@@ -3,39 +3,37 @@
  *
  * Détecte automatiquement l'environnement au runtime :
  * 1. Si le projet Firebase est staging (VITE_FIREBASE_PROJECT_ID) → backend STAGING
- * 2. Si l'hôte est staging.mbe-sdv.fr, saas-mbe-sdv-staging.firebaseapp.com ou *.vercel.app (preview) → backend STAGING
- * 3. Sinon → VITE_API_BASE_URL (injecté au build par Vercel)
- *
- * Cela corrige le cas où Vercel Preview utilise les variables Production
- * au lieu de Preview (VITE_API_BASE_URL pointe alors vers le mauvais backend).
+ * 2. Si l'hôte est staging.mbe-sdv.fr ou preview Vercel → backend STAGING
+ * 3. Si l'hôte est mbe-sdv.fr / www.mbe-sdv.fr → backend PRODUCTION (api.mbe-sdv.fr)
+ * 4. Sinon → VITE_API_BASE_URL (injecté au build par Vercel)
  */
 
-/**
- * URL du backend Railway STAGING.
- * Récupère l'URL dans Railway → ton service staging → Settings → Domain.
- */
 const STAGING_BACKEND = 'https://saas-mbe-dev-staging-staging.up.railway.app';
+const PRODUCTION_BACKEND = 'https://api.mbe-sdv.fr';
 
 function isStagingEnvironment(): boolean {
-  // 1. Build configuré pour staging (Vercel Preview avec env staging)
   const projectId = import.meta.env.VITE_FIREBASE_PROJECT_ID;
-  if (projectId === 'saas-mbe-sdv-staging') {
-    return true;
-  }
-  // 2. Détection par hostname (runtime)
+  if (projectId === 'saas-mbe-sdv-staging') return true;
   if (typeof window !== 'undefined') {
     const host = window.location.hostname;
     if (host === 'staging.mbe-sdv.fr' || host === 'www.staging.mbe-sdv.fr') return true;
     if (host === 'saas-mbe-sdv-staging.firebaseapp.com') return true;
-    // Vercel Preview (ex: saas-mbe-sdv-staging-xxx.vercel.app ou git-staging-xxx.vercel.app)
     if (host.endsWith('.vercel.app') && (host.includes('staging') || host.includes('saas-mbe-sdv-staging'))) return true;
   }
   return false;
 }
 
-export function getApiBaseUrl(): string {
-  if (isStagingEnvironment()) {
-    return STAGING_BACKEND;
+function isProductionEnvironment(): boolean {
+  if (typeof window !== 'undefined') {
+    const host = window.location.hostname;
+    return host === 'mbe-sdv.fr' || host === 'www.mbe-sdv.fr';
   }
-  return (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  return false;
+}
+
+export function getApiBaseUrl(): string {
+  if (isStagingEnvironment()) return STAGING_BACKEND;
+  if (isProductionEnvironment()) return PRODUCTION_BACKEND;
+  const fromEnv = (import.meta.env.VITE_API_BASE_URL ?? '').replace(/\/+$/, '');
+  return fromEnv || PRODUCTION_BACKEND;
 }

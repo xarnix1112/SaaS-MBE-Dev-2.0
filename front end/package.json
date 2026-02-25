@@ -21,6 +21,8 @@
     "serve": "node server/index.js",
     "serve:api": "node server/ai-proxy.js",
     "start": "npm run build && npm run serve",
+    "dry-run": "node scripts/verify-production-config.mjs",
+    "dry-run:prod": "NODE_ENV=production node scripts/verify-production-config.mjs",
     "stripe:check": "node scripts/check-stripe-config.mjs",
     "stripe:init": "node scripts/init-firestore-stripe.mjs",
     "plans:init": "node scripts/init-plans.mjs",
