@@ -10,7 +10,7 @@
 
 import fetch from 'node-fetch';
 
-const CUSTOM_PAYTWEAK_ACCOUNT_ID = 'es4IiIhl03aPttsTz5xj';
+const CUSTOM_PAYTWEAK_ACCOUNT_IDS = ['es4IiIhl03aPttsTz5xj', 'JrCRpURxF7k6PHwueLPr'];
 const PAYTWEAK_API_BASE = process.env.VITE_PAYTWEAK_API_BASE || 'https://api.paytweak.com';
 const PAYTWEAK_LINKS_URL = `${PAYTWEAK_API_BASE.replace(/\/+$/, '')}/v1/links/`;
 
@@ -19,7 +19,7 @@ const workTokenCache = new Map();
 const CACHE_TTL_MS = 9 * 60 * 1000;
 
 export function hasCustomPaytweak(saasData, saasAccountId) {
-  return saasData?.customFeatures?.customPaytweak === true || saasAccountId === CUSTOM_PAYTWEAK_ACCOUNT_ID;
+  return saasData?.customFeatures?.customPaytweak === true || CUSTOM_PAYTWEAK_ACCOUNT_IDS.includes(saasAccountId);
 }
 
 export async function getPaymentProviderConfig(firestore, saasAccountId) {

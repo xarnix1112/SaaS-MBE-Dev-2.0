@@ -1,8 +1,12 @@
-# Configuration Paytweak (compte es4IiIhl03aPttsTz5xj)
+# Configuration Paytweak
 
 ## Activation automatique
 
-Le compte SaaS `es4IiIhl03aPttsTz5xj` dispose automatiquement de la fonctionnalité Paytweak. Aucune modification Firestore n'est requise.
+Les comptes SaaS suivants disposent automatiquement de la fonctionnalité Paytweak :
+- `es4IiIhl03aPttsTz5xj`
+- `JrCRpURxF7k6PHwueLPr`
+
+Aucune modification Firestore n'est requise pour ces comptes.
 
 Pour activer sur un autre compte, ajouter dans Firestore :
 ```

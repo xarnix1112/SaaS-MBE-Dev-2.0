@@ -10664,7 +10664,7 @@ app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
   }
 });
 
-// ===== PAYMENT PROVIDER (Stripe / Paytweak) - Feature customPaytweak pour compte es4IiIhl03aPttsTz5xj =====
+// ===== PAYMENT PROVIDER (Stripe / Paytweak) - Feature customPaytweak pour comptes autorisés =====
 
 // GET /api/account/payment-settings
 app.get('/api/account/payment-settings', requireAuth, async (req, res) => {
