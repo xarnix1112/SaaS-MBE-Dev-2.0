@@ -11,10 +11,12 @@
 import Stripe from "stripe";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import dotenv from "dotenv";
+import { getPaymentProviderConfig, createPaytweakLinkForAccount } from "./payment-provider.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import fs from "fs";
 import { createNotification, NOTIFICATION_TYPES } from "./notifications.js";
+import { sendPaymentReceivedEmail } from "./quote-automatic-emails.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -494,6 +496,74 @@ export async function handleCreatePaiement(req, res, firestore) {
     const saasAccount = saasAccountDoc.data();
     const stripeIntegration = saasAccount.integrations?.stripe;
 
+    // Vérifier si le compte utilise Paytweak (feature customPaytweak)
+    const paymentConfig = await getPaymentProviderConfig(firestore, saasAccountId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    if (usePaytweak) {
+      // Générer le lien Paytweak
+      const clientName = devis.client?.name || 'Client';
+      const bordereauNumber = devis.auctionSheet?.bordereauNumber || '';
+      const auctionHouse = devis.lot?.auctionHouse || '';
+      const descriptionParts = [clientName];
+      if (bordereauNumber) descriptionParts.push(bordereauNumber);
+      if (auctionHouse) descriptionParts.push(auctionHouse);
+      const descriptionStr = descriptionParts.join(' | ') || `Devis ${devis.reference || devisId} - ${type}`;
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      try {
+        const paytweakResult = await createPaytweakLinkForAccount(firestore, saasAccountId, {
+          amount,
+          currency: 'EUR',
+          reference: devis.reference || devisId,
+          description: description || descriptionStr,
+          customer: {
+            name: devis.client?.name || '',
+            email: devis.client?.email || '',
+            phone: devis.client?.phone || '',
+          },
+          devisId,
+          quote: devis,
+        }, baseUrl);
+        const paiementId = await createPaiement(firestore, {
+          devisId,
+          saasAccountId,
+          amount,
+          type,
+          status: "PENDING",
+          url: paytweakResult.url,
+          paymentProvider: 'paytweak',
+        });
+        await addTimelineEventToQuote(firestore, devisId, {
+          id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          date: Timestamp.now(),
+          status: devis.status || 'awaiting_payment',
+          description: type === 'PRINCIPAL' ? `Lien Paytweak généré (${amount.toFixed(2)}€)` : `Lien Paytweak surcoût (${amount.toFixed(2)}€)`,
+          user: 'Système',
+        });
+        const devisRef = firestore.collection("quotes").doc(devisId);
+        const devisDoc = await devisRef.get();
+        const existingPaymentLinks = devisDoc.data()?.paymentLinks || [];
+        const newPaymentLink = {
+          id: paiementId,
+          url: paytweakResult.url,
+          amount,
+          type,
+          status: 'pending',
+          createdAt: Timestamp.now(),
+        };
+        await devisRef.update({
+          paymentLinks: [...existingPaymentLinks, newPaymentLink],
+          status: type === 'PRINCIPAL' ? 'awaiting_payment' : devisDoc.data()?.status,
+          updatedAt: Timestamp.now(),
+        });
+        console.log("[stripe-connect] ✅ Lien Paytweak créé:", paytweakResult.url);
+        return res.json({ url: paytweakResult.url, sessionId: paytweakResult.id, paiementId });
+      } catch (paytweakError) {
+        console.error("[stripe-connect] ❌ Erreur Paytweak:", paytweakError);
+        return res.status(500).json({ error: paytweakError.message || "Erreur lors de la génération du lien Paytweak" });
+      }
+    }
+
     if (!stripeIntegration || !stripeIntegration.connected || !stripeIntegration.stripeAccountId) {
       console.error("[stripe-connect] ❌ Compte SaaS sans Stripe connecté:", saasAccountId);
       return res.status(400).json({ 
@@ -711,6 +781,147 @@ export async function handleGetPaiements(req, res, firestore) {
 }
 
 /**
+ * Calcule le montant d'assurance (même logique que QuotePaiements)
+ */
+function computeInsuranceAmount(lotValue = 0, insuranceEnabled, explicitAmount) {
+  if (!insuranceEnabled) return 0;
+  if (explicitAmount !== null && explicitAmount !== undefined && explicitAmount > 0) {
+    const decimal = explicitAmount % 1;
+    if (decimal >= 0.5) return Math.ceil(explicitAmount);
+    if (decimal > 0) return Math.floor(explicitAmount) + 0.5;
+    return explicitAmount;
+  }
+  const raw = Math.max(lotValue * 0.025, lotValue < 500 ? 12 : 0);
+  const decimal = raw % 1;
+  if (decimal >= 0.5) return Math.ceil(raw);
+  if (decimal > 0) return Math.floor(raw) + 0.5;
+  return raw;
+}
+
+/**
+ * Calcule le montant attendu pour le paiement principal (emballage + expédition + assurance).
+ * Les surcoûts sont des paiements séparés (type SURCOUT), donc exclus du principal.
+ */
+function computeExpectedPrincipalAmount(devis) {
+  const carton = devis.auctionSheet?.recommendedCarton;
+  const cartonPrice = carton?.price ?? carton?.priceTTC ?? null;
+  const packagingPrice = cartonPrice !== null ? cartonPrice : (devis.options?.packagingPrice || 0);
+  const shippingPrice = devis.options?.shippingPrice || 0;
+  const insuranceAmount = computeInsuranceAmount(
+    devis.lot?.value || 0,
+    devis.options?.insurance,
+    devis.options?.insuranceAmount
+  );
+  return packagingPrice + shippingPrice + insuranceAmount;
+}
+
+/**
+ * POST /api/devis/:id/sync-payment-amount
+ * Synchronise le montant du lien de paiement principal avec le total du devis.
+ * Si le total du devis a changé (ex: modification du carton/emballage), annule les anciens
+ * liens PRINCIPAL en attente et crée un nouveau lien avec le bon montant.
+ */
+export async function handleSyncPaymentAmount(req, res, firestore) {
+  try {
+    if (!firestore) {
+      return res.status(500).json({ error: "Firestore non initialisé" });
+    }
+    const { id: devisId } = req.params;
+    const devis = await getDevisById(firestore, devisId);
+    const paiements = await getPaiementsByDevisId(firestore, devisId);
+    const expectedTotal = computeExpectedPrincipalAmount(devis);
+
+    if (expectedTotal <= 0) {
+      return res.status(400).json({ error: "Total du devis invalide (0 ou négatif)" });
+    }
+
+    const principalPending = paiements.filter(
+      (p) => p.type === 'PRINCIPAL' && p.status === 'PENDING'
+    );
+    const tolerance = 0.01;
+    const needsSync = principalPending.some(
+      (p) => Math.abs(p.amount - expectedTotal) > tolerance
+    );
+
+    if (!needsSync) {
+      return res.json({ success: true, synced: false, message: "Montants déjà cohérents" });
+    }
+
+    // Annuler les liens principal en attente avec un mauvais montant
+    for (const p of principalPending) {
+      if (Math.abs(p.amount - expectedTotal) <= tolerance) continue;
+      const paiementRef = firestore.collection("paiements").doc(p.id);
+      await paiementRef.update({
+        status: 'CANCELLED',
+        updatedAt: Timestamp.now(),
+      });
+      const quoteRef = firestore.collection('quotes').doc(devisId);
+      const quoteSnap = await quoteRef.get();
+      if (quoteSnap.exists) {
+        const quoteData = quoteSnap.data();
+        const links = (quoteData.paymentLinks || []).map((l) =>
+          l.id === p.id ? { ...l, status: 'inactive' } : l
+        );
+        await quoteRef.update({
+          paymentLinks: links,
+          updatedAt: Timestamp.now(),
+        });
+      }
+      await addTimelineEventToQuote(firestore, devisId, {
+        id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+        date: Timestamp.now(),
+        status: 'awaiting_payment',
+        description: `Lien de paiement annulé (${p.amount.toFixed(2)}€) - Principal (resync ${expectedTotal.toFixed(2)}€)`,
+        user: 'Système',
+      });
+    }
+
+    // Créer un nouveau paiement principal avec le bon montant
+    const description = `Paiement principal du devis ${devis.reference || devisId}`;
+    const fakeReq = {
+      params: { id: devisId },
+      body: { amount: expectedTotal, type: 'PRINCIPAL', description },
+      saasAccountId: devis.saasAccountId || req.saasAccountId,
+    };
+    const resState = { statusCode: 200, body: null };
+    const fakeRes = {
+      status: (code) => {
+        resState.statusCode = code;
+        return fakeRes;
+      },
+      json: (data) => {
+        resState.body = data;
+        return fakeRes;
+      },
+    };
+    await handleCreatePaiement(fakeReq, fakeRes, firestore);
+
+    if (resState.statusCode >= 400) {
+      const errMsg = resState.body?.error || resState.body?.message || "Échec création lien";
+      console.error("[stripe-connect] ❌ Sync: création nouveau paiement échouée:", resState.body);
+      return res.status(500).json({
+        error: "Impossible de créer le nouveau lien de paiement",
+        details: errMsg,
+      });
+    }
+
+    console.log("[stripe-connect] ✅ Sync paiement terminée: ancien annulé, nouveau créé à", expectedTotal, "€");
+    return res.json({
+      success: true,
+      synced: true,
+      newAmount: expectedTotal,
+      message: "Lien de paiement régénéré avec le bon montant",
+    });
+  } catch (error) {
+    console.error("[stripe-connect] ❌ Erreur sync paiement:", error);
+    return res.status(500).json({
+      error: "Erreur lors de la synchronisation du paiement",
+      details: error.message,
+    });
+  }
+}
+
+/**
  * POST /api/paiement/:id/cancel
  * Annule un paiement
  */
@@ -750,6 +961,22 @@ export async function handleCancelPaiement(req, res, firestore) {
       updatedAt: Timestamp.now(),
     });
 
+    // Mettre à jour paymentLinks dans le devis : passer le lien correspondant en inactive
+    if (paiement.devisId) {
+      const quoteRef = firestore.collection('quotes').doc(paiement.devisId);
+      const quoteSnap = await quoteRef.get();
+      if (quoteSnap.exists) {
+        const quoteData = quoteSnap.data();
+        const links = (quoteData.paymentLinks || []).map((l) =>
+          l.id === paiementId ? { ...l, status: 'inactive' } : l
+        );
+        await quoteRef.update({
+          paymentLinks: links,
+          updatedAt: Timestamp.now(),
+        });
+      }
+    }
+
     console.log("[stripe-connect] ✅ Paiement annulé:", paiementId);
 
     // Ajouter un événement à l'historique du devis
@@ -777,7 +1004,7 @@ export async function handleCancelPaiement(req, res, firestore) {
  * POST /webhooks/stripe
  * Webhook Stripe UNIQUE pour tous les comptes connectés
  */
-export async function handleStripeWebhook(req, res, firestore) {
+export async function handleStripeWebhook(req, res, firestore, options = {}) {
   console.log("[stripe-connect] 🔵 handleStripeWebhook appelé");
   console.log("[stripe-connect] 🔵 Configuration:", {
     stripe: Boolean(stripe),
@@ -1174,6 +1401,30 @@ export async function handleStripeWebhook(req, res, firestore) {
         // Recalculer le statut du devis (va passer à awaiting_collection si paiement principal)
         await updateDevisStatus(firestore, devisId);
         console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
+
+        // Email automatique au client (paiement reçu)
+        const sendEmailFn = options?.sendEmail;
+        if (sendEmailFn) {
+          try {
+            const saasAccountDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+            const commercialName = saasAccountDoc.exists ? saasAccountDoc.data().commercialName : null;
+            const quoteForEmail = {
+              ...devis,
+              id: devisId,
+              saasAccountId,
+              _saasCommercialName: commercialName || "votre MBE",
+              client: devis.client || { name: devis.clientName, email: devis.clientEmail || devis.delivery?.contact?.email },
+              delivery: devis.delivery,
+              reference: devis.reference,
+            };
+            await sendPaymentReceivedEmail(firestore, sendEmailFn, quoteForEmail, {
+              amount: paiement.amount,
+              isPrincipal: paiement.type === "PRINCIPAL",
+            });
+          } catch (emailErr) {
+            console.error("[stripe-connect] ⚠️ Email paiement reçu non envoyé:", emailErr.message);
+          }
+        }
       }
     } else {
       // Log pour les événements non traités (pour débogage)
@@ -1321,11 +1572,6 @@ export async function handleStripeDisconnect(req, res, firestore) {
 export async function handleCreateGroupPaiement(req, res, firestore) {
   try {
     console.log("[stripe-connect] 📥 Création de paiement groupé demandée");
-    
-    if (!stripe) {
-      console.error("[stripe-connect] ❌ Stripe non configuré");
-      return res.status(400).json({ error: "Stripe non configuré" });
-    }
 
     if (!firestore) {
       console.error("[stripe-connect] ❌ Firestore non initialisé");
@@ -1388,12 +1634,74 @@ export async function handleCreateGroupPaiement(req, res, firestore) {
       return res.status(400).json({ error: "Montant total invalide" });
     }
 
-    // Récupérer le client SaaS (utiliser le premier devis)
+    const totalWithShipping = totalAmount + (group.shippingCost || 0);
     const firstDevis = devisList[0];
-    let clientSaasId = group.saasAccountId || firstDevis.clientSaasId || process.env.DEFAULT_CLIENT_ID;
+    let clientSaasId = group.saasAccountId || firstDevis.saasAccountId || firstDevis.clientSaasId || process.env.DEFAULT_CLIENT_ID;
     console.log("[stripe-connect] Client SaaS:", clientSaasId);
 
-    // Récupérer le client SaaS
+    // Vérifier si Paytweak est utilisé pour ce compte
+    const paymentConfig = await getPaymentProviderConfig(firestore, clientSaasId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    if (usePaytweak) {
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      try {
+        const paytweakResult = await createPaytweakLinkForAccount(firestore, clientSaasId, {
+          amount: totalWithShipping,
+          currency: 'EUR',
+          reference: `Groupe ${groupId}`,
+          description: `Paiement groupé - ${group.devisIds.length} devis`,
+          customer: {
+            name: firstDevis.client?.name || firstDevis.clientName || '',
+            email: firstDevis.client?.email || firstDevis.clientEmail || group.clientEmail || '',
+            phone: firstDevis.client?.phone || '',
+          },
+          groupId,
+          quote: firstDevis,
+        }, baseUrl);
+
+        const paiementData = {
+          groupId,
+          devisIds: group.devisIds,
+          clientSaasId,
+          saasAccountId: clientSaasId,
+          paytweakUrl: paytweakResult.url,
+          orderId: paytweakResult.order_id,
+          amount: totalWithShipping,
+          type: "GROUP",
+          status: "PENDING",
+          paymentProvider: "paytweak",
+          createdAt: Timestamp.now(),
+        };
+        const paiementRef = await firestore.collection("paiements").add(paiementData);
+
+        await firestore.collection("shipmentGroups").doc(groupId).update({
+          status: "validated",
+          updatedAt: Timestamp.now(),
+        });
+
+        await createNotification(firestore, {
+          clientSaasId,
+          type: NOTIFICATION_TYPES.DEVIS_SENT,
+          title: "Lien de paiement groupé créé (Paytweak)",
+          message: `Un lien de paiement a été créé pour le groupement ${groupId} (${group.devisIds.length} devis)`,
+        });
+
+        console.log("[stripe-connect] ✅ Lien Paytweak groupé créé:", paytweakResult.url);
+        return res.json({
+          success: true,
+          paiementId: paiementRef.id,
+          checkoutUrl: paytweakResult.url,
+          sessionId: paytweakResult.id,
+          amount: totalWithShipping,
+        });
+      } catch (paytweakErr) {
+        console.error("[stripe-connect] ❌ Erreur Paytweak groupé:", paytweakErr);
+        return res.status(500).json({ error: paytweakErr.message || "Erreur lors de la création du lien Paytweak" });
+      }
+    }
+
+    // Récupérer le client SaaS (pour Stripe)
     let client;
     try {
       client = await getClientById(firestore, clientSaasId);
@@ -1407,6 +1715,11 @@ export async function handleCreateGroupPaiement(req, res, firestore) {
       return res.status(404).json({ 
         error: `Client ${clientSaasId} non trouvé` 
       });
+    }
+
+    if (!stripe) {
+      console.error("[stripe-connect] ❌ Stripe non configuré");
+      return res.status(400).json({ error: "Stripe non configuré" });
     }
 
     if (!client.stripeAccountId) {

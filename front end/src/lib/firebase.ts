@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore } from "firebase/firestore";
 import { getAnalytics, isSupported } from "firebase/analytics";
-import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, deleteUser, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 
 const env = import.meta.env as Record<string, string | undefined>;
 
@@ -152,6 +152,23 @@ export const logout = async () => {
 
 export const resetPassword = async (email: string) => {
   return await sendPasswordResetEmail(auth, email);
+};
+
+export const deleteCurrentUser = async () => {
+  const user = auth.currentUser;
+  if (!user) throw new Error('Aucun utilisateur connecté');
+  return await deleteUser(user);
+};
+
+/**
+ * Réauthentifie l'utilisateur avant des actions sensibles (ex: suppression de compte).
+ * Firebase exige une authentification récente pour deleteUser (auth/requires-recent-login).
+ */
+export const reauthenticateWithPassword = async (password: string): Promise<void> => {
+  const user = auth.currentUser;
+  if (!user || !user.email) throw new Error('Aucun utilisateur connecté avec email');
+  const credential = EmailAuthProvider.credential(user.email, password);
+  await reauthenticateWithCredential(user, credential);
 };
 
 // Analytics (optionnel; only in browser and if supported)

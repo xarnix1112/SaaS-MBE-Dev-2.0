@@ -24,6 +24,7 @@ import Welcome from "./pages/auth/Welcome";
 import TypeformCallback from "./pages/auth/TypeformCallback";
 import StripeCallback from "./pages/auth/StripeCallback";
 import SetupMBE from "./pages/onboarding/SetupMBE";
+import ChoosePlan from "./pages/onboarding/ChoosePlan";
 import Success from "./pages/onboarding/Success";
 import { bootstrapFirestoreCollections } from "./lib/firestoreBootstrap";
 import PaymentSuccess from "./pages/PaymentSuccess";
@@ -115,6 +116,7 @@ const App = () => {
             <Route path="/stripe/callback" element={<StripeCallback />} />
             
             {/* Routes d'onboarding */}
+            <Route path="/choose-plan" element={<ProtectedRoute requireSetup={false}><ChoosePlan /></ProtectedRoute>} />
             <Route path="/setup-mbe" element={<ProtectedRoute requireSetup={false}><SetupMBE /></ProtectedRoute>} />
             <Route path="/onboarding/success" element={<ProtectedRoute requireSetup={false}><Success /></ProtectedRoute>} />
             

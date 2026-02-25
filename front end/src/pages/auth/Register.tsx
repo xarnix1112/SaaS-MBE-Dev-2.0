@@ -47,7 +47,7 @@ export default function Register() {
     try {
       await registerWithEmail(email, password);
       toast.success('Compte créé avec succès !');
-      navigate('/setup-mbe');
+      navigate('/choose-plan');
     } catch (err: any) {
       console.error('[Register] Erreur:', err);
       let errorMessage = 'Erreur lors de la création du compte';
@@ -80,7 +80,7 @@ export default function Register() {
           </div>
           <CardTitle className="text-2xl font-bold">Créer un compte</CardTitle>
           <CardDescription>
-            Commencez votre aventure avec QuoteFlow Pro
+            Commencez votre aventure avec Mirai
           </CardDescription>
         </CardHeader>
         <CardContent>

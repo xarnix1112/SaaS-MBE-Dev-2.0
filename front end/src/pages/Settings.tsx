@@ -4,12 +4,16 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
+import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
+import { useFeatures } from '@/hooks/use-features';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 
 interface EmailAccount {
   id: string;
@@ -72,6 +76,25 @@ export default function Settings() {
   const [typeformStatus, setTypeformStatus] = useState<TypeformStatus | null>(null);
   const [isLoadingTypeform, setIsLoadingTypeform] = useState(false);
   const [settingsTab, setSettingsTab] = useState('emails');
+  const { data: featuresData } = useFeatures();
+  const canCustomizeAutoEmails = featuresData?.features?.customizeAutoEmails === true;
+
+  // État Paytweak / Payment Provider (feature customPaytweak)
+  const [paymentSettings, setPaymentSettings] = useState<{
+    hasCustomPaytweak: boolean;
+    paymentProvider: 'stripe' | 'paytweak';
+    paytweakConfigured: boolean;
+    stripeConnected: boolean;
+  } | null>(null);
+  const [paytweakPublicKeyInput, setPaytweakPublicKeyInput] = useState('');
+  const [paytweakPrivateKeyInput, setPaytweakPrivateKeyInput] = useState('');
+  const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
+  const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
+
+  // MBE Hub (plans Pro/Ultra)
+  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; message?: string } | null>(null);
+  const [mbehubApiKeyInput, setMbehubApiKeyInput] = useState('');
+  const [isSavingMbehubKey, setIsSavingMbehubKey] = useState(false);
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -108,6 +131,114 @@ export default function Settings() {
       // Ne pas afficher d'erreur si le client n'existe pas encore
     } finally {
       setIsLoadingStripe(false);
+    }
+  };
+
+  // Charger les paramètres de paiement (provider Stripe/Paytweak)
+  const loadPaymentSettings = async () => {
+    try {
+      setIsLoadingPaymentSettings(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/payment-settings');
+      if (!res.ok) {
+        setPaymentSettings(null);
+        return;
+      }
+      const data = await res.json();
+      setPaymentSettings(data);
+    } catch (error) {
+      console.error('[Settings] Erreur chargement payment-settings:', error);
+      setPaymentSettings(null);
+    } finally {
+      setIsLoadingPaymentSettings(false);
+    }
+  };
+
+  const handleSavePaytweakKeys = async () => {
+    const pub = paytweakPublicKeyInput.trim();
+    const priv = paytweakPrivateKeyInput.trim();
+    if (!pub || !priv) {
+      toast.error('Saisissez les deux clés Paytweak (publique et privée)');
+      return;
+    }
+    try {
+      setIsSavingPaytweakKey(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/paytweak-key', {
+        method: 'PUT',
+        body: JSON.stringify({ publicKey: pub, privateKey: priv }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      toast.success('Clés Paytweak enregistrées');
+      setPaytweakPublicKeyInput('');
+      setPaytweakPrivateKeyInput('');
+      await loadPaymentSettings();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingPaytweakKey(false);
+    }
+  };
+
+  const loadMbehubStatus = async () => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/mbehub-status');
+      if (!res.ok) {
+        setMbehubStatus(null);
+        return;
+      }
+      const data = await res.json();
+      setMbehubStatus(data);
+    } catch {
+      setMbehubStatus(null);
+    }
+  };
+
+  const handleSaveMbehubKey = async () => {
+    if (!mbehubApiKeyInput.trim()) {
+      toast.error('Saisissez votre clé API MBE Hub');
+      return;
+    }
+    try {
+      setIsSavingMbehubKey(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/mbehub-key', {
+        method: 'PUT',
+        body: JSON.stringify({ apiKey: mbehubApiKeyInput.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      toast.success('Clé MBE Hub enregistrée');
+      setMbehubApiKeyInput('');
+      await loadMbehubStatus();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingMbehubKey(false);
+    }
+  };
+
+  const handleSetPaymentProvider = async (provider: 'stripe' | 'paytweak') => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/payment-settings', {
+        method: 'PUT',
+        body: JSON.stringify({ paymentProvider: provider }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success(`Outil de paiement: ${provider === 'paytweak' ? 'Paytweak' : 'Stripe'}`);
+      await loadPaymentSettings();
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
     }
   };
 
@@ -176,6 +307,7 @@ export default function Settings() {
         if (source === 'stripe') {
           toast.success('Compte Stripe connecté avec succès');
           loadStripeStatus();
+          loadPaymentSettings();
         } else if (source === 'google-sheets') {
           toast.success('Google Sheets connecté avec succès');
           loadGoogleSheetsStatus();
@@ -205,6 +337,15 @@ export default function Settings() {
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (settingsTab === 'paiements') {
+      loadPaymentSettings();
+    }
+    if (settingsTab === 'mbehub') {
+      loadMbehubStatus();
+    }
+  }, [settingsTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Charger le statut Google Sheets
   const loadGoogleSheetsStatus = async () => {
@@ -635,6 +776,16 @@ export default function Settings() {
               Expédition
             </TabsTrigger>
             <TabsTrigger value="paiements">Paiements</TabsTrigger>
+            <TabsTrigger value="mbehub" className="gap-2">
+              <Globe className="w-4 h-4" />
+              MBE Hub
+            </TabsTrigger>
+            {canCustomizeAutoEmails && (
+              <TabsTrigger value="auto-emails" className="gap-2">
+                <Send className="w-4 h-4" />
+                Emails automatiques
+              </TabsTrigger>
+            )}
           </TabsList>
 
           <TabsContent value="emails" className="space-y-6">
@@ -1296,6 +1447,165 @@ export default function Settings() {
                       </div>
                     </div>
                   </>
+                )}
+              </CardContent>
+            </Card>
+
+            {/* Section Paytweak + sélecteur provider (compte avec customPaytweak) */}
+            {paymentSettings?.hasCustomPaytweak && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <KeyRound className="w-5 h-5" />
+                    Paytweak & choix de l&apos;outil de paiement
+                  </CardTitle>
+                  <CardDescription>
+                    Connectez Paytweak avec votre clé API et choisissez quel outil génère vos liens de paiement
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {isLoadingPaymentSettings ? (
+                    <div className="flex items-center gap-2 text-muted-foreground">
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                      Chargement...
+                    </div>
+                  ) : (
+                    <>
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Clé publique Paytweak (Paytweak-API-KEY)</Label>
+                          <Input
+                            type="password"
+                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Clé publique"}
+                            value={paytweakPublicKeyInput}
+                            onChange={(e) => setPaytweakPublicKeyInput(e.target.value)}
+                            className="w-full"
+                          />
+                        </div>
+                        <div className="space-y-2">
+                          <Label>Clé privée Paytweak (Secret token)</Label>
+                          <Input
+                            type="password"
+                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Clé privée"}
+                            value={paytweakPrivateKeyInput}
+                            onChange={(e) => setPaytweakPrivateKeyInput(e.target.value)}
+                            className="w-full"
+                          />
+                        </div>
+                        <Button
+                          onClick={handleSavePaytweakKeys}
+                          disabled={isSavingPaytweakKey || !paytweakPublicKeyInput.trim() || !paytweakPrivateKeyInput.trim()}
+                        >
+                          {isSavingPaytweakKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer les clés'}
+                        </Button>
+                        {paymentSettings.paytweakConfigured && (
+                          <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                            <CheckCircle2 className="w-4 h-4" />
+                            Paytweak configuré (clé publique + clé privée)
+                          </p>
+                        )}
+                      </div>
+
+                      {paymentSettings.stripeConnected && paymentSettings.paytweakConfigured && (
+                        <div className="space-y-2">
+                          <Label>Outil pour générer les liens de paiement</Label>
+                          <div className="flex gap-4">
+                            <Button
+                              variant={paymentSettings.paymentProvider === 'stripe' ? 'default' : 'outline'}
+                              onClick={() => handleSetPaymentProvider('stripe')}
+                            >
+                              <CreditCard className="w-4 h-4 mr-2" />
+                              Stripe
+                            </Button>
+                            <Button
+                              variant={paymentSettings.paymentProvider === 'paytweak' ? 'default' : 'outline'}
+                              onClick={() => handleSetPaymentProvider('paytweak')}
+                            >
+                              <KeyRound className="w-4 h-4 mr-2" />
+                              Paytweak
+                            </Button>
+                          </div>
+                          <p className="text-sm text-muted-foreground">
+                            Actuellement utilisé : <strong>{paymentSettings.paymentProvider === 'paytweak' ? 'Paytweak' : 'Stripe'}</strong>
+                          </p>
+                        </div>
+                      )}
+
+                      {paymentSettings.stripeConnected && !paymentSettings.paytweakConfigured && (
+                        <p className="text-sm text-muted-foreground">
+                          Configurez votre clé API Paytweak ci-dessus pour pouvoir choisir entre Stripe et Paytweak.
+                        </p>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+            )}
+          </TabsContent>
+
+          {/* MBE Hub - plans Pro et Ultra */}
+          {canCustomizeAutoEmails && (
+            <TabsContent value="auto-emails" className="space-y-6">
+              <AutoEmailsSettings />
+            </TabsContent>
+          )}
+          <TabsContent value="mbehub" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Globe className="w-5 h-5" />
+                  MBE Hub
+                </CardTitle>
+                <CardDescription>
+                  Connectez votre clé API MBE Hub pour envoyer les devis vers la zone expédition et créer les envois
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {mbehubStatus === null ? (
+                  <div className="flex items-center gap-2 text-muted-foreground">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    Chargement...
+                  </div>
+                ) : !mbehubStatus.available ? (
+                  <div className="py-6 text-center">
+                    <Globe className="w-12 h-12 mx-auto mb-4 opacity-50 text-muted-foreground" />
+                    <p className="text-muted-foreground">
+                      {mbehubStatus.message || 'MBE Hub est réservé aux plans Pro et Ultra.'}
+                    </p>
+                    <p className="text-sm text-muted-foreground mt-2">
+                      Passez à un plan supérieur pour accéder à cette fonctionnalité.
+                    </p>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="space-y-2">
+                      <Label>Clé API MBE Hub</Label>
+                      <div className="flex gap-2">
+                        <Input
+                          type="password"
+                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configurée)' : 'Votre clé API MBE Hub'}
+                          value={mbehubApiKeyInput}
+                          onChange={(e) => setMbehubApiKeyInput(e.target.value)}
+                          className="flex-1"
+                        />
+                        <Button
+                          onClick={handleSaveMbehubKey}
+                          disabled={isSavingMbehubKey || !mbehubApiKeyInput.trim()}
+                        >
+                          {isSavingMbehubKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
+                        </Button>
+                      </div>
+                      {mbehubStatus.configured && (
+                        <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
+                          <CheckCircle2 className="w-4 h-4" />
+                          MBE Hub configuré
+                        </p>
+                      )}
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      Une fois la clé configurée, le bouton « Envoyer vers MBE Hub » sera disponible sur chaque devis.
+                    </p>
+                  </div>
                 )}
               </CardContent>
             </Card>

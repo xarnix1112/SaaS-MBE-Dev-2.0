@@ -26,6 +26,7 @@ export interface SaasAccount {
   createdAt: Date | string;
   isActive: boolean;
   plan: 'free' | 'pro';
+  planId?: 'starter' | 'pro' | 'ultra';
 }
 
 export interface UserDoc {

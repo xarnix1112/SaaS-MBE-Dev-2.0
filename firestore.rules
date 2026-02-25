@@ -183,12 +183,23 @@ service cloud.firestore {
       allow read, write: if request.auth != null 
         && request.auth.uid == uid;
     }
+
+    match /plans/{planId} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
     
     match /saasAccounts/{accountId} {
       allow read, update, delete: if request.auth != null 
         && resource.data.ownerUid == request.auth.uid;
       allow create: if request.auth != null 
         && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Secrets (clés API Paytweak, MBE Hub, etc.) : refus explicite aux clients (RGPD)
+    // Seul le backend (Admin SDK) y accède. Aucune clé stockée dans .env ou sur poste dev.
+    match /saasAccounts/{accountId}/secrets/{secretId} {
+      allow read, write: if false;
     }
     
     match /{document=**} {

@@ -30,6 +30,7 @@ import {
   handleCreatePaiement,
   handleGetPaiements,
   handleCancelPaiement,
+  handleSyncPaymentAmount,
   handleCreateGroupPaiement,
   handleStripeWebhook,
   handleStripeStatus,
@@ -48,6 +49,36 @@ import {
   handleGetShipmentGroup,
   handleDeleteShipmentGroup,
 } from "./shipmentGroups.js";
+import {
+  getAccountFeaturesAndLimits,
+  checkFeature,
+  checkLimit,
+} from "./middleware/featureFlags.js";
+import {
+  hasCustomPaytweak,
+  getPaymentProviderConfig,
+  getPaytweakApiKey,
+  getPaytweakKeys,
+  createPaytweakLinkForAccount,
+  parsePaytweakOrderId,
+} from "./payment-provider.js";
+import {
+  sendPaymentReceivedEmail,
+  sendAwaitingCollectionEmail,
+  sendCollectedEmail,
+  sendAwaitingShipmentEmail,
+  sendShippedEmail,
+  getBodyContentPreview,
+} from "./quote-automatic-emails.js";
+import {
+  getTemplatesForAccount,
+  validateTemplate,
+  DEFAULT_TEMPLATES,
+  EMAIL_TYPES,
+  EMAIL_TYPE_LABELS,
+  PLACEHOLDERS,
+  LIMITS,
+} from "./email-templates.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -197,8 +228,9 @@ if (!process.env.RESEND_API_KEY && fs.existsSync(envLocalPath)) {
 }
 
 // Initialiser le client Resend avec les valeurs finales
+// En staging : Resend n'est jamais utilisé (emails via Gmail uniquement)
 let resendClient = null;
-if (RESEND_API_KEY) {
+if (process.env.NODE_ENV !== 'staging' && RESEND_API_KEY) {
   // Vérifier que la clé API commence par "re_"
   if (!RESEND_API_KEY.startsWith('re_')) {
     console.error('[Config] ❌ Format de clé API Resend invalide (doit commencer par "re_")');
@@ -220,7 +252,11 @@ if (RESEND_API_KEY) {
     }
   }
 } else {
-  console.log('[Config] ⚠️  Resend non configuré (RESEND_API_KEY requis)');
+  if (process.env.NODE_ENV === 'staging') {
+    console.log('[Config] ℹ️  Staging: Resend désactivé (emails via Gmail uniquement)');
+  } else {
+    console.log('[Config] ⚠️  Resend non configuré (RESEND_API_KEY requis)');
+  }
 }
 
 // Les variables Resend sont maintenant disponibles globalement
@@ -265,7 +301,7 @@ app.use(express.json());
 // CORS pour permettre les requêtes depuis le frontend (toujours envoyer, même en erreur)
 const corsHeaders = (res) => {
   res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Dev');
 };
 app.use((req, res, next) => {
@@ -1032,7 +1068,7 @@ app.post("/api/stripe/webhook", async (req, res) => {
       const stripeConnectModule = await import('./stripe-connect.js');
       // Créer un objet req/res modifié avec l'event déjà construit
       const modifiedReq = { ...req, stripeEvent: event };
-      await stripeConnectModule.handleStripeWebhook(modifiedReq, res, firestore);
+      await stripeConnectModule.handleStripeWebhook(modifiedReq, res, firestore, { sendEmail });
       return; // Important : ne pas continuer le traitement Payment Link
     }
 
@@ -1170,6 +1206,34 @@ app.post("/api/stripe/webhook", async (req, res) => {
             reference: ref || quoteData.reference,
             linksUpdated: updatedPaymentLinks.length,
           });
+
+          // Email automatique au client (paiement reçu - Payment Link)
+          try {
+            const saasAccountId = quoteData.saasAccountId;
+            let commercialName = "votre MBE";
+            if (saasAccountId && firestore) {
+              const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+              if (saasDoc.exists && saasDoc.data().commercialName) {
+                commercialName = saasDoc.data().commercialName;
+              }
+            }
+            const amountEur = amount != null ? Number(amount) / 100 : null;
+            const quoteForEmail = {
+              ...quoteData,
+              id: quoteDoc.id,
+              saasAccountId,
+              _saasCommercialName: commercialName,
+              client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail || quoteData.delivery?.contact?.email },
+              delivery: quoteData.delivery,
+              reference: quoteData.reference,
+            };
+            await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, {
+              amount: amountEur,
+              isPrincipal: true,
+            });
+          } catch (emailErr) {
+            console.error("[ai-proxy] ⚠️ Email paiement reçu non envoyé:", emailErr.message);
+          }
         } else {
           console.warn("[ai-proxy] ⚠️  Devis non trouvé pour référence:", ref, "linkId:", linkId);
         }
@@ -1238,6 +1302,173 @@ app.post("/api/stripe/webhook", async (req, res) => {
     return res.status(500).send("Webhook handler error");
   }
 });
+
+// ===== WEBHOOK PAYTWEAK =====
+// Paytweak envoie les notifications en POST (JSON) ou GET (query). Pas d'auth requise.
+app.post("/api/paytweak/webhook", async (req, res) => {
+  let body = req.body;
+  if (!body || typeof body !== 'object') body = {};
+  return handlePaytweakWebhook(body, res);
+});
+app.get("/api/paytweak/webhook", async (req, res) => {
+  return handlePaytweakWebhook(req.query || {}, res);
+});
+
+async function handlePaytweakWebhook(data, res) {
+  try {
+    const notice = data.notice || data.Notice;
+    if (notice !== 'PAYMENT' && notice !== 'PAYMENT ') {
+      if (notice) console.log('[paytweak-webhook] Notice ignorée:', notice);
+      return res.status(200).send('ok');
+    }
+
+    const status = Number(data.Status ?? data.status);
+    const orderId = data.order_id || data.orderId;
+    const amountRaw = data.amount;
+    const linkId = data.link_id || data.linkId;
+
+    if (!orderId) {
+      console.warn('[paytweak-webhook] order_id manquant');
+      return res.status(200).send('ok');
+    }
+
+    // Statuts 5 (autorisé) et 9 (exécuté) = paiement réussi
+    if (status !== 5 && status !== 9) {
+      console.log('[paytweak-webhook] Statut non payé:', status, 'order_id:', orderId);
+      return res.status(200).send('ok');
+    }
+
+    const parsed = parsePaytweakOrderId(orderId);
+    if (!parsed || (!parsed.devisId && !parsed.groupId && !parsed.reference)) {
+      console.warn('[paytweak-webhook] order_id non reconnu:', orderId);
+      return res.status(200).send('ok');
+    }
+
+    if (!firestore) {
+      console.error('[paytweak-webhook] Firestore non initialisé');
+      return res.status(500).send('error');
+    }
+
+    const amountEur = amountRaw != null ? Number(amountRaw) : null;
+
+    if (parsed.groupId) {
+      const groupId = parsed.groupId;
+      const groupDoc = await firestore.collection('shipmentGroups').doc(groupId).get();
+      if (!groupDoc.exists) {
+        console.warn('[paytweak-webhook] Groupe non trouvé:', groupId);
+        return res.status(200).send('ok');
+      }
+      const groupData = groupDoc.data();
+      const devisIds = groupData.devisIds || [];
+
+      await firestore.collection('shipmentGroups').doc(groupId).update({
+        status: 'paid',
+        paidAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
+
+      for (const devisId of devisIds) {
+        const quoteDoc = await firestore.collection('quotes').doc(devisId).get();
+        if (!quoteDoc.exists) continue;
+        const quoteData = quoteDoc.data();
+        const paymentLinks = (quoteData.paymentLinks || []).map((link) => {
+          const matches = linkId ? ((link.url && String(link.url).includes(linkId)) || link.id === linkId) : (link.status === 'active' || link.status === 'pending');
+          return matches ? { ...link, status: 'paid', paidAt: Timestamp.now() } : link.status === 'active' ? { ...link, status: 'expired' } : link;
+        });
+        await quoteDoc.ref.update({
+          paymentLinks,
+          paymentStatus: 'paid',
+          status: 'awaiting_collection',
+          timeline: (quoteData.timeline || []).concat({
+            id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+            date: Timestamp.now(),
+            status: 'paid',
+            description: 'Paiement reçu et confirmé (Paytweak)',
+            user: 'system',
+          }),
+          updatedAt: Timestamp.now(),
+        });
+
+        try {
+          const saasAccountId = quoteData.saasAccountId;
+          let commercialName = 'votre MBE';
+          if (saasAccountId) {
+            const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+            if (saasDoc.exists && saasDoc.data().commercialName) commercialName = saasDoc.data().commercialName;
+          }
+          const quoteForEmail = {
+            ...quoteData,
+            id: quoteDoc.id,
+            saasAccountId,
+            _saasCommercialName: commercialName,
+            client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail },
+          };
+          await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, { amount: amountEur, isPrincipal: true });
+        } catch (e) {
+          console.error('[paytweak-webhook] Email:', e.message);
+        }
+      }
+      console.log('[paytweak-webhook] Groupe payé:', groupId, devisIds.length, 'devis');
+    } else {
+      let quoteDoc = null;
+      if (parsed.devisId) {
+        quoteDoc = await firestore.collection('quotes').doc(parsed.devisId).get();
+      } else if (parsed.reference) {
+        const refSnap = await firestore.collection('quotes').where('reference', '==', parsed.reference).limit(1).get();
+        quoteDoc = refSnap.empty ? null : refSnap.docs[0];
+      }
+      if (!quoteDoc || !quoteDoc.exists) {
+        console.warn('[paytweak-webhook] Devis non trouvé:', parsed.devisId || parsed.reference);
+        return res.status(200).send('ok');
+      }
+      const devisId = quoteDoc.id;
+      const quoteData = quoteDoc.data();
+      const paymentLinks = (quoteData.paymentLinks || []).map((link) => {
+        const matches = linkId ? ((link.url && String(link.url).includes(linkId)) || link.id === linkId) : (link.status === 'active' || link.status === 'pending');
+        return matches ? { ...link, status: 'paid', paidAt: Timestamp.now() } : link.status === 'active' ? { ...link, status: 'expired' } : link;
+      });
+
+      await quoteDoc.ref.update({
+        paymentLinks,
+        paymentStatus: 'paid',
+        status: 'awaiting_collection',
+        timeline: (quoteData.timeline || []).concat({
+          id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          date: Timestamp.now(),
+          status: 'paid',
+          description: 'Paiement reçu et confirmé (Paytweak)',
+          user: 'system',
+        }),
+        updatedAt: Timestamp.now(),
+      });
+
+      try {
+        const saasAccountId = quoteData.saasAccountId;
+        let commercialName = 'votre MBE';
+        if (saasAccountId) {
+          const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+          if (saasDoc.exists && saasDoc.data().commercialName) commercialName = saasDoc.data().commercialName;
+        }
+        const quoteForEmail = {
+          ...quoteData,
+          id: quoteDoc.id,
+          saasAccountId,
+          _saasCommercialName: commercialName,
+          client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail },
+        };
+        await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, { amount: amountEur, isPrincipal: true });
+      } catch (e) {
+        console.error('[paytweak-webhook] Email:', e.message);
+      }
+      console.log('[paytweak-webhook] Devis payé:', devisId);
+    }
+
+    return res.status(200).send('ok');
+  } catch (err) {
+    console.error('[paytweak-webhook] Erreur:', err);
+    return res.status(500).send('error');
+  }
+}
 
 /**
  * Convertit un buffer en base64
@@ -1497,18 +1728,41 @@ function isPlausibleLotNumber(raw) {
 }
 
 /**
+ * Templates de bordereaux — zoning par maison de vente
+ * millon: Invoice No. + Lot/Description/Hammer
+ * boisgirard: BORDEREAU ACQUEREUR + Ligne/Description/Adjudication — zone lots vs zone fiscale
+ */
+const BORDEREAU_TEMPLATES = {
+  millon: {
+    lotHeaderKeywords: ["lot", "description", "hammer"],
+    financialKeywords: ["total", "iban", "invoice total"],
+  },
+  boisgirard: {
+    lotHeaderKeywords: ["ligne", "description", "adjudication"],
+    financialKeywords: ["taux", "base adjug", "base ht", "total ht", "frais engag", "frais drouot", "somme à payer"],
+  },
+};
+
+function detectBordereauTemplate(ocrText) {
+  const text = String(ocrText || "").toLowerCase();
+  if (text.includes("boisgirard") || text.includes("bordereau acquereur")) return "boisgirard";
+  if (text.includes("millon") || text.includes("riviera") || /\binvoice\s+no\./i.test(text)) return "millon";
+  return null;
+}
+
+/**
  * Détecte la zone tableau sur une page (zones logiques du document).
  * Les lots ne peuvent exister que dans cette zone.
  * @param {{ words: Array, lines?: Array }} page - Page avec words (et optionnellement lines)
- * @returns {{ headerY: number|null, tableStartY: number, tableEndY: number }|null} - null = pas de zone détectée (fallback page entière)
+ * @param {string|null} template - 'millon' | 'boisgirard' | null
+ * @returns {{ headerY: number|null, tableStartY: number, tableEndY: number }|null}
  */
-function detectTableZone(page) {
+function detectTableZone(page, template = null) {
   const words = (page.words || []).filter(
     (w) => w && w.text && w.bbox && typeof w.bbox.y0 === "number"
   );
   if (words.length === 0) return null;
 
-  // Construire les lignes (cluster Y) comme extractLotsFromOcrWords
   const sorted = words
     .map((w) => ({
       ...w,
@@ -1530,39 +1784,52 @@ function detectTableZone(page) {
 
   const minY = Math.min(...words.map((w) => w.bbox.y0));
   const maxY = Math.max(...words.map((w) => w.bbox.y1));
-  const pageHeight = maxY - minY || 1;
 
-  // Header: ligne contenant Lot + (Description OU Hammer OU Price OU Adjudication OU Prix)
-  const headerPatterns = [
-    ["lot", "description"],
-    ["lot", "hammer"],
-    ["lot", "price"],
-    ["lot", "adjudication"],
-    ["lot", "prix"],
-    ["ligne", "description"],
-    ["numéro", "description"],
-    ["n°", "description"],
-    ["no.", "description"],
-  ];
   let headerY = null;
-  for (const row of rows) {
-    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
-    const hasDescOrPrice =
-      /description|hammer|price|adjudication|prix/i.test(full);
-    if (hasLot && hasDescOrPrice) {
-      headerY = row.y;
-      break;
+  const tpl = template && BORDEREAU_TEMPLATES[template];
+
+  if (tpl) {
+    // Boisgirard: header doit contenir Ligne + Description + Adjudication (simultanément)
+    if (template === "boisgirard") {
+      for (const row of rows) {
+        const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+        const hasAll = ["ligne", "description", "adjudication"].every((k) => full.includes(k));
+        if (hasAll) {
+          headerY = row.y;
+          break;
+        }
+      }
+    } else {
+      for (const row of rows) {
+        const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+        const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
+        const hasDescOrPrice = /description|hammer|price|adjudication|prix/i.test(full);
+        if (hasLot && hasDescOrPrice) {
+          headerY = row.y;
+          break;
+        }
+      }
+    }
+  } else {
+    for (const row of rows) {
+      const full = row.words.map((w) => w.text).join(" ").toLowerCase();
+      const hasLot = /lot|ligne|num[eé]ro|n[°o]\.?/i.test(full);
+      const hasDescOrPrice = /description|hammer|price|adjudication|prix/i.test(full);
+      if (hasLot && hasDescOrPrice) {
+        headerY = row.y;
+        break;
+      }
     }
   }
 
-  // Footer: première ligne sous le header contenant Total, IBAN, Bank, etc.
-  const footerPatterns = /total|iban|bank|paiement|payment|commission|r[eé]gl[eé]|invoice\s+total|montant|amount/i;
   let footerY = null;
+  const footerRe = tpl
+    ? new RegExp(tpl.financialKeywords.join("|"), "i")
+    : /total|iban|bank|paiement|payment|commission|r[eé]gl[eé]|invoice\s+total|montant|amount/i;
   for (const row of rows) {
     if (headerY !== null && row.y <= headerY + 5) continue;
     const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (footerPatterns.test(full)) {
+    if (footerRe.test(full)) {
       footerY = row.y;
       break;
     }
@@ -1664,6 +1931,8 @@ function extractSalleVenteFromHeader(lines) {
     "adjudication",
     "buyer",
     "premium",
+    "vos réfs",
+    "vos refs",
   ];
   const candidates = header
     .map((l) => {
@@ -2027,43 +2296,34 @@ function extractFromOcrTextFallback(ocrText) {
   return out;
 }
 
-function extractLotsFromTable(lines) {
-  // détecter la ligne d'en-tête de tableau (si OCR l'a bien lue)
+function extractLotsFromTable(lines, template = null) {
   let headerIdx = -1;
   let hasLigneColumn = false;
-  let isBoisgirardAntonini = false;
+  const isBoisgirard = template === "boisgirard";
   let hasBoisgirardHeader = false;
-  
-  // Détecter si c'est un bordereau Boisgirard Antonini
-  for (let i = 0; i < Math.min(20, lines.length); i++) {
-    const low = lines[i].text.toLowerCase();
-    if (low.includes("boisgirard") || low.includes("antonini")) {
-      isBoisgirardAntonini = true;
-      console.log('[OCR][BA] Bordereau Boisgirard Antonini détecté');
-      break;
-    }
-  }
-  
-  // Détecter l'en-tête spécifique Boisgirard Antonini : "Ligne Références Description Adjudication"
+
+  const tpl = template && BORDEREAU_TEMPLATES[template];
+  const financialRe = tpl ? new RegExp(tpl.financialKeywords.join("|"), "i") : null;
+
   for (let i = 0; i < lines.length; i++) {
     const low = lines[i].text.toLowerCase();
-    // Regex permissif pour l'en-tête Boisgirard Antonini
-    if (/ligne\s+réf\S*\s+description\s+adjudication/i.test(lines[i].text)) {
-      headerIdx = i;
-      hasLigneColumn = true;
-      hasBoisgirardHeader = true;
-      console.log('[OCR][BA] En-tête tabulaire détecté:', lines[i].text);
-      break;
-    }
-    // Fallback: détection classique
-    if (
-      (low.includes("lot") || low.includes("ligne")) &&
-      (low.includes("description") || low.includes("désignation")) &&
-      (low.includes("adjudication") || low.includes("prix") || low.includes("hammer"))
-    ) {
-      headerIdx = i;
-      hasLigneColumn = low.includes("ligne");
-      break;
+    if (isBoisgirard) {
+      if (["ligne", "description", "adjudication"].every((k) => low.includes(k))) {
+        headerIdx = i;
+        hasLigneColumn = true;
+        hasBoisgirardHeader = true;
+        break;
+      }
+    } else {
+      if (
+        (low.includes("lot") || low.includes("ligne")) &&
+        (low.includes("description") || low.includes("désignation")) &&
+        (low.includes("adjudication") || low.includes("prix") || low.includes("hammer"))
+      ) {
+        headerIdx = i;
+        hasLigneColumn = low.includes("ligne");
+        break;
+      }
     }
   }
   
@@ -2076,12 +2336,13 @@ function extractLotsFromTable(lines) {
   const start = headerIdx >= 0 ? headerIdx + 1 : 0;
   const table = lines.slice(start).filter((l) => l.yn >= 0.18 && l.yn <= 0.90);
 
-  const footerStop = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\d+\s+lot\(s\))/i;
+  const footerStop = financialRe ||
+    /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\d+\s+lot\(s\))/i;
   const lots = [];
   let current = null;
 
-  // MODE SPÉCIFIQUE BOISGIRARD ANTONINI : parsing tabulaire avec deux nombres identiques
-  if (isBoisgirardAntonini && hasBoisgirardHeader) {
+  // MODE SPÉCIFIQUE BOISGIRARD : parsing tabulaire avec zoning strict
+  if (isBoisgirard && hasBoisgirardHeader) {
     console.log('[OCR][BA] Mode parsing tabulaire activé');
     for (const row of table) {
       if (footerStop.test(row.text)) {
@@ -2089,7 +2350,6 @@ function extractLotsFromTable(lines) {
         break;
       }
       
-      // Ignorer lignes parasites
       const lowRow = row.text.toLowerCase();
       if (
         lowRow.includes("nombre de lots") ||
@@ -2097,9 +2357,8 @@ function extractLotsFromTable(lines) {
         lowRow.includes("lots détectés") ||
         lowRow.includes("salle des ventes") ||
         lowRow.includes("bordereau acquereur")
-      ) {
-        continue;
-      }
+      ) continue;
+      if (financialRe && financialRe.test(lowRow)) continue; // Anti-faux-lots: Taux, Base, Total HT, Frais...
 
       // Pattern spécifique Boisgirard : <number> <number> <description...> <price>
       // Les deux premiers nombres sont identiques = numéro de lot
@@ -2109,8 +2368,9 @@ function extractLotsFromTable(lines) {
       if (match) {
         const [, ligne, reference, description, priceStr] = match;
         
-        // Vérifier que les deux nombres sont identiques (signal fiable)
         if (ligne === reference) {
+          const numVal = parseInt(ligne, 10);
+          if (numVal > 5000) continue; // Anti-faux-lots: numéro fiscal
           const lotNumber = ligne;
           const prix_marteau = normalizeAmountStrict(priceStr);
           
@@ -2119,7 +2379,7 @@ function extractLotsFromTable(lines) {
           if (current) lots.push(current);
           current = {
             numero_lot: lotNumber,
-            description: description.trim(),
+            description: cleanBoisgirardDescription(description),
             prix_marteau: prix_marteau ?? null,
           };
         } else {
@@ -2129,7 +2389,7 @@ function extractLotsFromTable(lines) {
         // Continuation de description (ligne suivante sans prix)
         const cont = row.text.trim();
         if (cont && !footerStop.test(cont)) {
-          current.description = `${current.description} ${cont}`.trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(cont)}`.trim();
         }
       }
     }
@@ -2140,7 +2400,7 @@ function extractLotsFromTable(lines) {
     return lots
       .map((l) => ({
         numero_lot: l.numero_lot !== null && l.numero_lot !== undefined ? String(l.numero_lot) : null,
-        description: (l.description || "").replace(/\s+/g, " ").trim(),
+        description: cleanBoisgirardDescription(l.description || ""),
         prix_marteau: l.prix_marteau,
       }))
       .filter((l) => {
@@ -2163,6 +2423,7 @@ function extractLotsFromTable(lines) {
     ) {
       continue;
     }
+    if (isBoisgirard && financialRe && financialRe.test(lowRow)) continue;
 
     const words = row.words || [];
     // split pseudo-colonnes
@@ -2252,8 +2513,12 @@ function extractLotsFromTable(lines) {
       if (after) desc = after;
     }
 
-    // fallback lot detection: parfois le numéro est tout seul dans la première colonne
-    const lotNumberFinal = lotNumber;
+    // Anti-faux-lots Boisgirard: numéro > 5000 = probablement numéro fiscal, ignorer la ligne
+    let lotNumberFinal = lotNumber;
+    if (isBoisgirard && lotNumber && parseInt(lotNumber, 10) > 5000) {
+      lotNumberFinal = null;
+      if (!midText.trim() && !rightText.trim()) continue; // ligne uniquement numérique, ne pas append
+    }
 
     // IMPORTANT: Accepter les lots SANS numéro de lot (normal pour certaines salles comme Boisgirard Antonini)
     // Un lot est valide s'il a une description OU un prix
@@ -2344,11 +2609,14 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     throw new Error("Format non supporté. Utilisez une image (PNG/JPG) ou un PDF.");
   }
 
+  const detectedTemplate = detectBordereauTemplate(ocrRawText);
+  if (detectedTemplate) log(`[OCR]   → Template détecté: ${detectedTemplate}`);
+
   // ÉTAPE OBLIGATOIRE: Découpage en zones logiques — les lots ne peuvent exister QUE dans la zone tableau
   const allWords = pages.flatMap((p) => (p.words || []));
   const tableWordsByPage = [];
   for (const p of pages) {
-    const zone = detectTableZone(p);
+    const zone = detectTableZone(p, detectedTemplate);
     const filtered = filterWordsByTableZone(p.words || [], zone);
     tableWordsByPage.push(...filtered);
     if (zone?.headerY != null) {
@@ -2361,7 +2629,7 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   // Lots: cascade d'extraction (priorité extraction bbox > texte brut > table)
   let lotsAll = [];
   if (tableWords.length > 0) {
-    const fromWords = extractLotsFromOcrWords(tableWords);
+    const fromWords = extractLotsFromOcrWords(tableWords, detectedTemplate);
     if (fromWords.length > 0) {
       lotsAll = fromWords.map((l) => ({
         numero_lot: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
@@ -2372,7 +2640,7 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
       log(`[OCR]   → Méthode: extraction spatiale (bounding boxes) → ${lotsAll.length} lots`);
     }
   }
-  if (lotsAll.length === 0) {
+  if (lotsAll.length === 0 && detectedTemplate !== "boisgirard") {
     const fromText = extractLotsFromOcrText(ocrRawText);
     if (fromText.length > 0) {
       lotsAll = fromText.map((l) => ({
@@ -2386,12 +2654,25 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   }
   if (lotsAll.length === 0) {
     for (const p of pages) {
-      const zone = detectTableZone(p);
+      const zone = detectTableZone(p, detectedTemplate);
       const linesInZone = filterLinesByTableZone(p.lines || [], zone);
-      const tableLots = extractLotsFromTable(linesInZone);
+      const tableLots = extractLotsFromTable(linesInZone, detectedTemplate);
       for (const l of tableLots) lotsAll.push(l);
     }
     if (lotsAll.length > 0) log(`[OCR]   → Méthode: extraction tabulaire → ${lotsAll.length} lots`);
+  }
+
+  if (lotsAll.length === 0 && detectedTemplate === "boisgirard") {
+    const fallbackBoisgirard = extractLotsFromOcrTextBoisgirard(ocrRawText);
+    if (fallbackBoisgirard.length > 0) {
+      lotsAll = fallbackBoisgirard.map((l) => ({
+        numero_lot: l.numero_lot,
+        description: l.description,
+        prix_marteau: l.prix_marteau,
+        total: l.prix_marteau != null ? Math.round(l.prix_marteau * 1.20 * 100) / 100 : null,
+      }));
+      log(`[OCR]   → Méthode: fallback texte Boisgirard → ${lotsAll.length} lots`);
+    }
   }
 
   // Validation des lots par score de confiance (tous viennent de la zone tableau donc +2)
@@ -2466,11 +2747,28 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     }
   }
 
-  // Correction: seulement pour Millon — si "Millon" ou "Riviera" dans le doc ET salle erronée → imposer Millon Riviera
+  // Correction Millon — si "Millon" ou "Riviera" dans le doc ET salle erronée → imposer Millon Riviera
   const docHasMillon = ocrRawText && (/millon/i.test(ocrRawText) || /riviera/i.test(ocrRawText));
   const salleLooksWrong = result.salle_vente && /buyer|number|china|^\d+$/i.test(result.salle_vente);
   if (docHasMillon && (!result.salle_vente || salleLooksWrong)) {
     result.salle_vente = "Millon Riviera";
+  }
+
+  // Correction Boisgirard — si doc Boisgirard ET salle = "Vos réfs", adresse, ou similaire → imposer Boisgirard Antonini
+  const docHasBoisgirard = ocrRawText && (/boisgirard/i.test(ocrRawText) || /bordereau\s*acquereur/i.test(ocrRawText));
+  const salleBoisgirardWrong = result.salle_vente && (
+    /vos\s*réfs|issy|adresse|^\d{5}\s|^\d+\s+[a-z]/i.test(result.salle_vente) ||
+    (result.numero_bordereau && result.salle_vente.includes(result.numero_bordereau))
+  );
+  if (docHasBoisgirard && (!result.salle_vente || salleBoisgirardWrong)) {
+    result.salle_vente = "Boisgirard Antonini";
+  }
+
+  // Correction total — si total = numéro bordereau (ex: 32320), le rejeter
+  if (result.numero_bordereau && result.total != null && String(Math.round(result.total)) === String(result.numero_bordereau).replace(/\D/g, "")) {
+    result.total = null;
+    const regle = ocrRawText.match(/\bRéglé\s+le\b[\s\S]{0,150}?\bmontant\s+de\b\s*([0-9][0-9\s\u00A0.,]*\d)\s*(?:€|EUR)?/i);
+    if (regle) result.total = normalizeAmountStrict(regle[1]);
   }
 
   return { result, ocrRawText };
@@ -2495,6 +2793,113 @@ function normalizePriceToNumber(raw) {
   }
   const n = Number.parseFloat(s);
   return Number.isFinite(n) ? n : 0;
+}
+
+/** Retire les codes de référence (XF5, A12, etc.) en fin de description */
+function cleanBoisgirardDescription(desc) {
+  if (!desc || typeof desc !== "string") return (desc || "").trim();
+  return desc
+    .replace(/\s*:\s*[A-Z]{2,}[A-Z0-9]*\s*$/i, "")  // ": XF5" en fin
+    .replace(/\s+[A-Z]{2,}[A-Z0-9]*\s*$/i, "")      // " XF5" en fin
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/**
+ * Extraction Boisgirard depuis texte OCR avec zoning strict.
+ * Zone lots = entre "Ligne/Description/Adjudication" et "Taux/Base/Total HT/Frais"
+ * Gestion multi-lignes : description complète jusqu'au prix, codes (XF5) exclus
+ */
+function extractLotsFromOcrTextBoisgirard(ocrText) {
+  const lines = ocrText.split("\n").map((l) => l.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const tpl = BORDEREAU_TEMPLATES.boisgirard;
+  const financialRe = new RegExp(tpl.financialKeywords.join("|"), "i");
+
+  let lotZoneStart = -1;
+  let lotZoneEnd = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    const low = lines[i].toLowerCase();
+    if (["ligne", "description", "adjudication"].every((k) => low.includes(k))) {
+      lotZoneStart = i + 1;
+    }
+    if (lotZoneStart >= 0 && financialRe.test(low)) {
+      lotZoneEnd = i;
+      break;
+    }
+  }
+  if (lotZoneStart < 0) return [];
+
+  const zoneLines = lines.slice(lotZoneStart, lotZoneEnd);
+  const lots = [];
+  let current = null;
+  const priceAtEnd = /(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?$/i;
+  const lotStartPattern = /^(\d{1,4})\s+(\d{1,4})\s+(.*)$/;
+  const baPattern = /^(\d{1,4})\s+(\d{1,4})\s+(.+?)\s+(\d{1,3}[,\u00A0.]\d{2})\s*(?:€|EUR)?/i;
+
+  for (const line of zoneLines) {
+    const low = line.toLowerCase();
+    if (financialRe.test(low)) continue;
+
+    const matchFull = line.match(baPattern);
+    if (matchFull) {
+      const [, ligne, ref, description, priceStr] = matchFull;
+      if (ligne === ref && parseInt(ligne, 10) <= 5000) {
+        if (current) lots.push(current);
+        current = {
+          numero_lot: ligne,
+          description: cleanBoisgirardDescription(description),
+          prix_marteau: normalizeAmountStrict(priceStr),
+        };
+      } else if (current) {
+        const priceM = line.match(priceAtEnd);
+        if (priceM) {
+          const beforePrice = line.replace(priceAtEnd, "").trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(beforePrice)}`.trim();
+          if (!current.prix_marteau) current.prix_marteau = normalizeAmountStrict(priceM[1]);
+        } else {
+          current.description = `${current.description} ${line}`.trim();
+        }
+      }
+    } else {
+      const startM = line.match(lotStartPattern);
+      if (startM && startM[1] === startM[2] && parseInt(startM[1], 10) <= 5000) {
+        const priceM = line.match(priceAtEnd);
+        if (current) lots.push(current);
+        if (priceM) {
+          const beforePrice = line.replace(lotStartPattern, "$3").replace(priceAtEnd, "").trim();
+          current = {
+            numero_lot: startM[1],
+            description: cleanBoisgirardDescription(beforePrice),
+            prix_marteau: normalizeAmountStrict(priceM[1]),
+          };
+        } else {
+          current = {
+            numero_lot: startM[1],
+            description: cleanBoisgirardDescription(startM[3] || ""),
+            prix_marteau: null,
+          };
+        }
+      } else if (current) {
+        const priceM = line.match(priceAtEnd);
+        if (priceM) {
+          const beforePrice = line.replace(priceAtEnd, "").trim();
+          current.description = `${current.description} ${cleanBoisgirardDescription(beforePrice)}`.trim();
+          if (!current.prix_marteau) current.prix_marteau = normalizeAmountStrict(priceM[1]);
+        } else {
+          current.description = `${current.description} ${line}`.trim();
+        }
+      }
+    }
+  }
+  if (current) lots.push(current);
+
+  return lots
+    .filter((l) => (l.description || "").trim().length > 0 || (l.prix_marteau != null && l.prix_marteau > 0))
+    .map((l) => ({
+      numero_lot: l.numero_lot,
+      description: cleanBoisgirardDescription(l.description || ""),
+      prix_marteau: l.prix_marteau,
+    }));
 }
 
 /**
@@ -2598,12 +3003,10 @@ function extractLotsFromOcrText(ocrText) {
 
 /**
  * Extraction table/colonnes depuis les bounding boxes OCR (beaucoup plus fiable que le texte brut).
- * - Colonne gauche: numéro de lot (≈ 0-18% largeur)
- * - Colonne droite: adjudication/prix (≈ 72-100% largeur)
- * - Colonne centrale: description (≈ 18-72% largeur)
- * - Les lignes sans numéro de lot sont considérées comme des continuations de description
+ * @param {Array} words - Mots OCR avec bbox
+ * @param {string|null} template - 'millon' | 'boisgirard' pour règles anti-faux-lots
  */
-function extractLotsFromOcrWords(words) {
+function extractLotsFromOcrWords(words, template = null) {
   const cleanedWords = (words || [])
     .filter((w) => w && typeof w.text === "string" && w.text.trim())
     .map((w) => ({
@@ -2647,37 +3050,30 @@ function extractLotsFromOcrWords(words) {
   let current = null;
 
   const isPriceToken = (t) => /\d/.test(t) && !/cm|mm|kg/i.test(t);
-  // repère la ligne d'en-tête (pour ignorer ce qui est au-dessus)
   let headerY = null;
   let hasLigneColumn = false;
-  let isBoisgirardAntonini = false;
-  
-  // Détecter si c'est un bordereau Boisgirard Antonini
-  for (const row of rows.slice(0, 20)) {
-    const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (full.includes("boisgirard") || full.includes("antonini")) {
-      isBoisgirardAntonini = true;
-      break;
-    }
-  }
-  
+  const isBoisgirard = template === "boisgirard";
+  const financialRe = isBoisgirard && BORDEREAU_TEMPLATES.boisgirard
+    ? new RegExp(BORDEREAU_TEMPLATES.boisgirard.financialKeywords.join("|"), "i")
+    : null;
+
   for (const row of rows) {
     const full = row.words.map((w) => w.text).join(" ").toLowerCase();
-    if (full.includes("description") && (full.includes("adjudication") || full.includes("prix"))) {
+    if (isBoisgirard) {
+      if (["ligne", "description", "adjudication"].every((k) => full.includes(k))) {
+        headerY = row.y;
+        hasLigneColumn = true;
+        break;
+      }
+    } else if (full.includes("description") && (full.includes("adjudication") || full.includes("prix"))) {
       headerY = row.y;
-      // Détecter si la colonne s'appelle "Ligne" ou "Ligne / Référence"
       hasLigneColumn = full.includes("ligne");
       break;
     }
   }
-  
-  // Pour Boisgirard Antonini, on suppose toujours qu'il y a une colonne "Ligne" même si non détectée
-  if (isBoisgirardAntonini && !hasLigneColumn) {
-    hasLigneColumn = true;
-  }
+  if (isBoisgirard && !hasLigneColumn) hasLigneColumn = true;
 
-  // MODE SPÉCIFIQUE BOISGIRARD ANTONINI : extraction par position spatiale (bbox)
-  if (isBoisgirardAntonini) {
+  if (isBoisgirard) {
     console.log('[OCR][BA] Mode extraction spatiale activé (bbox)');
     console.log(`[OCR][BA] Total mots OCR: ${cleanedWords.length}, Lignes détectées: ${rows.length}`);
     
@@ -2692,8 +3088,8 @@ function extractLotsFromOcrWords(words) {
         // Détecter prix avec décimales: "60,00" ou "60.00"
         const priceMatch = w.text.match(/\b(\d{1,3}[,\u00A0.]\d{2})\b/);
         if (priceMatch) {
-          // Vérifier que ce n'est pas dans un contexte de date/téléphone/total
           const context = row.words.map(ww => ww.text).join(" ").toLowerCase();
+          if (financialRe && financialRe.test(context)) continue; // Anti-faux-lots Boisgirard
           if (!/total|réglé|date|tél|phone|iban|bic/i.test(context)) {
             priceWords.push({
               word: w,
@@ -2793,10 +3189,7 @@ function extractLotsFromOcrWords(words) {
         .join(" ")
         .trim();
       
-      // Nettoyer la description (enlever codes comme "XF5")
-      let description = descriptionWords
-        .replace(/^[A-Z]{2,}[A-Z0-9]*\s*/i, "") // Enlever codes comme "XF5"
-        .trim();
+      let description = cleanBoisgirardDescription(descriptionWords);
       
       const prix_marteau = normalizePriceToNumber(priceInfo.price);
       
@@ -2976,11 +3369,14 @@ function extractLotsFromOcrWords(words) {
   if (current) lots.push(current);
 
   return lots
-    .map((l) => ({
-      lotNumber: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
-      description: (Array.isArray(l.description) ? l.description.join(" ") : String(l.description || "")).replace(/\s+/g, " ").trim(),
-      value: typeof l.value === "number" && Number.isFinite(l.value) ? l.value : 0,
-    }))
+    .map((l) => {
+      const rawDesc = (Array.isArray(l.description) ? l.description.join(" ") : String(l.description || "")).replace(/\s+/g, " ").trim();
+      return {
+        lotNumber: l.lotNumber !== null && l.lotNumber !== undefined ? String(l.lotNumber) : null,
+        description: isBoisgirard ? cleanBoisgirardDescription(rawDesc) : rawDesc,
+        value: typeof l.value === "number" && Number.isFinite(l.value) ? l.value : 0,
+      };
+    })
     // IMPORTANT: Ne pas rejeter les lots sans numéro de lot - accepter si description ou prix présent
     .filter((l) => {
       const hasDesc = (l.description || "").trim().length > 0;
@@ -3016,6 +3412,8 @@ function extractAuctionHouseFromOcrText(ocrText) {
     "total invoice",
     "facture total",
     "total",
+    "vos réfs",
+    "vos refs",
   ];
   const candidates = lines.filter((l) => {
     const low = l.toLowerCase();
@@ -3088,6 +3486,9 @@ function extractAuctionHouseFromOcrWords(words) {
     "invoice",
     "facture",
     "china",
+    "vos réfs",
+    "vos refs",
+    "issy-les-moulineaux",
   ];
 
   // Noms connus de salles (priorité absolue) — ne jamais confondre avec "Sale No." ou titre de vente
@@ -3136,17 +3537,26 @@ function extractAuctionDateFromOcrText(ocrText) {
 }
 
 function extractInvoiceTotalFromOcrText(ocrText) {
-  const lines = ocrText
+  const text = String(ocrText || "");
+  const lines = text
     .split("\n")
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  const key = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc)/i;
+  // Priorité Boisgirard / FR: "Réglé le ... montant de 77,00 €"
+  const regle = text.match(/\bRéglé\s+le\b[\s\S]{0,150}?\bmontant\s+de\b\s*([0-9][0-9\s\u00A0.,]*\d)\s*(?:€|EUR)?/i);
+  if (regle) {
+    const v = normalizeAmountStrict(regle[1]);
+    if (v != null && v > 0) return { raw: regle[1], value: v };
+  }
+
+  const key = /(total\s*invoice|invoice\s*total|facture\s*total|total\s*facture|montant\s*total|total\s*ttc|\btotal\b)/i;
   const price = /(\d[\d\s.,]*\d)\s*(?:€|EUR)?/i;
 
   for (let i = 0; i < lines.length; i++) {
     const l = lines[i];
     if (!key.test(l)) continue;
+    if (/total\s+ht\s*$/i.test(l)) continue;
 
     const m1 = l.match(price);
     if (m1) return { raw: m1[0], value: normalizePriceToNumber(m1[0]) };
@@ -3373,293 +3783,140 @@ async function analyzeWithGroq(fileBuffer, mimeType, apiKey) {
 }
 
 /**
- * Estime les dimensions d'un objet en interrogeant l'IA
+ * Système de prompt pour estimation des dimensions (logistique ventes aux enchères)
  */
-async function estimateDimensionsForObject(description, apiKey) {
-  console.log(`[Dimensions] 🔍 Estimation dimensions pour: "${description.substring(0, 100)}..."`);
-  
-  // Détection préalable du type d'objet pour adapter le prompt
-  const descLower = description.toLowerCase();
-  // Détection robuste des livres (in-8, in 8, in-8°, in 8°, in-4, etc.)
-  const isBook = /livre|ouvrage|traité|manuel|in[\s-]?8|in[\s-]?4|in[\s-]?12|in[\s-]?16|in[\s-]?folio|folio|quarto|octavo|édition|volume|tome/i.test(descLower);
-  const isSmallObject = /bijou|montre|bague|médaille|pièce|petit|petite/i.test(descLower);
-  const isTableau = /tableau|peinture|affiche|toile|cadre/i.test(descLower);
-  
-  // Détection spécifique du format de livre
-  let bookFormat = null;
-  if (isBook) {
-    if (/in[\s-]?folio|folio/i.test(descLower)) {
-      bookFormat = 'folio';
-    } else if (/in[\s-]?4|quarto/i.test(descLower)) {
-      bookFormat = 'in-4';
-    } else if (/in[\s-]?8|octavo/i.test(descLower)) {
-      bookFormat = 'in-8';
-    } else if (/in[\s-]?12/i.test(descLower)) {
-      bookFormat = 'in-12';
-    } else if (/in[\s-]?16/i.test(descLower)) {
-      bookFormat = 'in-16';
-    } else {
-      bookFormat = 'in-8'; // Format par défaut (le plus courant)
-    }
-    console.log(`[Dimensions] 📚 Livre détecté, format: ${bookFormat}`);
-  }
-  
-  // Exemples spécifiques selon le type d'objet
-  let examplesSection = '';
-  if (isBook && bookFormat) {
-    // Exemples très précis selon le format détecté
-    const formatExamples = {
-      'in-8': `Livre in-8° (format le plus courant) : length=22-25 cm, width=15-18 cm, height=2-4 cm, weight=0.3-0.8 kg\n` +
-               `⚠️ CRITIQUE: Un livre in-8° fait environ 23x17x3 cm et pèse 0.5 kg, JAMAIS 70x50x50 cm !`,
-      'in-4': `Livre in-4° (format grand) : length=28-32 cm, width=20-24 cm, height=3-6 cm, weight=0.8-1.5 kg`,
-      'in-12': `Livre in-12° (petit format) : length=15-18 cm, width=10-12 cm, height=1.5-3 cm, weight=0.2-0.5 kg`,
-      'in-16': `Livre in-16° (très petit) : length=12-15 cm, width=8-10 cm, height=1-2 cm, weight=0.1-0.3 kg`,
-      'folio': `Livre in-folio (très grand) : length=35-45 cm, width=25-30 cm, height=5-10 cm, weight=2-5 kg`,
-    };
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR LES LIVRES (format détecté: ${bookFormat}):\n` +
-      formatExamples[bookFormat] + `\n\n` +
-      `Si le format n'est pas clair, utilise les dimensions d'un livre in-8° (23x17x3 cm, 0.5 kg).\n\n`;
-  } else if (isBook) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR LES LIVRES:\n` +
-      `- Livre in-8° (format le plus courant) : length=22-25 cm, width=15-18 cm, height=2-4 cm, weight=0.3-0.8 kg\n` +
-      `- Livre in-4° (plus grand) : length=28-32 cm, width=20-24 cm, height=3-6 cm, weight=0.8-1.5 kg\n` +
-      `- Livre in-12° (petit format) : length=15-18 cm, width=10-12 cm, height=1.5-3 cm, weight=0.2-0.5 kg\n` +
-      `- Livre in-folio (très grand) : length=35-45 cm, width=25-30 cm, height=5-10 cm, weight=2-5 kg\n` +
-      `⚠️ ATTENTION: Un livre in-8° standard fait environ 23x17x3 cm et pèse 0.5 kg, PAS 70x50x50 cm !\n` +
-      `Si le format n'est pas précisé, assume un format in-8° (le plus courant).\n\n`;
-  } else if (isSmallObject) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR PETITS OBJETS:\n` +
-      `- Bijou/montre : length=5-10 cm, width=5-10 cm, height=2-5 cm, weight=0.05-0.2 kg\n` +
-      `- Médaille : length=5-8 cm, width=5-8 cm, height=0.5-1 cm, weight=0.05-0.1 kg\n\n`;
-  } else if (isTableau) {
-    examplesSection = `EXEMPLES SPÉCIFIQUES POUR TABLEAUX:\n` +
-      `- Petit tableau : length=30-50 cm, width=25-40 cm, height=2-5 cm, weight=1-3 kg\n` +
-      `- Tableau moyen : length=50-80 cm, width=40-60 cm, height=3-8 cm, weight=3-8 kg\n` +
-      `- Grand tableau : length=80-150 cm, width=60-100 cm, height=5-15 cm, weight=8-20 kg\n\n`;
-  } else {
-    examplesSection = `EXEMPLES GÉNÉRAUX:\n` +
-      `- Livre in-8° : 22x16x3 cm, 0.5 kg\n` +
-      `- Petit tableau : 40x30x5 cm, 2 kg\n` +
-      `- Vase : 25x25x35 cm, 1.5 kg\n` +
-      `- Sculpture moyenne : 30x25x40 cm, 5 kg\n\n`;
-  }
-  
-  const dimensionPrompt =
-    `Tu es un expert en estimation logistique pour transport d'objets (art/antiquités).\n\n` +
-    `Objet (description OCR) :\n"""${description}"""\n\n` +
-    `Question : Quels sont les dimensions 3D les plus précises (L, l, h) en CENTIMÈTRES (cm) et le poids en KILOGRAMMES (kg) de cet objet pour le transport ?\n\n` +
-    `${examplesSection}` +
-    `RÈGLES CRITIQUES:\n` +
-    `- Réponds UNIQUEMENT en JSON valide.\n` +
-    `- Valeurs numériques UNIQUEMENT en CENTIMÈTRES (cm) pour les dimensions.\n` +
-    `- Valeurs numériques UNIQUEMENT en KILOGRAMMES (kg) pour le poids.\n` +
-    `- Les dimensions doivent être en CENTIMÈTRES, PAS en mètres, PAS en millimètres.\n` +
-    `- Donne des estimations PRUDENTES et RÉALISTES basées sur les exemples ci-dessus.\n` +
-    `- Si la description contient déjà des dimensions (cm/mm), convertis-les en cm si nécessaire.\n` +
-    `- Si mm: divise par 10. Si mètres: multiplie par 100.\n` +
-    `- Pour les livres, utilise les dimensions typiques selon le format (in-8°, in-4°, etc.).\n\n` +
-    `FORMAT STRICT:\n` +
-    `{\n  "length": <nombre en cm, max 500>,\n  "width": <nombre en cm, max 500>,\n  "height": <nombre en cm, max 500>,\n  "weight": <nombre en kg, max 50>\n}\n\n` +
-    `IMPORTANT: retourne la dimension la plus grande dans "length" (longueur >= largeur >= hauteur).`;
+const DIMENSIONS_SYSTEM_PROMPT = `You are a professional auction logistics expert specialized in books, paintings, luxury bags, jewelry and art objects.
 
-  const normalizeAndSort = (dims) => {
+Your task is to estimate realistic TRANSPORT dimensions (object + protective packaging) and weight.
+
+The result will be used for real shipping box selection and logistics calculation.
+Accuracy and realism are critical.
+
+--------------------------------
+STEP 1 — CHECK EXPLICIT DATA
+--------------------------------
+If the description contains dimensions:
+- Extract them exactly
+- Convert everything to centimeters
+- Respect original proportions
+- Add protective packaging margin:
+
+  Books: +5%
+  Paintings (framed): +8%
+  Sculptures / fragile objects: +10%
+  Jewelry: minimal margin (5%)
+  Bags: +8%
+
+If weight is explicitly written, use it.
+
+--------------------------------
+STEP 2 — IF DIMENSIONS ARE MISSING
+--------------------------------
+Identify the object category:
+
+BOOK:
+- Small book: 20x13x3 cm approx
+- Large art book: 30x24x5 cm approx
+- Add small packaging margin
+
+PAINTING:
+- Assume depth 5–8 cm framed
+- Maintain realistic proportions
+
+LUXURY BAG:
+- Handbag typical range:
+  20–40 cm length
+  10–20 cm width
+  15–30 cm height
+
+JEWELRY:
+- Small box size:
+  8–15 cm typical
+- Very low weight
+
+ART OBJECT:
+- Estimate realistic size
+- Avoid extreme assumptions
+- Use auction price as weight clue
+
+--------------------------------
+STEP 3 — PHYSICAL COHERENCE
+--------------------------------
+Ensure:
+- length ≥ width ≥ height
+- Weight matches size logically
+- No unrealistic densities
+- No extreme or exaggerated values
+
+--------------------------------
+STEP 4 — MULTIPLE ITEMS
+--------------------------------
+If multiple items:
+- Stack logically if possible
+- Otherwise estimate combined transport size
+
+--------------------------------
+OUTPUT FORMAT (STRICT JSON ONLY)
+--------------------------------
+
+{
+  "length_cm": number,
+  "width_cm": number,
+  "height_cm": number,
+  "weight_kg": number,
+  "confidence": number (0-1),
+  "category_detected": "BOOK | PAINTING | BAG | JEWELRY | ART_OBJECT"
+}
+
+Return ONLY valid JSON.
+No explanation.
+No text outside JSON.`;
+
+/**
+ * Estime les dimensions d'un objet en interrogeant Groq
+ * @param {string} description - Description du/des lot(s)
+ * @param {string} apiKey - Clé API Groq
+ * @param {Object} context - Contexte utile (auctionHouse, price, date)
+ */
+async function estimateDimensionsForObject(description, apiKey, context = {}) {
+  console.log(`[Dimensions] 🔍 Estimation dimensions pour: "${(description || '').substring(0, 100)}..."`);
+
+  const contextParts = [];
+  if (context.auctionHouse) contextParts.push(`Auction house: ${context.auctionHouse}`);
+  if (context.price != null && context.price !== '') contextParts.push(`Auction price (hammer): ${context.price}€`);
+  if (context.date) contextParts.push(`Sale date: ${context.date}`);
+
+  const userContent = contextParts.length > 0
+    ? `LOT DESCRIPTION:\n"""${description || ''}"""\n\nUSEFUL CONTEXT:\n${contextParts.join('\n')}`
+    : `LOT DESCRIPTION:\n"""${description || ''}"""`;
+
+  const normalizeResponse = (parsed) => {
     const toNum = (v) => {
-      const n = Number.parseFloat(String(v).replace(",", "."));
+      const n = Number.parseFloat(String(v).replace(',', '.'));
       return Number.isFinite(n) ? n : null;
     };
-    const l = toNum(dims?.length);
-    const w = toNum(dims?.width);
-    const h = toNum(dims?.height);
-    const weight = toNum(dims?.weight);
+    const l = toNum(parsed?.length_cm ?? parsed?.length);
+    const w = toNum(parsed?.width_cm ?? parsed?.width);
+    const h = toNum(parsed?.height_cm ?? parsed?.height);
+    const weight = toNum(parsed?.weight_kg ?? parsed?.weight);
 
-    console.log(`[Dimensions] 📊 Valeurs brutes reçues:`, { l, w, h, weight });
-
-    // Validation: si les valeurs sont > 500 cm, elles sont probablement en mm ou mètres
-    // Convertir automatiquement si nécessaire
-    const convertIfNeeded = (val) => {
-      if (!val || val <= 0) return null;
-      // Si > 500 cm, probablement en mm (diviser par 10)
-      if (val > 500 && val < 10000) {
-        console.log(`[Dimensions] ⚠️  Valeur ${val} semble être en mm, conversion en cm: ${val / 10}`);
-        return val / 10;
-      }
-      // Si > 10 mètres (1000 cm), probablement en mètres (multiplier par 100 serait absurde, donc c'est déjà en cm mais très grand)
-      // On garde tel quel mais on log
-      if (val > 1000) {
-        console.warn(`[Dimensions] ⚠️  Valeur ${val} cm semble très grande, vérification nécessaire`);
-      }
-      return val;
-    };
-
-    const lConverted = convertIfNeeded(l);
-    const wConverted = convertIfNeeded(w);
-    const hConverted = convertIfNeeded(h);
-
-    // Détection des valeurs aberrantes pour petits objets (livres, bijoux, etc.)
-    // Utiliser descLower, isBook, isSmallObject et bookFormat de la portée externe
-    
-    // Validation spécifique pour les livres avec correction automatique
-    if (isBook) {
-      // Déterminer les dimensions typiques selon le format
-      let typicalDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-      if (bookFormat === 'in-4') {
-        typicalDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-      } else if (bookFormat === 'in-12') {
-        typicalDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-      } else if (bookFormat === 'in-16') {
-        typicalDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-      } else if (bookFormat === 'folio') {
-        typicalDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-      }
-      
-      // Un livre ne devrait jamais dépasser 50 cm en longueur (même un in-folio peut aller jusqu'à 45 cm)
-      // Si les valeurs sont > 50 cm, c'est probablement une erreur
-      if (lConverted && lConverted > 50) {
-        console.warn(`[Dimensions] ⚠️  Dimension anormale pour un livre (${lConverted} cm). Correction automatique vers format ${bookFormat || 'in-8'}.`);
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques:`, typicalDims);
-        return typicalDims;
-      }
-      
-      // Si la longueur est > 35 cm mais pas un folio, c'est suspect
-      if (lConverted && lConverted > 35 && bookFormat !== 'folio') {
-        console.warn(`[Dimensions] ⚠️  Dimension suspecte pour un livre non-folio (${lConverted} cm). Correction.`);
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques:`, typicalDims);
-        return typicalDims;
-      }
-      
-      // Si la hauteur est > 10 cm pour un livre non-folio, c'est suspect
-      if (hConverted && hConverted > 10 && bookFormat !== 'folio' && lConverted && lConverted < 35) {
-        console.warn(`[Dimensions] ⚠️  Hauteur anormale pour un livre (${hConverted} cm). Limitation à 5 cm.`);
-        const correctedH = Math.min(hConverted, 5);
-        const arr = [lConverted, wConverted, correctedH].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-        if (arr.length >= 2) {
-          arr.sort((a, b) => b - a);
-          return {
-            length: Math.round(arr[0]),
-            width: Math.round(arr[1] ?? Math.min(arr[0], 18)),
-            height: Math.round(correctedH),
-            weight: weight && weight > 0 && weight <= 5 ? Number(weight.toFixed(1)) : typicalDims.weight,
-          };
-        }
-      }
-      
-      // Si toutes les dimensions sont cohérentes mais le poids est aberrant (> 5 kg pour un livre)
-      if (weight && weight > 5 && lConverted && lConverted < 50) {
-        console.warn(`[Dimensions] ⚠️  Poids anormal pour un livre (${weight} kg). Correction à ${typicalDims.weight} kg.`);
-        const arr = [lConverted, wConverted, hConverted].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-        if (arr.length >= 2) {
-          arr.sort((a, b) => b - a);
-          return {
-            length: Math.round(arr[0]),
-            width: Math.round(arr[1] ?? Math.min(arr[0], 18)),
-            height: Math.round(arr[2] ?? Math.min(arr[1] ?? arr[0], 5)),
-            weight: typicalDims.weight,
-          };
-        }
-      }
-    }
-    
-    // Validation pour petits objets
-    if (isSmallObject) {
-      if (lConverted && lConverted > 15) {
-        console.warn(`[Dimensions] ⚠️  Dimension anormale pour un petit objet: ${lConverted} cm. Correction automatique.`);
-        const smallDims = { length: 8, width: 8, height: 3, weight: 0.1 };
-        console.log(`[Dimensions] ✅ Utilisation dimensions typiques petit objet:`, smallDims);
-        return smallDims;
-      }
+    if (l == null && w == null && h == null) {
+      return null;
     }
 
-    const arr = [lConverted, wConverted, hConverted].filter((x) => typeof x === "number" && x > 0 && x <= 500);
-    if (arr.length === 0) {
-      // Fallback intelligent selon le type d'objet
-      if (isBook) {
-        // Utiliser les dimensions typiques selon le format détecté
-        let bookDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-        if (bookFormat === 'in-4') {
-          bookDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-        } else if (bookFormat === 'in-12') {
-          bookDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-        } else if (bookFormat === 'in-16') {
-          bookDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-        } else if (bookFormat === 'folio') {
-          bookDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-        }
-        console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation dimensions typiques livre ${bookFormat || 'in-8'}`);
-        return bookDims;
-      } else if (isSmallObject) {
-        console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation dimensions typiques petit objet`);
-        return { length: 8, width: 8, height: 3, weight: 0.1 };
-      }
-      console.warn(`[Dimensions] ⚠️  Aucune dimension valide, utilisation des valeurs par défaut`);
-      return { length: 50, width: 40, height: 30, weight: 5 };
-    }
+    const arr = [l, w, h].filter((x) => x != null && x > 0 && x <= 500);
+    if (arr.length === 0) return null;
+
     arr.sort((a, b) => b - a);
-    let length = Math.min(arr[0], 500); // Limiter à 500 cm max
-    let width = Math.min(arr[1] ?? Math.min(length, 40), 500);
-    let height = Math.min(arr[2] ?? Math.min(width, 30), 500);
-    
-    // Validation finale : détecter les valeurs aberrantes même après normalisation
-    if (isBook) {
-      // Déterminer les dimensions typiques selon le format
-      let typicalDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-      if (bookFormat === 'in-4') {
-        typicalDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-      } else if (bookFormat === 'in-12') {
-        typicalDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-      } else if (bookFormat === 'in-16') {
-        typicalDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-      } else if (bookFormat === 'folio') {
-        typicalDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-      }
-      
-      // Si les dimensions sont > 2x les dimensions typiques, c'est suspect
-      const tolerance = 2.0; // tolérance de 2x
-      if (length > typicalDims.length * tolerance || 
-          width > typicalDims.width * tolerance || 
-          height > typicalDims.height * tolerance) {
-        console.warn(`[Dimensions] ⚠️  Dimensions anormalement grandes pour un livre (${length}x${width}x${height} cm). Correction automatique.`);
-        console.log(`[Dimensions] ✅ Remplacement par dimensions typiques ${bookFormat || 'in-8'}:`, typicalDims);
-        return typicalDims;
-      }
-    }
-    
-    // Poids intelligent selon le type
-    let finalWeight = 5; // défaut
-    if (weight && weight > 0 && weight <= 50) {
-      finalWeight = Number(weight.toFixed(1));
-      // Validation du poids pour les livres
-      if (isBook && finalWeight > 5) {
-        console.warn(`[Dimensions] ⚠️  Poids anormal pour un livre (${finalWeight} kg). Correction.`);
-        let typicalWeight = 0.5;
-        if (bookFormat === 'in-4') typicalWeight = 1.0;
-        else if (bookFormat === 'in-12') typicalWeight = 0.3;
-        else if (bookFormat === 'in-16') typicalWeight = 0.2;
-        else if (bookFormat === 'folio') typicalWeight = 3.0;
-        finalWeight = typicalWeight;
-      }
-    } else {
-      // Fallback intelligent selon le type
-      if (isBook) {
-        let typicalWeight = 0.5;
-        if (bookFormat === 'in-4') typicalWeight = 1.0;
-        else if (bookFormat === 'in-12') typicalWeight = 0.3;
-        else if (bookFormat === 'in-16') typicalWeight = 0.2;
-        else if (bookFormat === 'folio') typicalWeight = 3.0;
-        finalWeight = typicalWeight;
-      } else if (isSmallObject) {
-        finalWeight = 0.1;
-      } else {
-        finalWeight = 5;
-      }
-    }
+    const length = Math.round(Math.min(arr[0], 500));
+    const width = Math.round(Math.min(arr[1] ?? length, 500));
+    const height = Math.round(Math.min(arr[2] ?? width, 500));
 
-    const result = {
-      length: Math.round(length),
-      width: Math.round(width),
-      height: Math.round(height),
-      weight: finalWeight,
-    };
+    const finalWeight = (weight != null && weight > 0 && weight <= 50)
+      ? Number(weight.toFixed(1))
+      : 5;
 
+    const result = { length, width, height, weight: finalWeight };
     console.log(`[Dimensions] ✅ Dimensions normalisées:`, result);
     return result;
   };
@@ -3674,16 +3931,10 @@ async function estimateDimensionsForObject(description, apiKey) {
       body: JSON.stringify({
         model: 'llama-3.1-8b-instant',
         messages: [
-          {
-            role: 'system',
-            content: 'Tu es un expert en estimation de dimensions d\'objets pour transport. Tu retournes UNIQUEMENT du JSON valide avec des dimensions en CENTIMÈTRES (cm) et poids en KILOGRAMMES (kg).',
-          },
-          {
-            role: 'user',
-            content: dimensionPrompt,
-          },
+          { role: 'system', content: DIMENSIONS_SYSTEM_PROMPT },
+          { role: 'user', content: userContent },
         ],
-        max_tokens: 200,
+        max_tokens: 250,
         temperature: 0.0,
       }),
     });
@@ -3696,24 +3947,21 @@ async function estimateDimensionsForObject(description, apiKey) {
 
     const data = await response.json();
     const contentText = data.choices[0]?.message?.content;
-    
-    console.log(`[Dimensions] 📥 Réponse brute de Groq:`, contentText?.substring(0, 200));
-    
+
     if (!contentText) {
       console.warn('[Dimensions] ⚠️  Aucune réponse de Groq');
       return { length: 50, width: 40, height: 30, weight: 5 };
     }
 
-    // Extraire le JSON
     const jsonMatch = contentText.match(/\{[\s\S]*\}/);
     if (jsonMatch) {
       try {
         const parsed = JSON.parse(jsonMatch[0]);
         console.log(`[Dimensions] 📋 JSON parsé:`, parsed);
-        return normalizeAndSort(parsed);
+        const normalized = normalizeResponse(parsed);
+        if (normalized) return normalized;
       } catch (parseError) {
         console.error('[Dimensions] ❌ Erreur parsing JSON:', parseError.message);
-        console.error('[Dimensions] Contenu:', jsonMatch[0]);
       }
     } else {
       console.warn('[Dimensions] ⚠️  Aucun JSON trouvé dans la réponse');
@@ -3722,38 +3970,6 @@ async function estimateDimensionsForObject(description, apiKey) {
     console.error('[Dimensions] ❌ Erreur estimation:', error.message);
   }
 
-  // Valeurs par défaut en cas d'erreur (avec détection du type d'objet)
-  // Utiliser descLower, isBook, isSmallObject et bookFormat déjà déclarés au début de la fonction
-  if (isBook) {
-    // Détecter le format pour utiliser les bonnes dimensions
-    let bookFormat = 'in-8'; // défaut
-    if (/in[\s-]?folio|folio/i.test(descLower)) {
-      bookFormat = 'folio';
-    } else if (/in[\s-]?4|quarto/i.test(descLower)) {
-      bookFormat = 'in-4';
-    } else if (/in[\s-]?12/i.test(descLower)) {
-      bookFormat = 'in-12';
-    } else if (/in[\s-]?16/i.test(descLower)) {
-      bookFormat = 'in-16';
-    }
-    
-    let bookDims = { length: 23, width: 17, height: 3, weight: 0.5 }; // in-8° par défaut
-    if (bookFormat === 'in-4') {
-      bookDims = { length: 30, width: 22, height: 4, weight: 1.0 };
-    } else if (bookFormat === 'in-12') {
-      bookDims = { length: 16, width: 11, height: 2, weight: 0.3 };
-    } else if (bookFormat === 'in-16') {
-      bookDims = { length: 13, width: 9, height: 1.5, weight: 0.2 };
-    } else if (bookFormat === 'folio') {
-      bookDims = { length: 40, width: 28, height: 7, weight: 3.0 };
-    }
-    console.warn(`[Dimensions] ⚠️  Utilisation dimensions typiques livre ${bookFormat} (fallback)`);
-    return bookDims;
-  } else if (isSmallObject) {
-    console.warn('[Dimensions] ⚠️  Utilisation dimensions typiques petit objet (fallback)');
-    return { length: 8, width: 8, height: 3, weight: 0.1 };
-  }
-  
   console.warn('[Dimensions] ⚠️  Utilisation des valeurs par défaut');
   return { length: 50, width: 40, height: 30, weight: 5 };
 }
@@ -3830,7 +4046,7 @@ async function analyzeWithGroqFallback(fileBuffer, mimeType, apiKey, prompt) {
   const lotsWithDimensions = await Promise.all(
     initialResult.lots.map(async (lot) => {
       if (lot.description) {
-        const dimensions = await estimateDimensionsForObject(lot.description, apiKey);
+        const dimensions = await estimateDimensionsForObject(lot.description, apiKey, {});
         return {
           ...lot,
           estimatedDimensions: dimensions,
@@ -3976,7 +4192,12 @@ app.post('/api/analyze-auction-sheet', upload.single('file'), async (req, res) =
         const target = lots[targetIdx];
         if (target?.description && target.description.trim().length > 0) {
           console.log(`[Analyze] 🔍 Estimation dimensions pour lot ${targetIdx + 1}: "${target.description.substring(0, 80)}..."`);
-          const dims = await estimateDimensionsForObject(target.description, groqKey);
+          const ctx = {
+            auctionHouse: extracted.salle_vente || undefined,
+            price: target.value,
+            date: extracted.date || undefined,
+          };
+          const dims = await estimateDimensionsForObject(target.description, groqKey, ctx);
           console.log(`[Analyze] ✅ Dimensions estimées de l'objet:`, dims);
           lots = lots.map((l, idx) =>
             idx === targetIdx ? { ...l, estimatedDimensions: dims } : l
@@ -4094,11 +4315,106 @@ app.post('/api/bordereau/extract', upload.single('file'), async (req, res) => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Email SMTP - Supporte Gmail (gratuit) et Uno Send
+// Email SMTP - Supporte Gmail (staging) et Resend (production)
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Envoie un email via Resend API
+ * Détecte si on est en environnement staging
+ */
+function isStagingEnv() {
+  return process.env.NODE_ENV === 'staging';
+}
+
+/**
+ * Envoie un email via l'API Gmail (compte connecté dans les paramètres)
+ * Utilisé uniquement en staging. Nécessite saasAccountId et un compte Gmail connecté.
+ * @param {Object} params - idem sendEmail
+ * @returns {Promise<{ id: string, messageId: string, source: 'GMAIL' }>}
+ */
+async function sendEmailViaGmail({ to, subject, text, html, saasAccountId }) {
+  if (!firestore || !saasAccountId) {
+    throw new Error('En staging, un compte Gmail doit être connecté. Connectez un compte Gmail dans Paramètres > Compte Email.');
+  }
+
+  const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
+  const saasAccountDoc = await saasAccountRef.get();
+  if (!saasAccountDoc.exists) {
+    throw new Error('Compte SaaS introuvable.');
+  }
+
+  const gmailIntegration = saasAccountDoc.data().integrations?.gmail;
+  if (!gmailIntegration?.connected || !gmailIntegration?.email) {
+    throw new Error('Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email pour envoyer des emails en staging.');
+  }
+
+  const toEmail = extractEmailAddress(to);
+  if (!isValidEmail(toEmail)) {
+    throw new Error(`Email destinataire invalide: ${to}`);
+  }
+
+  const fromEmail = gmailIntegration.email;
+  let fromDisplayName = 'MBE Devis';
+  const saasData = saasAccountDoc.data();
+  if (saasData.commercialName) {
+    fromDisplayName = `${saasData.commercialName} Devis`;
+  }
+
+  const content = (html && html.trim()) ? html.trim() : (text && text.trim()) ? text.trim() : '';
+  if (!content) {
+    throw new Error('Au moins text ou html doit être fourni');
+  }
+
+  const contentType = (html && html.trim()) ? 'text/html' : 'text/plain';
+  const subjectEncoded = `=?UTF-8?B?${Buffer.from((subject || 'Sans sujet').trim(), 'utf8').toString('base64')}?=`;
+  const mimeLines = [
+    `From: "${fromDisplayName}" <${fromEmail}>`,
+    `To: ${toEmail}`,
+    `Subject: ${subjectEncoded}`,
+    'MIME-Version: 1.0',
+    `Content-Type: ${contentType}; charset=UTF-8`,
+    '',
+    content,
+  ].join('\r\n');
+
+  const raw = Buffer.from(mimeLines, 'utf8').toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+
+  const tokens = {
+    access_token: gmailIntegration.accessToken,
+    refresh_token: gmailIntegration.refreshToken,
+    expiry_date: gmailIntegration.expiresAt
+      ? (gmailIntegration.expiresAt instanceof Date ? gmailIntegration.expiresAt.getTime() : gmailIntegration.expiresAt.toDate?.()?.getTime?.() ?? new Date(gmailIntegration.expiresAt).getTime())
+      : null,
+  };
+
+  if (!GMAIL_CLIENT_ID || !GMAIL_CLIENT_SECRET) {
+    throw new Error('Gmail OAuth non configuré sur le serveur (GMAIL_CLIENT_ID / GMAIL_CLIENT_SECRET).');
+  }
+
+  const client = new google.auth.OAuth2(GMAIL_CLIENT_ID, GMAIL_CLIENT_SECRET, GMAIL_REDIRECT_URI);
+  client.setCredentials(tokens);
+
+  if (tokens.expiry_date && Date.now() > tokens.expiry_date - 60000) {
+    const { credentials } = await client.refreshAccessToken();
+    await saasAccountRef.update({
+      'integrations.gmail.accessToken': credentials.access_token,
+      'integrations.gmail.expiresAt': credentials.expiry_date ? new Date(credentials.expiry_date) : null,
+    });
+    client.setCredentials(credentials);
+  }
+
+  const gmail = google.gmail({ version: 'v1', auth: client });
+  const result = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: { raw },
+  });
+
+  const messageId = result.data.id;
+  console.log('[Gmail] ✅ Email envoyé via compte connecté:', fromEmail, '→', toEmail, 'messageId:', messageId);
+  return { id: messageId, messageId, source: 'GMAIL', from: fromEmail };
+}
+
+/**
+ * Envoie un email via Resend API (production) ou Gmail (staging)
  * @param {Object} params
  * @param {string} params.to - Email destinataire
  * @param {string} params.subject - Sujet
@@ -4108,6 +4424,13 @@ app.post('/api/bordereau/extract', upload.single('file'), async (req, res) => {
  * @returns {Promise<Object>} Réponse avec messageId
  */
 async function sendEmail({ to, subject, text, html, saasAccountId }) {
+  if (isStagingEnv()) {
+    if (!saasAccountId) {
+      throw new Error('En staging, le saasAccountId est requis. Connectez un compte Gmail dans Paramètres > Compte Email.');
+    }
+    return sendEmailViaGmail({ to, subject, text, html, saasAccountId });
+  }
+
   console.log('[Resend] ===== DÉBUT sendEmail =====');
   console.log('[Resend] Paramètres reçus:', {
     to: typeof to === 'string' ? to.substring(0, 50) : String(to),
@@ -4263,7 +4586,9 @@ async function sendEmail({ to, subject, text, html, saasAccountId }) {
     
     return { 
       id: data.id, 
-      messageId: data.id 
+      messageId: data.id,
+      source: 'RESEND',
+      from: fromValue
     };
   } catch (error) {
     const errorMessage = error.message || String(error);
@@ -4287,7 +4612,9 @@ async function sendEmail({ to, subject, text, html, saasAccountId }) {
         console.log('[Resend] ===== FIN sendEmail (succès via HTTP direct) =====');
         return {
           id: directResult.id,
-          messageId: directResult.id
+          messageId: directResult.id,
+          source: 'RESEND',
+          from: fromValue
         };
       } catch (directError) {
         console.error('[Resend] ❌ Échec aussi avec HTTP direct:', directError.message);
@@ -4755,8 +5082,8 @@ L'équipe MBE
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: 'RESEND',
-          from: EMAIL_FROM || 'devis@mbe-sdv.fr',
+          source: result.source || 'RESEND',
+          from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: `Votre devis de transport - ${reference}`,
           bodyText: textContent,
@@ -5052,8 +5379,8 @@ L'équipe MBE
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: 'RESEND',
-          from: EMAIL_FROM || 'devis@mbe-sdv.fr',
+          source: result.source || 'RESEND',
+          from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: `Surcoût supplémentaire - Devis ${reference}`,
           bodyText: textContent,
@@ -5149,7 +5476,7 @@ L'équipe MBE
  * POST /api/send-collection-email
  * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }
  */
-app.post('/api/send-collection-email', async (req, res) => {
+app.post('/api/send-collection-email', requireAuth, async (req, res) => {
   console.log('[AI Proxy] 📥 POST /api/send-collection-email appelé');
   try {
     const { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note } = req.body;
@@ -5303,6 +5630,41 @@ app.post('/api/send-collection-email', async (req, res) => {
     });
 
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);
+
+    // Envoyer un email automatique à chaque client pour les devis concernés
+    const effectiveSaasId = saasAccountId || (quotes && quotes[0]?.saasAccountId);
+    if (quotes && quotes.length > 0 && firestore) {
+      for (const q of quotes) {
+        try {
+          const quoteId = q.id;
+          if (!quoteId) continue;
+          const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+          if (!quoteDoc.exists) continue;
+          const quoteData = quoteDoc.data();
+          const qSaasId = quoteData.saasAccountId || effectiveSaasId;
+          let commercialName = 'votre MBE';
+          if (qSaasId) {
+            const saasDoc = await firestore.collection('saasAccounts').doc(qSaasId).get();
+            if (saasDoc.exists && saasDoc.data().commercialName) {
+              commercialName = saasDoc.data().commercialName;
+            }
+          }
+          const quoteForEmail = {
+            ...quoteData,
+            id: quoteId,
+            saasAccountId: qSaasId,
+            _saasCommercialName: commercialName,
+            client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail || quoteData.delivery?.contact?.email },
+            delivery: quoteData.delivery,
+            reference: quoteData.reference,
+          };
+          await sendAwaitingCollectionEmail(firestore, sendEmail, quoteForEmail);
+        } catch (emailErr) {
+          console.error('[AI Proxy] ⚠️ Email automatique (demande collecte) non envoyé pour devis:', q?.id, emailErr.message);
+        }
+      }
+    }
+
     res.json({ 
       success: true, 
       messageId: result.id, 
@@ -5322,36 +5684,39 @@ app.post('/api/send-collection-email', async (req, res) => {
 /**
  * Route de test: Envoyer un email de test
  * POST /api/test-email
- * Body: { to: "email@example.com" } (optionnel, utilise EMAIL_FROM par défaut)
+ * Body: { to: "email@example.com" } (optionnel)
+ * En staging : requiert auth + compte Gmail connecté (saasAccountId)
  */
-app.post('/api/test-email', async (req, res) => {
+app.post('/api/test-email', requireAuth, async (req, res) => {
   console.log('[Test Email] Route appelée');
   try {
     const { to } = req.body || {};
-    const testEmail = to || EMAIL_FROM;
-    
+    const testEmail = to || (!isStagingEnv() ? EMAIL_FROM : null);
+
     if (!testEmail || !isValidEmail(testEmail)) {
-      return res.status(400).json({ 
+      return res.status(400).json({
         error: 'Email de test invalide',
-        hint: `Fournissez un email valide: { "to": "email@example.com" }`
+        hint: isStagingEnv()
+          ? 'En staging, fournissez un destinataire: { "to": "email@example.com" }'
+          : `Fournissez un email valide: { "to": "email@example.com" }`,
       });
     }
 
-    if (!resendClient) {
+    if (!isStagingEnv() && !resendClient) {
       return res.status(400).json({ 
         error: 'Resend non configuré',
         hint: 'Vérifiez RESEND_API_KEY dans .env.local'
       });
     }
 
-    if (!EMAIL_FROM) {
-      return res.status(400).json({ 
+    if (!isStagingEnv() && !EMAIL_FROM) {
+      return res.status(400).json({
         error: 'EMAIL_FROM non configuré',
-        hint: 'Configure EMAIL_FROM dans .env.local'
+        hint: 'Configure EMAIL_FROM dans .env.local',
       });
     }
 
-    console.log(`[Test Email] Envoi email de test à ${testEmail}...`);
+    console.log(`[Test Email] Envoi email de test à ${testEmail}... (staging=${isStagingEnv()})`);
     
     // Pour les emails de test, utiliser req.saasAccountId si disponible
     const saasAccountId = req.saasAccountId;
@@ -5362,11 +5727,10 @@ app.post('/api/test-email', async (req, res) => {
 
 Ceci est un email de test depuis l'application MBE Devis.
 
-Si vous recevez cet email, cela signifie que la configuration Resend fonctionne correctement !
+Si vous recevez cet email, cela signifie que la configuration email fonctionne correctement !
 
 Configuration:
-- Provider: Resend
-- From: ${EMAIL_FROM}
+- Provider: ${isStagingEnv() ? 'Gmail (compte connecté)' : 'Resend'}
 - Date: ${new Date().toLocaleString('fr-FR')}
 
 Cordialement,
@@ -5544,11 +5908,13 @@ app.get('/auth/gmail/start', requireAuth, (req, res) => {
   }
 
   // Passer le saasAccountId dans le state pour le récupérer au callback
+  // gmail.send : requis pour envoyer des emails via le compte connecté (staging)
   const url = oauth2Client.generateAuthUrl({
     access_type: 'offline',
     prompt: 'consent',
     scope: [
       'https://www.googleapis.com/auth/gmail.readonly',
+      'https://www.googleapis.com/auth/gmail.send',
       'https://www.googleapis.com/auth/userinfo.email'
     ],
     state: req.saasAccountId // Passer le saasAccountId dans le state
@@ -6932,6 +7298,34 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Ce carton n\'est plus actif' });
     }
 
+    // Recalculer le poids volumétrique avec les dimensions du nouveau carton
+    const length = Number(carton.inner_length) || 0;
+    const width = Number(carton.inner_width) || 0;
+    const height = Number(carton.inner_height) || 0;
+    const volumetricWeight = length && width && height
+      ? Math.ceil((length * width * height) / 5000)
+      : 0;
+
+    // Recalculer le tarif d'expédition selon la grille tarifaire
+    let shippingPrice = devis.options?.shippingPrice || 0;
+    if (volumetricWeight > 0) {
+      const deliveryCountry = devis.delivery?.address?.country || '';
+      const addressLine = devis.delivery?.address?.line1 || '';
+      let countryCode = mapCountryToCode(deliveryCountry);
+      if (!countryCode && addressLine) {
+        const match = addressLine.match(/\b([A-Z]{2})\b/);
+        if (match) countryCode = match[1];
+      }
+      if (countryCode) {
+        shippingPrice = await calculateShippingPriceFromGrid(
+          firestore, req.saasAccountId, countryCode, volumetricWeight
+        );
+        if (shippingPrice > 0) {
+          console.log(`[API] ✅ Prix expédition recalculé: ${shippingPrice}€ (poids vol: ${volumetricWeight}kg, pays: ${countryCode})`);
+        }
+      }
+    }
+
     // Mettre à jour le devis avec le nouveau carton
     const cartonInfo = {
       id: cartonId,
@@ -6942,26 +7336,29 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
       price: carton.packaging_price
     };
 
+    const packagingPrice = carton.packaging_price;
+    const insuranceAmount = devis.options?.insuranceAmount || 0;
+    const totalAmount = (devis.options?.collectePrice || 0) + packagingPrice + shippingPrice + insuranceAmount;
+
     const updateData = {
       cartonId: cartonId,
-      'options.packagingPrice': carton.packaging_price,
+      'options.packagingPrice': packagingPrice,
+      'options.shippingPrice': shippingPrice,
       'auctionSheet.recommendedCarton': cartonInfo,
+      'lot.dimensions': {
+        ...(devis.lot?.dimensions || {}),
+        length, width, height,
+        weight: volumetricWeight,
+      },
+      totalAmount,
       updatedAt: Timestamp.now(),
       timeline: FieldValue.arrayUnion({
         id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         date: Timestamp.now(),
         status: devis.status || 'calculated',
-        description: `Carton modifié: ${carton.carton_ref} (${carton.packaging_price}€)`
+        description: `Carton modifié: ${carton.carton_ref} (${carton.packaging_price}€), expédition: ${shippingPrice}€`
       })
     };
-
-    // Recalculer le total
-    const collectePrice = 0;
-    const packagingPrice = carton.packaging_price;
-    const shippingPrice = devis.options?.shippingPrice || 0;
-    const insuranceAmount = devis.options?.insuranceAmount || 0;
-    const totalAmount = collectePrice + packagingPrice + shippingPrice + insuranceAmount;
-    updateData.totalAmount = totalAmount;
 
     await firestore.collection('quotes').doc(devisId).update(updateData);
 
@@ -6977,6 +7374,94 @@ app.put('/api/devis/:id/carton', requireAuth, async (req, res) => {
     console.error('[API] Erreur lors de la mise à jour du carton:', error);
     res.status(500).json({ error: error.message });
   }
+});
+
+// Routes: Mise à jour de statut de devis + emails automatiques au client
+const STATUS_DESCRIPTIONS = {
+  collected: 'Lot collecté auprès de la salle des ventes',
+  awaiting_shipment: 'En attente d\'expédition',
+  shipped: 'Expédié',
+};
+
+async function updateQuoteStatusAndSendEmail(req, res, targetStatus, extraFields = {}, emailFn) {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const quoteId = req.params.id;
+  const devisDoc = await firestore.collection('quotes').doc(quoteId).get();
+  if (!devisDoc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+  const devis = devisDoc.data();
+  if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+  const existingTimeline = devis.timeline || [];
+  const desc = STATUS_DESCRIPTIONS[targetStatus] || targetStatus;
+  const timelineEvent = {
+    id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+    date: Timestamp.now(),
+    status: targetStatus,
+    description: desc,
+    user: 'Système',
+  };
+  const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
+  const isDuplicate = existingTimeline.some(
+    (e) => e.status === targetStatus && e.description === desc &&
+      (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
+  );
+  const updatedTimeline = isDuplicate ? existingTimeline : [...existingTimeline, timelineEvent];
+
+  const updateData = {
+    status: targetStatus,
+    timeline: updatedTimeline,
+    updatedAt: Timestamp.now(),
+    ...extraFields,
+  };
+
+  await firestore.collection('quotes').doc(quoteId).update(updateData);
+
+  if (emailFn) {
+    try {
+      const saasDoc = await firestore.collection('saasAccounts').doc(devis.saasAccountId).get();
+      const commercialName = saasDoc.exists && saasDoc.data().commercialName ? saasDoc.data().commercialName : 'votre MBE';
+      const quoteForEmail = {
+        ...devis,
+        id: quoteId,
+        saasAccountId: devis.saasAccountId,
+        _saasCommercialName: commercialName,
+        client: devis.client || { name: devis.clientName, email: devis.clientEmail || devis.delivery?.contact?.email },
+        delivery: devis.delivery,
+        reference: devis.reference,
+      };
+      await emailFn(firestore, sendEmail, quoteForEmail, extraFields);
+    } catch (emailErr) {
+      console.error('[API] ⚠️ Email automatique non envoyé:', emailErr.message);
+    }
+  }
+  return res.json({ success: true, status: targetStatus });
+
+}
+
+async function emailCollected(fs, se, q) { await sendCollectedEmail(fs, se, q); }
+async function emailAwaitingShipment(fs, se, q) { await sendAwaitingShipmentEmail(fs, se, q); }
+async function emailShipped(fs, se, q, opts) {
+  await sendShippedEmail(fs, se, q, { trackingNumber: opts?.trackingNumber, carrier: opts?.carrier });
+}
+
+app.post('/api/devis/:id/mark-collected', requireAuth, async (req, res) => {
+  return updateQuoteStatusAndSendEmail(req, res, 'collected', { collectedAt: Timestamp.now() }, emailCollected);
+});
+
+app.post('/api/devis/:id/mark-awaiting-shipment', requireAuth, async (req, res) => {
+  return updateQuoteStatusAndSendEmail(req, res, 'awaiting_shipment', {}, emailAwaitingShipment);
+});
+
+app.post('/api/devis/:id/mark-shipped', requireAuth, async (req, res) => {
+  const { carrier, shippingOption, trackingNumber } = req.body || {};
+  const extraFields = {
+    carrier: carrier || null,
+    shippingOption: shippingOption || null,
+    trackingNumber: trackingNumber || null,
+    shippedAt: Timestamp.now(),
+  };
+  return updateQuoteStatusAndSendEmail(req, res, 'shipped', extraFields, emailShipped);
 });
 
 // Route: Désactiver un carton (soft delete)
@@ -7505,6 +7990,171 @@ app.post('/api/devis/:id/recalculate', requireAuth, async (req, res) => {
   }
 });
 
+// Route: Tenter la génération automatique du lien de paiement (appelée par le frontend quand packaging+shipping sont calculés)
+app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+
+  const devisId = req.params.id;
+
+  try {
+    const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!devisDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+
+    const devis = devisDoc.data();
+    if (devis.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+
+    const packagingPrice = devis.options?.packagingPrice ?? devis.packagingPrice ?? 0;
+    const shippingPrice = devis.options?.shippingPrice ?? devis.shippingPrice ?? 0;
+    const insuranceAmount = devis.options?.insuranceAmount ?? 0;
+    const clientWantsInsurance = devis.options?.insurance === true;
+    const insuranceOk = !clientWantsInsurance || (clientWantsInsurance && insuranceAmount > 0);
+    const totalAmount = packagingPrice + shippingPrice + insuranceAmount;
+
+    const hasPackagingAndShipping = packagingPrice > 0 && shippingPrice > 0;
+    const shouldGenerate = hasPackagingAndShipping && insuranceOk && totalAmount > 0;
+
+    if (!shouldGenerate) {
+      return res.json({
+        generated: false,
+        reason: !hasPackagingAndShipping
+          ? 'emballage et/ou expédition manquants'
+          : !insuranceOk
+            ? 'assurance demandée mais non calculée'
+            : 'total = 0',
+      });
+    }
+
+    const existingPaiements = await firestore
+      .collection('paiements')
+      .where('devisId', '==', devisId)
+      .where('type', '==', 'PRINCIPAL')
+      .where('status', '!=', 'CANCELLED')
+      .limit(1)
+      .get();
+
+    if (!existingPaiements.empty) {
+      return res.json({ generated: false, reason: 'Un paiement PRINCIPAL existe déjà' });
+    }
+
+    // Vérifier qu'aucun lien actif n'existe déjà (évite triple génération en cas d'appels concurrents)
+    const existingLinks = devis.paymentLinks || [];
+    const hasActiveLink = existingLinks.some((l) => (l?.status === 'active' || l?.status === 'pending'));
+    if (hasActiveLink) {
+      return res.json({ generated: false, reason: 'Un lien de paiement actif existe déjà' });
+    }
+
+    const saasAccountDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasAccountDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const saasAccount = saasAccountDoc.data();
+    const stripeAccountId = saasAccount.integrations?.stripe?.stripeAccountId;
+    const paymentConfig = await getPaymentProviderConfig(firestore, req.saasAccountId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    const clientName = devis.client?.name || 'Client';
+    const bordereauNumber = devis.auctionSheet?.bordereauNumber || '';
+    const auctionHouse = devis.lot?.auctionHouse || devis.auctionSheet?.auctionHouse || '';
+    const description = [clientName, bordereauNumber, auctionHouse].filter(Boolean).join(' | ') || `Devis ${devis.reference || devisId} - PRINCIPAL`;
+
+    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+
+    if (usePaytweak) {
+      const paytweakResult = await createPaytweakLinkForAccount(firestore, req.saasAccountId, {
+        amount: totalAmount,
+        currency: 'EUR',
+        reference: devis.reference || devisId,
+        description,
+        customer: { name: devis.client?.name || '', email: devis.client?.email || '', phone: devis.client?.phone || '' },
+        devisId,
+        quote: devis,
+      }, baseUrl);
+      const paiementRef = firestore.collection('paiements').doc();
+      try {
+        await firestore.runTransaction(async (t) => {
+          const freshDevis = await t.get(firestore.collection('quotes').doc(devisId));
+          const freshLinks = (freshDevis.data()?.paymentLinks || []);
+          if (freshLinks.some((l) => l?.status === 'active' || l?.status === 'pending')) {
+            throw new Error('Lien actif déjà présent');
+          }
+          const paiementsSnap = await t.get(firestore.collection('paiements').where('devisId', '==', devisId).where('type', '==', 'PRINCIPAL').limit(1));
+          const hasNonCancelled = paiementsSnap.docs.some((d) => d.data().status !== 'CANCELLED');
+          if (hasNonCancelled) throw new Error('Paiement PRINCIPAL déjà existant');
+          t.set(paiementRef, {
+            devisId, amount: totalAmount, type: 'PRINCIPAL', status: 'PENDING',
+            url: paytweakResult.url, saasAccountId: req.saasAccountId, paymentProvider: 'paytweak',
+            createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+          });
+          t.update(firestore.collection('quotes').doc(devisId), {
+            paymentLinks: FieldValue.arrayUnion({ id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }),
+            status: 'awaiting_payment',
+            timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+            updatedAt: Timestamp.now(),
+          });
+        });
+      } catch (txErr) {
+        if (txErr.message?.includes('Lien actif') || txErr.message?.includes('déjà existant')) {
+          return res.json({ generated: false, reason: txErr.message });
+        }
+        throw txErr;
+      }
+      console.log(`[API] ✅ Lien Paytweak auto-généré (try-auto-payment): ${paytweakResult.url}`);
+      return res.json({ generated: true, url: paytweakResult.url, paiementId: paiementRef.id });
+    }
+
+    if (!stripeAccountId || !stripe) {
+      return res.json({ generated: false, reason: 'Stripe non connecté ou non configuré' });
+    }
+
+    const session = await stripe.checkout.sessions.create(
+      {
+        mode: 'payment',
+        line_items: [{ price_data: { currency: 'eur', product_data: { name: description }, unit_amount: Math.round(totalAmount * 100) }, quantity: 1 }],
+        success_url: `${baseUrl}/payment/success?session_id={CHECKOUT_SESSION_ID}`,
+        cancel_url: `${baseUrl}/payment/cancel`,
+        metadata: { devisId, paiementType: 'PRINCIPAL', saasAccountId: req.saasAccountId },
+      },
+      { stripeAccount: stripeAccountId }
+    );
+
+    const paiementRef = firestore.collection('paiements').doc();
+    try {
+      await firestore.runTransaction(async (t) => {
+        const freshDevis = await t.get(firestore.collection('quotes').doc(devisId));
+        const freshLinks = (freshDevis.data()?.paymentLinks || []);
+        if (freshLinks.some((l) => l?.status === 'active' || l?.status === 'pending')) {
+          throw new Error('Lien actif déjà présent');
+        }
+        const paiementsSnap = await t.get(firestore.collection('paiements').where('devisId', '==', devisId).where('type', '==', 'PRINCIPAL').limit(1));
+        const hasNonCancelled = paiementsSnap.docs.some((d) => d.data().status !== 'CANCELLED');
+        if (hasNonCancelled) throw new Error('Paiement PRINCIPAL déjà existant');
+        t.set(paiementRef, {
+          devisId, stripeSessionId: session.id, stripeAccountId, amount: totalAmount,
+          type: 'PRINCIPAL', status: 'PENDING', url: session.url, saasAccountId: req.saasAccountId,
+          createdAt: Timestamp.now(), updatedAt: Timestamp.now(),
+        });
+        t.update(firestore.collection('quotes').doc(devisId), {
+          paymentLinks: FieldValue.arrayUnion({ id: paiementRef.id, url: session.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }),
+          status: 'awaiting_payment',
+          timeline: FieldValue.arrayUnion({ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien de paiement généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+          updatedAt: Timestamp.now(),
+        });
+      });
+    } catch (txErr) {
+      if (txErr.message?.includes('Lien actif') || txErr.message?.includes('déjà existant')) {
+        return res.json({ generated: false, reason: txErr.message });
+      }
+      throw txErr;
+    }
+
+    console.log(`[API] ✅ Lien de paiement auto-généré (try-auto-payment): ${session.url}`);
+    return res.json({ generated: true, url: session.url, paiementId: paiementRef.id });
+  } catch (err) {
+    console.error('[API] Erreur try-auto-payment:', err);
+    return res.status(500).json({ error: err.message || 'Erreur lors de la génération du lien' });
+  }
+});
+
 // Route: Forcer la resynchronisation
 app.post('/api/google-sheets/resync', requireAuth, async (req, res) => {
   if (!firestore) {
@@ -7621,6 +8271,22 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
     const startIndex = Math.max(0, lastRowImported - 1);
 
     let newDevisCount = 0;
+
+    // Feature flags: vérifier la limite de devis pour le plan
+    let remainingQuotes = Infinity;
+    try {
+      const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      const saasData = saasAccountDoc.exists ? saasAccountDoc.data() : {};
+      const rawPlan = saasData.planId || saasData.plan || 'starter';
+      const planId = ['free', 'basic'].includes(rawPlan) ? 'starter' : rawPlan;
+      const planDoc = await firestore.collection('plans').doc(planId).get();
+      const plan = planDoc.exists ? planDoc.data() : null;
+      const maxQuotes = plan?.limits?.quotesPerYear ?? 200;
+      const used = saasData.usage?.quotesUsedThisYear ?? 0;
+      remainingQuotes = maxQuotes === -1 ? Infinity : Math.max(0, maxQuotes - used);
+    } catch (limitErr) {
+      console.warn('[Google Sheets Sync] ⚠️  Vérification limite plan ignorée:', limitErr.message);
+    }
 
     // Traiter uniquement les nouvelles lignes
     for (let i = startIndex; i < rows.length; i++) {
@@ -7946,11 +8612,25 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         // Référence générée automatiquement
         reference: `GS-${Date.now()}-${sheetRowIndex}`
       };
-      
+
+      // Vérifier limite plan avant création
+      if (remainingQuotes <= 0) {
+        console.log(`[Google Sheets Sync] ⚠️  Limite devis atteinte pour saasAccountId ${saasAccountId}, ligne ${sheetRowIndex} ignorée`);
+        continue;
+      }
+
       const devisRef = await firestore.collection('quotes').add(quoteData);
       const devisId = devisRef.id;
 
       newDevisCount++;
+      remainingQuotes--;
+      try {
+        await firestore.collection('saasAccounts').doc(saasAccountId).update({
+          'usage.quotesUsedThisYear': FieldValue.increment(1),
+        });
+      } catch (incErr) {
+        console.warn('[Google Sheets Sync] ⚠️  Incrément usage échoué:', incErr.message);
+      }
       console.log(`[Google Sheets Sync] ✅ Devis créé pour la ligne ${sheetRowIndex} (${clientName || clientEmail})`);
 
       // 🔔 CRÉER UNE NOTIFICATION pour le nouveau devis
@@ -8781,25 +9461,10 @@ async function estimateDimensionsWithGroq(description, groqApiKey, context = {})
   }
 
   try {
-    // Enrichir la description avec le contexte
-    let enrichedDescription = description;
-    
-    if (context.auctionHouse || context.price || context.date) {
-      console.log(`[Groq] 📊 Contexte enrichi:`, context);
-      
-      const contextParts = [];
-      if (context.auctionHouse) contextParts.push(`Salle: ${context.auctionHouse}`);
-      if (context.price) contextParts.push(`Prix adjudication: ${context.price}€`);
-      if (context.date) contextParts.push(`Date: ${context.date}`);
-      
-      enrichedDescription = `${description}\n\nCONTEXTE: ${contextParts.join(', ')}`;
-      
-      console.log(`[Groq] 🤖 Estimation avec contexte pour: "${description.substring(0, 80)}..."`);
-    } else {
-      console.log(`[Groq] 🤖 Estimation des dimensions pour: "${description.substring(0, 80)}..."`);
+    if (context.auctionHouse || context.price != null || context.date) {
+      console.log(`[Groq] 📊 Contexte:`, context);
     }
-    
-    const dimensions = await estimateDimensionsForObject(enrichedDescription, groqApiKey);
+    const dimensions = await estimateDimensionsForObject(description, groqApiKey, context);
     
     console.log('[Groq] ✅ Dimensions estimées:', dimensions);
     return dimensions;
@@ -9157,11 +9822,11 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ✅ Devis ${devisId} calculé: ${totalAmount}€, ${mappedLots.length} lots extraits, ${cartonsInfo.length} carton(s) (${packagingPrice}€)${shippingPrice > 0 ? `, Expédition: ${shippingPrice}€` : ''}`);
 
     // 🔥 AUTO-GÉNÉRATION DU LIEN DE PAIEMENT
-    // Vérifier si toutes les conditions sont remplies pour générer automatiquement un lien de paiement
-    const shouldAutoGeneratePayment = 
-      packagingPrice > 0 && // Emballage renseigné
-      shippingPrice > 0 && // Expédition renseignée
-      totalAmount > 0; // Total > 0
+    // Conditions : emballage ET expédition calculés ; si le client a demandé l'assurance, elle doit être calculée aussi
+    const hasPackagingAndShipping = packagingPrice > 0 && shippingPrice > 0;
+    const clientWantsInsurance = devis.options?.insurance === true;
+    const insuranceOk = !clientWantsInsurance || (clientWantsInsurance && insuranceAmount > 0);
+    const shouldAutoGeneratePayment = hasPackagingAndShipping && insuranceOk && totalAmount > 0;
     
     if (shouldAutoGeneratePayment) {
       try {
@@ -9187,8 +9852,56 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
           } else {
             const saasAccount = saasAccountDoc.data();
             const stripeAccountId = saasAccount.integrations?.stripe?.stripeAccountId;
-            
-            if (!stripeAccountId) {
+            const paymentConfig = await getPaymentProviderConfig(firestore, saasAccountId);
+            const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+            if (usePaytweak) {
+              try {
+                const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+                const clientName = devis.client?.name || 'Client';
+                const bordereauNumber = ocrResult.numero_bordereau || '';
+                const auctionHouse = ocrResult.salle_vente || '';
+                const descriptionParts = [clientName];
+                if (bordereauNumber) descriptionParts.push(bordereauNumber);
+                if (auctionHouse) descriptionParts.push(auctionHouse);
+                const description = descriptionParts.join(' | ');
+                const paytweakResult = await createPaytweakLinkForAccount(firestore, saasAccountId, {
+                  amount: totalAmount,
+                  currency: 'EUR',
+                  reference: devis.reference || devisId,
+                  description: description || `Devis ${devis.reference || devisId} - PRINCIPAL`,
+                  customer: {
+                    name: devis.client?.name || '',
+                    email: devis.client?.email || '',
+                    phone: devis.client?.phone || '',
+                  },
+                  devisId,
+                  quote: devis,
+                }, baseUrl);
+                const paiementRef = await firestore.collection('paiements').add({
+                  devisId,
+                  amount: totalAmount,
+                  type: 'PRINCIPAL',
+                  status: 'PENDING',
+                  url: paytweakResult.url,
+                  saasAccountId,
+                  paymentProvider: 'paytweak',
+                  createdAt: Timestamp.now(),
+                  updatedAt: Timestamp.now(),
+                });
+                const devisDoc = await firestore.collection('quotes').doc(devisId).get();
+                const existingLinks = devisDoc.exists ? (devisDoc.data().paymentLinks || []) : [];
+                await firestore.collection('quotes').doc(devisId).update({
+                  paymentLinks: [...existingLinks, { id: paiementRef.id, url: paytweakResult.url, amount: totalAmount, createdAt: new Date().toISOString(), status: 'active' }],
+                  status: 'awaiting_payment',
+                  timeline: FieldValue.arrayUnion({ id: `timeline-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: 'calculated', description: `Lien Paytweak généré automatiquement (${totalAmount}€)`, user: 'Système Automatisé' }),
+                  updatedAt: Timestamp.now(),
+                });
+                console.log(`[Calcul] ✅ Lien Paytweak auto-généré: ${paytweakResult.url}`);
+              } catch (paytweakErr) {
+                console.error('[Calcul] ❌ Erreur Paytweak auto-génération:', paytweakErr);
+              }
+            } else if (!stripeAccountId) {
               console.log(`[Calcul] ⚠️  Compte Stripe non connecté pour le compte SaaS ${saasAccountId}, pas de génération automatique`);
             } else if (!stripe) {
               console.error(`[Calcul] ❌ Stripe non configuré (STRIPE_SECRET_KEY manquante)`);
@@ -9277,7 +9990,12 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
         // Ne pas bloquer le reste du processus si la génération du paiement échoue
       }
     } else {
-      console.log(`[Calcul] ⚠️  Conditions non remplies pour auto-génération du lien de paiement (emballage: ${packagingPrice}€, expédition: ${shippingPrice}€, total: ${totalAmount}€)`);
+      const reason = !hasPackagingAndShipping
+        ? `emballage (${packagingPrice}€) et/ou expédition (${shippingPrice}€) non calculés`
+        : !insuranceOk
+          ? `assurance demandée mais non calculée (${insuranceAmount}€)`
+          : `total = 0`;
+      console.log(`[Calcul] ⚠️  Conditions non remplies pour auto-génération: ${reason}`);
     }
   } catch (error) {
     console.error('[Calcul] Erreur:', error);
@@ -9383,6 +10101,12 @@ app.post("/api/shipment-groups/:id/paiement", (req, res) => {
 app.post("/api/paiement/:id/cancel", (req, res) => {
   console.log('[AI Proxy] 📥 POST /api/paiement/:id/cancel appelé');
   handleCancelPaiement(req, res, firestore);
+});
+
+// Synchroniser le montant du lien de paiement avec le total du devis
+app.post("/api/devis/:id/sync-payment-amount", requireAuth, (req, res) => {
+  console.log('[AI Proxy] 📥 POST /api/devis/:id/sync-payment-amount appelé');
+  handleSyncPaymentAmount(req, res, firestore);
 });
 
 // ===== ROUTES NOTIFICATIONS =====
@@ -9525,6 +10249,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       address,
       phone,
       email,
+      planId: requestedPlanId,
     } = req.body;
 
     // Validation
@@ -9577,6 +10302,18 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       createdAt: Timestamp.now(),
       isActive: true,
       plan: 'free',
+      planId: ['starter', 'pro', 'ultra'].includes(requestedPlanId) ? requestedPlanId : 'starter',
+      customFeatures: {},
+      usage: { quotesUsedThisYear: 0 },
+      billingPeriod: (() => {
+        const now = new Date();
+        const yearStart = new Date(now.getFullYear(), 0, 1);
+        const yearEnd = new Date(now.getFullYear(), 11, 31, 23, 59, 59);
+        return {
+          yearStart: yearStart.toISOString(),
+          yearEnd: yearEnd.toISOString(),
+        };
+      })(),
     };
 
     console.log('[AI Proxy] Étape 3/5: Création saasAccount...');
@@ -9619,6 +10356,612 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       ? 'La base de données Firestore n\'est pas configurée. Allez dans la console Firebase (Build → Firestore Database) et créez la base de données si nécessaire.'
       : (error.message || 'Erreur lors de la création du compte');
     return res.status(500).json({ error: userMessage });
+  }
+});
+
+/**
+ * DELETE /api/account
+ * Supprime toutes les données du compte (Firestore) - pour les tests de création de compte.
+ * L'utilisateur doit ensuite supprimer son compte Firebase Auth côté frontend.
+ */
+app.delete("/api/account", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  const uid = req.uid;
+  let saasAccountId = req.saasAccountId;
+
+  // Fallback: si le backend n'a pas trouvé le saasAccountId (cache, projet Firestore différent),
+  // accepter X-Saas-Account-Id du frontend après vérification ownerUid
+  if (!saasAccountId) {
+    const headerId = req.headers['x-saas-account-id'];
+    if (headerId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(headerId).get();
+        if (saasDoc.exists && saasDoc.data()?.ownerUid === uid) {
+          saasAccountId = headerId;
+          console.log(`[API] saasAccountId récupéré via header X-Saas-Account-Id (vérifié ownerUid): ${saasAccountId}`);
+        }
+      } catch (e) {
+        console.warn('[API] Erreur vérification fallback saasAccountId:', e.message);
+      }
+    }
+  }
+  if (!saasAccountId) {
+    return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  }
+
+  try {
+    const BATCH_SIZE = 400; // Firestore batch limit 500
+    let totalDeleted = 0;
+
+    const deleteQueryBatch = async (query) => {
+      const snapshot = await query.limit(BATCH_SIZE).get();
+      if (snapshot.empty) return 0;
+      const batch = firestore.batch();
+      snapshot.docs.forEach((doc) => { batch.delete(doc.ref); });
+      await batch.commit();
+      return snapshot.size;
+    };
+
+    // 1. Paiements (liés aux devis du compte)
+    const quotesSnap = await firestore.collection('quotes').where('saasAccountId', '==', saasAccountId).get();
+    const quoteIds = quotesSnap.docs.map((d) => d.id);
+    for (const devisId of quoteIds) {
+      const paiementsSnap = await firestore.collection('paiements').where('devisId', '==', devisId).get();
+      const batch = firestore.batch();
+      paiementsSnap.docs.forEach((d) => batch.delete(d.ref));
+      if (!paiementsSnap.empty) await batch.commit();
+      totalDeleted += paiementsSnap.size;
+    }
+
+    // 2. Quotes
+    let quotesQuery = firestore.collection('quotes').where('saasAccountId', '==', saasAccountId);
+    while (true) {
+      const n = await deleteQueryBatch(quotesQuery);
+      totalDeleted += n;
+      if (n < BATCH_SIZE) break;
+    }
+
+    // 3. Notifications
+    const notifSnap = await firestore.collection('notifications').where('clientSaasId', '==', saasAccountId).get();
+    if (!notifSnap.empty) {
+      const batch = firestore.batch();
+      notifSnap.docs.forEach((d) => batch.delete(d.ref));
+      await batch.commit();
+      totalDeleted += notifSnap.size;
+    }
+
+    // 4. Autres collections par saasAccountId
+    const collections = [
+      { name: 'auctionHouses', field: 'saasAccountId' },
+      { name: 'cartons', field: 'saasAccountId' },
+      { name: 'shipmentGroups', field: 'saasAccountId' },
+      { name: 'shippingZones', field: 'saasAccountId' },
+      { name: 'shippingServices', field: 'saasAccountId' },
+      { name: 'weightBrackets', field: 'saasAccountId' },
+      { name: 'shippingRates', field: 'saasAccountId' },
+      { name: 'shippingSettings', field: 'saasAccountId' },
+    ];
+    for (const { name, field } of collections) {
+      let q = firestore.collection(name).where(field, '==', saasAccountId);
+      while (true) {
+        const n = await deleteQueryBatch(q);
+        totalDeleted += n;
+        if (n < BATCH_SIZE) break;
+      }
+    }
+
+    // 5. Bordereaux
+    let bordQ = firestore.collection('bordereaux').where('saasAccountId', '==', saasAccountId);
+    while (true) {
+      const n = await deleteQueryBatch(bordQ);
+      totalDeleted += n;
+      if (n < BATCH_SIZE) break;
+    }
+
+    // 6. EmailMessages (si liés au saasAccountId)
+    try {
+      const emailMsgSnap = await firestore.collection('emailMessages').where('saasAccountId', '==', saasAccountId).get();
+      if (!emailMsgSnap.empty) {
+        const batch = firestore.batch();
+        emailMsgSnap.docs.forEach((d) => batch.delete(d.ref));
+        await batch.commit();
+        totalDeleted += emailMsgSnap.size;
+      }
+    } catch (e) {
+      console.warn('[API] emailMessages delete skipped:', e.message);
+    }
+
+    // 7. saasAccount
+    await firestore.collection('saasAccounts').doc(saasAccountId).delete();
+    totalDeleted += 1;
+
+    // 8. user
+    await firestore.collection('users').doc(uid).delete();
+    totalDeleted += 1;
+
+    invalidateSaasAccountCache(uid);
+    console.log(`[API] ✅ Compte supprimé: uid=${uid}, saasAccountId=${saasAccountId}, ${totalDeleted} docs`);
+    return res.json({ success: true, deleted: totalDeleted });
+  } catch (error) {
+    console.error('[API] Erreur suppression compte:', error);
+    return res.status(500).json({ error: error.message || 'Erreur lors de la suppression' });
+  }
+});
+
+/**
+ * PATCH /api/account/plan
+ * Met à jour le plan du compte SaaS (upgrade/downgrade).
+ * Pour l'instant sans Stripe - mise à jour directe du planId.
+ */
+app.patch("/api/account/plan", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) {
+    return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  }
+  const { planId } = req.body;
+  if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
+    return res.status(400).json({ error: 'Plan invalide. Valeurs acceptées: starter, pro, ultra' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) {
+      return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+    }
+    await saasRef.update({
+      planId,
+      plan: planId === 'pro' || planId === 'ultra' ? 'pro' : 'free',
+      updatedAt: Timestamp.now(),
+    });
+    invalidateSaasAccountCache(req.uid);
+    console.log(`[API] ✅ Plan mis à jour: saasAccountId=${saasAccountId}, planId=${planId}`);
+    return res.json({ success: true, planId });
+  } catch (error) {
+    console.error('[API] Erreur mise à jour plan:', error);
+    return res.status(500).json({ error: error.message || 'Erreur lors de la mise à jour du plan' });
+  }
+});
+
+// ===== MBE HUB (plans Pro et Ultra) - Envoi devis vers zone expédition =====
+
+function hasMbeHubPlan(saasData) {
+  const planId = saasData?.planId || saasData?.plan || 'starter';
+  return planId === 'pro' || planId === 'ultra';
+}
+
+async function getMbeHubApiKey(firestore, saasAccountId) {
+  if (!firestore || !saasAccountId) return null;
+  const doc = await firestore.collection('saasAccounts').doc(saasAccountId).collection('secrets').doc('mbehub').get();
+  return doc.exists ? (doc.data()?.apiKey || null) : null;
+}
+
+// GET /api/account/mbehub-status
+app.get('/api/account/mbehub-status', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const saas = saasDoc.data();
+    if (!hasMbeHubPlan(saas)) {
+      return res.json({ available: false, configured: false, message: 'Réservé aux plans Pro et Ultra' });
+    }
+    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
+    return res.json({ available: true, configured: Boolean(apiKey) });
+  } catch (error) {
+    console.error('[API] Erreur mbehub-status:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/mbehub-key
+app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { apiKey } = req.body;
+  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
+    return res.status(400).json({ error: 'Clé API requise' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    await saasRef.collection('secrets').doc('mbehub').set({
+      apiKey: apiKey.trim(),
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Clé MBE Hub enregistrée pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[API] Erreur mbehub-key:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/mbehub/send-quote - Envoi devis vers MBE Hub (zone expédition)
+// TODO: Adapter l'URL et le payload dès que la documentation API MBE Hub sera disponible
+app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
+    if (!apiKey) {
+      return res.status(400).json({ error: 'Configurez votre clé API MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+
+    // Construire le payload pour MBE Hub (client, destinataire, dimensions, poids, cartons)
+    const client = quote.client || {};
+    const delivery = quote.delivery || {};
+    const lot = quote.lot || {};
+    const auctionSheet = quote.auctionSheet || {};
+    const cartons = auctionSheet.cartons || (auctionSheet.recommendedCarton ? [auctionSheet.recommendedCarton] : []);
+    const cartonPayload = cartons.map((c) => ({
+      ref: c.ref,
+      weight: c.weight ?? lot.weight ?? lot.dimensions?.weight,
+      dimensions: c.inner_length && c.inner_width && c.inner_height
+        ? { length: c.inner_length, width: c.inner_width, height: c.inner_height }
+        : (lot.dimensions || lot.realDimensions) ? { length: (lot.dimensions || lot.realDimensions).length, width: (lot.dimensions || lot.realDimensions).width, height: (lot.dimensions || lot.realDimensions).height } : null,
+    }));
+
+    const payload = {
+      reference: quote.reference,
+      client: {
+        name: client.name,
+        email: client.email,
+        phone: client.phone,
+        address: client.address,
+      },
+      recipient: delivery.contact ? {
+        name: delivery.contact.name,
+        email: delivery.contact.email,
+        phone: delivery.contact.phone,
+        address: delivery.address ? {
+          line1: delivery.address.line1,
+          line2: delivery.address.line2,
+          city: delivery.address.city,
+          zip: delivery.address.zip,
+          country: delivery.address.country,
+        } : null,
+      } : null,
+      cartons: cartonPayload,
+      weight: quote.totalWeight ?? lot.weight ?? lot.dimensions?.weight,
+      volumetricWeight: lot.volumetricWeight,
+    };
+
+    // TODO: Appeler l'API MBE Hub quand documentation disponible
+    // const MBE_HUB_URL = process.env.MBE_HUB_API_URL || 'https://api.mbehub.example';
+    // const hubRes = await fetch(`${MBE_HUB_URL}/expedition`, { method: 'POST', headers: { 'Authorization': `Bearer ${apiKey}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) });
+    console.log('[MBE Hub] Payload prêt (API non configurée):', JSON.stringify(payload, null, 2));
+
+    return res.json({
+      success: false,
+      message: 'L\'API MBE Hub n\'est pas encore configurée. L\'intégration sera activée dès que la documentation sera disponible.',
+      payload,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/send-quote:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// ===== PAYMENT PROVIDER (Stripe / Paytweak) - Feature customPaytweak pour compte es4IiIhl03aPttsTz5xj =====
+
+// GET /api/account/payment-settings
+app.get('/api/account/payment-settings', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const config = await getPaymentProviderConfig(firestore, saasAccountId);
+    if (!config) return res.status(404).json({ error: 'Compte non trouvé' });
+    return res.json({
+      hasCustomPaytweak: config.hasCustomPaytweak,
+      paymentProvider: config.paymentProvider,
+      paytweakConfigured: config.paytweakConfigured,
+      stripeConnected: config.stripeConnected,
+    });
+  } catch (error) {
+    console.error('[API] Erreur payment-settings:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/payment-settings
+app.put('/api/account/payment-settings', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { paymentProvider } = req.body;
+  if (!paymentProvider || !['stripe', 'paytweak'].includes(paymentProvider)) {
+    return res.status(400).json({ error: 'paymentProvider invalide. Valeurs: stripe ou paytweak' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
+    }
+    if (paymentProvider === 'paytweak') {
+      const keys = await getPaytweakKeys(firestore, saasAccountId);
+      if (!keys?.publicKey || !keys?.privateKey) {
+        return res.status(400).json({ error: 'Configurez vos clés Paytweak (publique + privée) dans les paramètres' });
+      }
+    }
+    await saasRef.update({
+      paymentProvider,
+      updatedAt: Timestamp.now(),
+    });
+    invalidateSaasAccountCache(req.uid);
+    console.log(`[API] ✅ Payment provider mis à jour: saasAccountId=${saasAccountId}, paymentProvider=${paymentProvider}`);
+    return res.json({ success: true, paymentProvider });
+  } catch (error) {
+    console.error('[API] Erreur payment-settings:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/paytweak-key
+app.put('/api/account/paytweak-key', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { publicKey, privateKey } = req.body;
+  if (!publicKey || typeof publicKey !== 'string' || !publicKey.trim() || !privateKey || typeof privateKey !== 'string' || !privateKey.trim()) {
+    return res.status(400).json({ error: 'Clés publique et privée Paytweak requises' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
+    }
+    await saasRef.collection('secrets').doc('paytweak').set({
+      publicKey: publicKey.trim(),
+      privateKey: privateKey.trim(),
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Clés Paytweak enregistrées pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true });
+  } catch (error) {
+    console.error('[API] Erreur paytweak-key:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/paytweak/link - Génération de lien Paytweak avec clé du compte (requireAuth)
+app.post('/api/paytweak/link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasCustomPaytweak(saasDoc.data(), saasAccountId)) {
+      return res.status(403).json({ error: 'Paytweak n\'est pas disponible pour votre compte' });
+    }
+    const { amount, currency = 'EUR', reference, description, customer, successUrl, cancelUrl } = req.body;
+    if (!amount || !reference || !customer?.email) {
+      return res.status(400).json({ error: 'Champs requis: amount, reference, customer.email' });
+    }
+    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+    const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
+    return res.json({ url: result.url, id: result.id });
+  } catch (error) {
+    console.error('[API] Erreur paytweak/link:', error);
+    if (error.message?.includes('non configurée')) {
+      return res.status(400).json({ error: error.message });
+    }
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// POST /api/payment/link - Lien unifié Stripe ou Paytweak (selon paymentProvider du compte)
+app.post('/api/payment/link', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const config = await getPaymentProviderConfig(firestore, saasAccountId);
+    const usePaytweak = config?.hasCustomPaytweak && config?.paymentProvider === 'paytweak' && config?.paytweakConfigured;
+    if (usePaytweak) {
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
+      return res.json({ url: result.url, id: result.id });
+    }
+    if (!stripe) return res.status(400).json({ error: 'Stripe non configuré' });
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    const stripeAccountId = saasDoc.exists ? saasDoc.data()?.integrations?.stripe?.stripeAccountId : null;
+    const payload = buildPaymentLinkPayload(req.body);
+    const createOptions = stripeAccountId ? { stripeAccount: stripeAccountId } : {};
+    const paymentLink = await stripe.paymentLinks.create(payload, createOptions);
+    if (!paymentLink?.url) return res.status(502).json({ error: 'Pas d\'URL Stripe retournée' });
+    return res.json({ url: paymentLink.url, id: paymentLink.id });
+  } catch (error) {
+    console.error('[API] Erreur payment/link:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// ===== ROUTE FEATURE FLAGS / PLANS =====
+
+// Récupérer les features, limites et usage du compte SaaS connecté
+app.get("/api/features", requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  if (!req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+  try {
+    const data = await getAccountFeaturesAndLimits(firestore, req.saasAccountId);
+    return res.json(data);
+  } catch (error) {
+    console.error('[API] Erreur /api/features:', error);
+    return res.status(500).json({ error: 'Erreur récupération features' });
+  }
+});
+
+// ===== EMAILS AUTOMATIQUES PERSONNALISABLES (plan Ultra) =====
+const checkCustomizeAutoEmails = checkFeature(firestore, 'customizeAutoEmails');
+
+app.get('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates || null : null;
+    const templates = getTemplatesForAccount(emailTemplates);
+    return res.json({
+      templates,
+      customTemplates: emailTemplates,
+      meta: { EMAIL_TYPE_LABELS, PLACEHOLDERS, LIMITS, DEFAULT_TEMPLATES },
+    });
+  } catch (err) {
+    console.error('[API] Erreur GET email-templates:', err);
+    return res.status(500).json({ error: 'Erreur récupération templates' });
+  }
+});
+
+app.put('/api/email-templates', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type, subject, signature, tone } = req.body || {};
+  if (!type || !EMAIL_TYPES.includes(type)) {
+    return res.status(400).json({ error: 'Type d\'email invalide' });
+  }
+  const errors = validateTemplate(type, { subject, signature });
+  if (errors.length > 0) {
+    return res.status(400).json({ error: errors.join(' ') });
+  }
+  if (tone && !['formel', 'amical'].includes(tone)) {
+    return res.status(400).json({ error: 'Ton invalide (formel ou amical)' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const prev = current[type] || {};
+    const history = prev.history || [];
+    if (history.length >= 10) history.pop();
+    const prevSnapshot = {
+      ...(prev.subject != null && { subject: prev.subject }),
+      ...(prev.signature != null && { signature: prev.signature }),
+      ...(prev.tone != null && { tone: prev.tone }),
+      ...(prev.updatedAt != null && { updatedAt: prev.updatedAt }),
+    };
+    if (Object.keys(prevSnapshot).length > 0) {
+      history.unshift(prevSnapshot);
+    }
+    const updated = {
+      ...current,
+      [type]: {
+        subject: subject ?? prev.subject ?? DEFAULT_TEMPLATES[type].subject,
+        signature: signature ?? prev.signature ?? DEFAULT_TEMPLATES[type].signature,
+        tone: tone ?? prev.tone ?? DEFAULT_TEMPLATES[type].tone,
+        history,
+        updatedAt: Timestamp.now(),
+      },
+    };
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur PUT email-templates:', err);
+    return res.status(500).json({ error: 'Erreur sauvegarde templates' });
+  }
+});
+
+app.post('/api/email-templates/reset', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    let updated;
+    if (type && EMAIL_TYPES.includes(type)) {
+      const { [type]: _removed, ...rest } = current;
+      updated = rest;
+    } else {
+      updated = {};
+    }
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur reset email-templates:', err);
+    return res.status(500).json({ error: 'Erreur réinitialisation' });
+  }
+});
+
+app.post('/api/email-templates/preview', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  if (!type || !EMAIL_TYPES.includes(type)) return res.status(400).json({ error: 'Type invalide' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const commercialName = saasDoc.exists ? saasDoc.data().commercialName : 'Mon MBE';
+    const templates = getTemplatesForAccount(emailTemplates);
+    const t = templates[type];
+    const sample = {
+      reference: 'DEV-2024-00123',
+      clientName: 'Jean Dupont',
+      mbeName: commercialName,
+      amount: '125.50',
+    };
+    const subject = (t.subject || '')
+      .replace(/{reference}/g, sample.reference)
+      .replace(/{clientName}/g, sample.clientName)
+      .replace(/{mbeName}/g, sample.mbeName)
+      .replace(/{amount}/g, sample.amount);
+    const signature = (t.signature || '')
+      .replace(/{reference}/g, sample.reference)
+      .replace(/{clientName}/g, sample.clientName)
+      .replace(/{mbeName}/g, sample.mbeName)
+      .replace(/{amount}/g, sample.amount);
+    const bodyContent = getBodyContentPreview(type, t.tone || 'formel', sample);
+    const signatureHtml = signature.replace(/\n/g, '<br>');
+    const bodyHtml = `
+<!DOCTYPE html>
+<html>
+<body style="font-family: sans-serif; line-height: 1.6; color: #333;">
+  ${bodyContent}
+  <p>${signatureHtml}</p>
+</body>
+</html>`.trim();
+    return res.json({ subject, signature, tone: t.tone || 'formel', bodyHtml, sample });
+  } catch (err) {
+    console.error('[API] Erreur preview email-templates:', err);
+    return res.status(500).json({ error: 'Erreur prévisualisation' });
   }
 });
 
@@ -9826,6 +11169,8 @@ import {
   handleGetSettings,
   handleUpdateSettings,
   handleGetGrid,
+  calculateShippingPriceFromGrid,
+  mapCountryToCode,
 } from './shipping-rates.js';
 
 // Zones d'expédition
@@ -10082,7 +11427,7 @@ app.post("/webhooks/stripe", (req, res) => {
     'user-agent': req.headers['user-agent'],
   });
   console.log('[AI Proxy] 📥 Body reçu:', req.body ? (Buffer.isBuffer(req.body) ? `${req.body.length} bytes (Buffer)` : typeof req.body) : 'empty');
-  handleStripeWebhook(req, res, firestore);
+  handleStripeWebhook(req, res, firestore, { sendEmail });
 });
 
 console.log('[AI Proxy] ✅ Routes Stripe Connect ajoutées');
@@ -10173,8 +11518,16 @@ const expectedRoutes = [
   'POST /api/devis/:id/search-bordereau',
   'POST /api/devis/:id/process-bordereau-from-link',
   'POST /api/devis/:id/recalculate',
+  'POST /api/devis/:id/try-auto-payment',
+  'POST /api/devis/:id/mark-collected',
+  'POST /api/devis/:id/mark-awaiting-shipment',
+  'POST /api/devis/:id/mark-shipped',
   'GET /api/email-accounts',
   'DELETE /api/email-accounts/:accountId',
+  'GET /api/email-templates',
+  'PUT /api/email-templates',
+  'POST /api/email-templates/reset',
+  'POST /api/email-templates/preview',
   'GET /api/devis/:devisId/messages',
   'GET /api/notifications',
   'GET /api/notifications/count',

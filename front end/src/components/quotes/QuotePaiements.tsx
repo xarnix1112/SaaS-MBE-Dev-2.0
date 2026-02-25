@@ -4,7 +4,7 @@
  * Affiche les paiements d'un devis et permet d'en créer de nouveaux
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
@@ -36,10 +36,11 @@ import {
   Clock,
   ExternalLink,
   Loader2,
+  Ban,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
-import { createPaiement, getPaiements, cancelPaiement } from '@/lib/stripeConnect';
+import { createPaiement, getPaiements, cancelPaiement, syncPaymentAmount } from '@/lib/stripeConnect';
 import type { Paiement, PaiementType } from '@/types/stripe';
 import { Quote } from '@/types/quote';
 import { doc, getDoc } from 'firebase/firestore';
@@ -185,6 +186,51 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       loadPaiements();
     }
   }, [refreshKey]);
+
+  // Détecter l'écart montant principal / total devis et synchroniser automatiquement
+  const syncAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (!quote || !devisId || paiements.length === 0 || isLoading) return;
+      const cartonPrice = (quote.auctionSheet?.recommendedCarton?.price ||
+        (quote.auctionSheet?.recommendedCarton as any)?.priceTTC) ?? null;
+    const packagingPrice = cartonPrice !== null ? cartonPrice : (quote.options?.packagingPrice || 0);
+    const shippingPrice = quote.options?.shippingPrice || 0;
+    const insuranceAmount = computeInsuranceAmount(
+      quote.lot?.value || 0,
+      quote.options?.insurance,
+      quote.options?.insuranceAmount
+    );
+    const principalExpected = packagingPrice + shippingPrice + insuranceAmount;
+    if (principalExpected <= 0) return;
+    const principalPending = paiements.find(
+      (p) => p.type === 'PRINCIPAL' && p.status === 'PENDING'
+    );
+    if (!principalPending) return;
+    const tolerance = 0.01;
+    if (Math.abs(principalPending.amount - principalExpected) <= tolerance) return;
+    if (syncAttemptedRef.current) return;
+    syncAttemptedRef.current = true;
+
+    const runSync = async () => {
+      try {
+        const result = await syncPaymentAmount(devisId);
+        if (result.synced) {
+          toast.success('Montant mis à jour', {
+            description: `Le lien de paiement a été régénéré pour ${result.newAmount?.toFixed(2)}€`,
+          });
+          await loadPaiements();
+        }
+      } catch (error: unknown) {
+        console.error('[QuotePaiements] Erreur sync montant:', error);
+        toast.error('Impossible de mettre à jour le montant du paiement', {
+          description: error instanceof Error ? error.message : undefined,
+        });
+      } finally {
+        syncAttemptedRef.current = false;
+      }
+    };
+    runSync();
+  }, [quote, devisId, paiements, isLoading]);
 
   // Créer un nouveau paiement
   const handleCreatePaiement = async () => {
@@ -522,16 +568,36 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
                     <div className="flex items-center gap-2">
                       {paiement.status === 'PENDING' && (
                         <>
-                          {paiement.stripeCheckoutUrl ? (
+                          {(paiement.url || paiement.stripeCheckoutUrl) ? (
                             <>
                               <Button
                                 variant="outline"
                                 size="sm"
                                 className="gap-2"
-                                onClick={() => window.open(paiement.stripeCheckoutUrl!, '_blank')}
+                                onClick={() => window.open((paiement.url || paiement.stripeCheckoutUrl)!, '_blank')}
                               >
                                 <ExternalLink className="w-4 h-4" />
                                 Voir le lien
+                              </Button>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Mise en inactif...', { id: 'deactivate' });
+                                    await cancelPaiement(paiement.id);
+                                    toast.success('Lien mis en inactif', { id: 'deactivate' });
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur mise en inactif:', error);
+                                    toast.error('Erreur lors de la mise en inactif', { id: 'deactivate' });
+                                  }
+                                }}
+                                title="Mettre le lien en inactif (il ne pourra plus être utilisé)"
+                              >
+                                <Ban className="w-4 h-4" />
+                                Mettre en inactif
                               </Button>
                               <Button
                                 variant="ghost"
@@ -568,39 +634,61 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
                               </Button>
                             </>
                           ) : (
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="gap-2"
-                              onClick={async () => {
-                                try {
-                                  toast.loading('Génération du nouveau lien...', { id: 'regenerate' });
-                                  
-                                  // 1. Annuler l'ancien paiement
-                                  await cancelPaiement(paiement.id);
-                                  console.log('[QuotePaiements] Ancien paiement annulé:', paiement.id);
-                                  
-                                  // 2. Créer un nouveau paiement
-                                  const response = await createPaiement(devisId, {
-                                    amount: paiement.amount,
-                                    type: paiement.type,
-                                    description: paiement.description || `Régénération: ${paiement.type === 'PRINCIPAL' ? 'Paiement principal' : 'Surcoût'}`,
-                                  });
-                                  
-                                  toast.success('Nouveau lien généré', { id: 'regenerate' });
-                                  window.open(response.url, '_blank');
-                                  
-                                  // 3. Recharger les paiements
-                                  await loadPaiements();
-                                } catch (error) {
-                                  console.error('[QuotePaiements] Erreur régénération:', error);
-                                  toast.error('Erreur lors de la régénération du lien', { id: 'regenerate' });
-                                }
-                              }}
-                            >
-                              <RefreshCw className="w-4 h-4" />
-                              Régénérer le lien
-                            </Button>
+                            <>
+                              <Button
+                                variant="ghost"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Mise en inactif...', { id: 'deactivate' });
+                                    await cancelPaiement(paiement.id);
+                                    toast.success('Lien mis en inactif', { id: 'deactivate' });
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur mise en inactif:', error);
+                                    toast.error('Erreur lors de la mise en inactif', { id: 'deactivate' });
+                                  }
+                                }}
+                                title="Mettre le lien en inactif (il ne pourra plus être utilisé)"
+                              >
+                                <Ban className="w-4 h-4" />
+                                Mettre en inactif
+                              </Button>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="gap-2"
+                                onClick={async () => {
+                                  try {
+                                    toast.loading('Génération du nouveau lien...', { id: 'regenerate' });
+                                    
+                                    // 1. Annuler l'ancien paiement
+                                    await cancelPaiement(paiement.id);
+                                    console.log('[QuotePaiements] Ancien paiement annulé:', paiement.id);
+                                    
+                                    // 2. Créer un nouveau paiement
+                                    const response = await createPaiement(devisId, {
+                                      amount: paiement.amount,
+                                      type: paiement.type,
+                                      description: paiement.description || `Régénération: ${paiement.type === 'PRINCIPAL' ? 'Paiement principal' : 'Surcoût'}`,
+                                    });
+                                    
+                                    toast.success('Nouveau lien généré', { id: 'regenerate' });
+                                    window.open(response.url, '_blank');
+                                    
+                                    // 3. Recharger les paiements
+                                    await loadPaiements();
+                                  } catch (error) {
+                                    console.error('[QuotePaiements] Erreur régénération:', error);
+                                    toast.error('Erreur lors de la régénération du lien', { id: 'regenerate' });
+                                  }
+                                }}
+                              >
+                                <RefreshCw className="w-4 h-4" />
+                                Régénérer le lien
+                              </Button>
+                            </>
                           )}
                         </>
                       )}

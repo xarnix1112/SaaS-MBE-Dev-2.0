@@ -1,9 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Package, ChevronDown, ChevronUp, Ruler, Euro, Weight } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Package, ChevronDown, ChevronUp, Ruler, Euro, Weight, Search } from 'lucide-react';
 import { authenticatedFetch } from '@/lib/api';
 import { calculateVolumetricWeight } from '@/lib/cartons';
 import { cn } from '@/lib/utils';
@@ -31,8 +32,31 @@ export function CartonSelector({ selectedCartonId, onCartonSelect, disabled }: C
   const [error, setError] = useState<string | null>(null);
   const [isOpen, setIsOpen] = useState(false);
   const [hoveredCartonId, setHoveredCartonId] = useState<string | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
 
   const selectedCarton = cartons.find(c => c.id === selectedCartonId);
+
+  // Filtrer les cartons selon la recherche (référence ou dimensions L×l×H)
+  const filteredCartons = useMemo(() => {
+    if (!searchQuery.trim()) return cartons;
+    const q = searchQuery.trim().toLowerCase();
+
+    // Extraire des nombres (ex: "70 50 50", "70×50×50", "38 x 28 x 30")
+    const numbers = q.match(/\d+/g)?.map(Number) ?? [];
+
+    return cartons.filter((carton) => {
+      // Match par référence
+      if (carton.carton_ref.toLowerCase().includes(q)) return true;
+
+      // Match par dimensions : si l'utilisateur a entré 1 à 3 nombres (ex: "70 50 50" ou "38×28×30")
+      if (numbers.length >= 1 && numbers.length <= 3) {
+        const dims = [carton.inner_length, carton.inner_width, carton.inner_height];
+        if (numbers.every((n) => dims.some((d) => d === n))) return true;
+      }
+
+      return false;
+    });
+  }, [cartons, searchQuery]);
 
   // Charger les cartons disponibles
   useEffect(() => {
@@ -63,6 +87,7 @@ export function CartonSelector({ selectedCartonId, onCartonSelect, disabled }: C
   const handleSelect = (carton: Carton) => {
     onCartonSelect(carton);
     setIsOpen(false);
+    setSearchQuery('');
   };
 
   if (loading) {
@@ -110,7 +135,10 @@ export function CartonSelector({ selectedCartonId, onCartonSelect, disabled }: C
           "w-full justify-between h-auto p-4",
           isOpen && "ring-2 ring-ring"
         )}
-        onClick={() => setIsOpen(!isOpen)}
+        onClick={() => {
+          setIsOpen(!isOpen);
+          if (isOpen) setSearchQuery('');
+        }}
         disabled={disabled}
       >
         <div className="flex items-center gap-3 flex-1 text-left">
@@ -142,11 +170,34 @@ export function CartonSelector({ selectedCartonId, onCartonSelect, disabled }: C
         )}
       </Button>
 
-      {/* Liste déroulante avec cartes visuelles */}
+      {/* Liste déroulante avec recherche et cartes visuelles */}
       {isOpen && (
-        <div className="border rounded-lg shadow-lg bg-background max-h-96 overflow-y-auto">
-          <div className="p-2 space-y-2">
-            {cartons.map((carton) => {
+        <div className="border rounded-lg shadow-lg bg-background">
+          {/* Champ de recherche */}
+          <div className="p-2 border-b bg-muted/30 sticky top-0 z-10">
+            <div className="relative">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
+              <Input
+                type="text"
+                placeholder="Rechercher par référence (ex: CAD11) ou dimensions (ex: 70×50×50)"
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                className="pl-9 h-9"
+                onKeyDown={(e) => e.stopPropagation()}
+              />
+            </div>
+          </div>
+          <div className="p-2 space-y-2 max-h-80 overflow-y-auto">
+            {filteredCartons.length === 0 ? (
+              <div className="py-8 text-center text-muted-foreground text-sm">
+                {searchQuery.trim() ? (
+                  <>Aucun carton ne correspond à « {searchQuery} »</>
+                ) : (
+                  <>Aucun carton configuré</>
+                )}
+              </div>
+            ) : (
+              filteredCartons.map((carton) => {
               const volumetricWeight = calculateVolumetricWeight(carton);
               const isHovered = hoveredCartonId === carton.id;
               const isSelected = selectedCartonId === carton.id;
@@ -258,7 +309,8 @@ export function CartonSelector({ selectedCartonId, onCartonSelect, disabled }: C
                   </CardContent>
                 </Card>
               );
-            })}
+            })
+            )}
           </div>
         </div>
       )}

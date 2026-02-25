@@ -7,15 +7,16 @@ import { getApiBaseUrl } from './api-base';
 
 /**
  * Récupère le token Firebase actuel pour l'authentification
+ * @param forceRefresh - si true, force un nouveau token (utile après réauthentification)
  */
-export async function getAuthToken(): Promise<string | null> {
+export async function getAuthToken(forceRefresh = false): Promise<string | null> {
   const user = auth.currentUser;
   if (!user) {
     return null;
   }
   
   try {
-    const token = await user.getIdToken();
+    const token = await user.getIdToken(forceRefresh);
     return token;
   } catch (error) {
     console.error('[api] Erreur récupération token:', error);
@@ -23,29 +24,32 @@ export async function getAuthToken(): Promise<string | null> {
   }
 }
 
+export type AuthenticatedFetchOptions = RequestInit & { forceRefresh?: boolean };
+
 /**
  * Effectue une requête fetch avec authentification Firebase
  * Si l'URL est relative (commence par /), elle est préfixée avec VITE_API_BASE_URL
+ * @param options.forceRefresh - force un nouveau token (utile après réauthentification)
  */
 export async function authenticatedFetch(
   url: string,
-  options: RequestInit = {}
+  options: AuthenticatedFetchOptions = {}
 ): Promise<Response> {
-  const token = await getAuthToken();
+  const { forceRefresh, ...fetchOptions } = options;
+  const token = await getAuthToken(!!forceRefresh);
   
   const headers = {
     'Content-Type': 'application/json',
     ...(token && { Authorization: `Bearer ${token}` }),
     ...(import.meta.env.DEV && { 'X-Client-Dev': 'true' }),
-    ...options.headers,
+    ...(fetchOptions.headers as Record<string, string>),
   };
 
-  // getApiBaseUrl() détecte staging et pointe vers le bon backend
   const API_BASE = getApiBaseUrl();
   const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
 
   return fetch(fullUrl, {
-    ...options,
+    ...fetchOptions,
     headers,
   });
 }

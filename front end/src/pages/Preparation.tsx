@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { useQuotes } from "@/hooks/use-quotes";
 import { doc, setDoc, Timestamp, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { authenticatedFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { calculateVolumetricWeight } from "@/lib/pricing";
@@ -120,40 +121,11 @@ export default function Preparation() {
       const quote = quotes.find(q => q.id === quoteId);
       if (!quote) return;
 
-      const quoteDoc = await getDoc(doc(db, 'quotes', quoteId));
-      const existingData = quoteDoc.data();
-      const existingTimeline = existingData?.timeline || quote.timeline || [];
-
-      const timelineEvent = createTimelineEvent(
-        'awaiting_shipment',
-        getStatusDescription('awaiting_shipment')
-      );
-
-      const firestoreEvent = timelineEventToFirestore(timelineEvent);
-
-      // Éviter les doublons (même description et statut dans les 5 dernières minutes)
-      const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
-      const isDuplicate = existingTimeline.some(
-        (e: any) =>
-          e.status === 'awaiting_shipment' &&
-          e.description === timelineEvent.description &&
-          (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
-      );
-
-      const updatedTimeline = isDuplicate 
-        ? existingTimeline 
-        : [...existingTimeline, firestoreEvent];
-
-      await setDoc(
-        doc(db, 'quotes', quoteId),
-        {
-          status: 'awaiting_shipment',
-          timeline: updatedTimeline,
-          updatedAt: Timestamp.now(),
-        },
-        { merge: true }
-      );
-
+      const res = await authenticatedFetch(`/api/devis/${quoteId}/mark-awaiting-shipment`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la mise à jour');
+      }
       queryClient.invalidateQueries({ queryKey: ['quotes'] });
       toast.success('Colis prêt pour expédition');
     } catch (error) {

@@ -6,7 +6,7 @@
  */
 
 import { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useLocation } from 'react-router-dom';
 import { auth } from '@/lib/firebase';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -16,6 +16,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { toast } from 'sonner';
 import { Building2, MapPin, Phone, Mail, FileText, Loader2 } from 'lucide-react';
+import { Link } from 'react-router-dom';
 import { getApiBaseUrl } from '@/lib/api-base';
 
 // Liste des villes MBE principales
@@ -37,6 +38,8 @@ const MBE_CITIES = [
 
 export default function SetupMBE() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const planId = (location.state as { planId?: string })?.planId || 'starter';
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -109,6 +112,7 @@ export default function SetupMBE() {
           address: formData.address,
           phone: formData.phone,
           email: formData.email,
+          planId,
         }),
       });
 
@@ -178,8 +182,14 @@ export default function SetupMBE() {
             </div>
           </div>
           <CardTitle className="text-2xl font-bold">Configuration de votre MBE</CardTitle>
-          <CardDescription>
-            Finalisez la création de votre compte en renseignant les informations de votre MBE
+          <CardDescription className="flex flex-col gap-1">
+            <span>Finalisez la création de votre compte en renseignant les informations de votre MBE</span>
+            <span className="text-primary font-medium">
+              Plan sélectionné : {planId === 'starter' ? 'Starter' : planId === 'pro' ? 'Pro' : 'Ultra'}
+            </span>
+            <Link to="/choose-plan" className="text-sm text-muted-foreground hover:text-primary hover:underline">
+              Changer de plan
+            </Link>
           </CardDescription>
         </CardHeader>
         <CardContent>

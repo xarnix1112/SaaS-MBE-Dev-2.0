@@ -101,6 +101,7 @@ Ensure this uri exactly matches one of the uris specified in your application se
 1. **Stripe Dashboard** → **Connect → Settings → OAuth settings**
 2. **Vérifier** que vous voyez :
    - `http://localhost:8080/stripe/callback` (pour le dev local)
+   - `https://xxx.up.railway.app/stripe/callback` (pour le staging — URL du backend Railway)
    - `https://api.mbe-sdv.fr/stripe/callback` (pour la production) ✅
 
 ---
@@ -157,9 +158,22 @@ https://connect.stripe.com/oauth/v2/authorize?response_type=code&client_id=ca_..
 
 ---
 
+## 🌐 Environnement Staging
+
+Si vous utilisez `https://staging.mbe-sdv.fr` pour vos tests :
+
+⚠️ **Important :** `APP_URL` doit pointer vers le **backend** (Railway), pas le frontend. Sinon Stripe redirige vers le frontend (SPA) qui n'a pas la route `/stripe/callback` → erreur 404.
+
+1. **Dans Railway** (service staging) : `APP_URL=https://saas-mbe-dev-staging-staging.up.railway.app` (ton domaine Railway)
+2. **Dans Railway** : `FRONTEND_URL=https://staging.mbe-sdv.fr`
+3. **Dans Stripe** : Redirect URI = `https://saas-mbe-dev-staging-staging.up.railway.app/stripe/callback` (pas `staging.mbe-sdv.fr`)
+4. Voir [STRIPE_OAUTH_ENVIRONNEMENTS.md](./STRIPE_OAUTH_ENVIRONNEMENTS.md) pour le détail.
+
+---
+
 ## 📝 Notes Importantes
 
-- ⚠️ **Mode Live vs Test** : Assurez-vous d'être en mode **"Live"** dans Stripe Dashboard (pas "Test")
+- ⚠️ **Mode Live vs Test** : Les Redirect URIs sont configurés séparément pour chaque mode. Pour le staging, utilisez généralement le mode **Test**.
 - ⚠️ **HTTPS obligatoire** : En production, utilisez toujours `https://` (pas `http://`)
 - ⚠️ **Domaine exact** : L'URL doit correspondre exactement (majuscules/minuscules, trailing slash, etc.)
 

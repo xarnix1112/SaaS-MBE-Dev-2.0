@@ -57,6 +57,7 @@ import {
   RefreshCw,
   CheckCircle2,
   Loader2,
+  Globe,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -120,11 +121,24 @@ import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
 import type { Paiement } from "@/types/stripe";
+import { useFeatures } from "@/hooks/use-features";
+import { useQuery } from "@tanstack/react-query";
 
 export default function QuoteDetail() {
   const { id } = useParams();
   const { data: quotes = [], isLoading, isError } = useQuotes();
   const queryClient = useQueryClient();
+  const { data: featuresData } = useFeatures();
+  const { data: mbehubStatus } = useQuery({
+    queryKey: ['mbehub-status'],
+    queryFn: async () => {
+      const res = await authenticatedFetch('/api/account/mbehub-status');
+      if (!res.ok) return { available: false, configured: false };
+      return res.json();
+    },
+    enabled: !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra'),
+  });
+  const showMbehubButton = mbehubStatus?.available && mbehubStatus?.configured;
   const foundQuote = quotes.find((q) => q.id === id);
   const [generatingLink, setGeneratingLink] = useState<boolean>(false);
   const [quote, setQuote] = useState<Quote | undefined>(foundQuote);
@@ -152,6 +166,7 @@ export default function QuoteDetail() {
   const [surchargePaiements, setSurchargePaiements] = useState<Paiement[]>([]);
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
   const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
+  const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -336,6 +351,23 @@ export default function QuoteDetail() {
     loadSurchargePaiements();
   }, [id]);
 
+  // Charger si le paiement principal est payé quand on ouvre le popup de modification
+  useEffect(() => {
+    if (!isEditDialogOpen || !quote?.id) return;
+    const checkPrincipalPaid = async () => {
+      try {
+        const paiements = await getPaiements(quote.id);
+        const principalPaid = paiements.some(
+          (p) => p.type === 'PRINCIPAL' && p.status === 'PAID'
+        );
+        setIsPrincipalPaidForEdit(principalPaid);
+      } catch {
+        setIsPrincipalPaidForEdit(false);
+      }
+    };
+    checkPrincipalPaid();
+  }, [isEditDialogOpen, quote?.id]);
+
   // IMPORTANT: la liste de devis (useQuotes) se met à jour après merge Firestore.
   // Sans resync, la page détail peut rester bloquée sur l'ancien état (bordereau invisible).
   // MAIS: Ne pas écraser les modifications locales en cours de sauvegarde
@@ -428,23 +460,51 @@ export default function QuoteDetail() {
     });
   }, [foundQuote?.id, foundQuote?.auctionSheet, foundQuote?.options?.packagingPrice, foundQuote?.options?.shippingPrice, foundQuote?.paymentLinks, foundQuote?.timeline, foundQuote?.client?.email, foundQuote?.client?.name, isSaving, lastSaveTime]);
 
+  // Tenter la génération auto du lien de paiement au chargement si emballage+expédition prêts et pas encore de lien
+  const hasAttemptedAutoPayment = useRef<Set<string>>(new Set());
+  useEffect(() => {
+    if (!quote?.id) return;
+    const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
+    const shippingPrice = quote.options?.shippingPrice ?? 0;
+    const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
+    if (packagingPrice > 0 && shippingPrice > 0 && !hasPaymentLink && !hasAttemptedAutoPayment.current.has(quote.id)) {
+      hasAttemptedAutoPayment.current.add(quote.id);
+      authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' })
+        .then((res) => res.json().catch(() => ({})))
+        .then((data) => {
+          if (data?.generated) {
+            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré au chargement');
+            queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          } else {
+            hasAttemptedAutoPayment.current.delete(quote.id);
+          }
+        })
+        .catch(() => { hasAttemptedAutoPayment.current.delete(quote.id); });
+    }
+  }, [quote?.id, quote?.options?.packagingPrice, quote?.options?.shippingPrice, quote?.paymentLinks, quote?.auctionSheet?.recommendedCarton, queryClient]);
+
   // FORCER l'application des dimensions INTERNES du carton (dimensions du colis)
   // Ce useEffect garantit que les dimensions du carton sont TOUJOURS affichées
+  // Supporte inner/required OU inner_length, inner_width, inner_height
   useEffect(() => {
     if (!quote?.auctionSheet?.recommendedCarton) return;
     
-    // PRIORITÉ aux dimensions internes (inner) car ce sont les dimensions du colis
-    // Si inner n'existe pas, utiliser required
-    const cartonDims = quote.auctionSheet.recommendedCarton.inner || quote.auctionSheet.recommendedCarton.required;
+    const c = quote.auctionSheet.recommendedCarton;
+    // PRIORITÉ: inner/required (format objet) puis inner_length/inner_width/inner_height (format plat)
+    const cartonDims = c.inner || c.required || (
+      (c.inner_length != null || c.inner_width != null || c.inner_height != null)
+        ? { length: c.inner_length, width: c.inner_width, height: c.inner_height }
+        : null
+    );
     if (!cartonDims) {
       console.log('[QuoteDetail] Aucune dimension de carton disponible:', quote.auctionSheet.recommendedCarton);
       return;
     }
     
     const currentDims = quote.lot?.dimensions || { length: 0, width: 0, height: 0, weight: 0 };
-    const cartonLength = Number(cartonDims.length);
-    const cartonWidth = Number(cartonDims.width);
-    const cartonHeight = Number(cartonDims.height);
+    const cartonLength = Number(cartonDims.length ?? c.inner_length ?? 0);
+    const cartonWidth = Number(cartonDims.width ?? c.inner_width ?? 0);
+    const cartonHeight = Number(cartonDims.height ?? c.inner_height ?? 0);
     
     // Vérifier si les dimensions actuelles ne correspondent PAS aux dimensions du carton
     const needsUpdate = 
@@ -709,6 +769,8 @@ export default function QuoteDetail() {
                         { merge: true }
                       );
                       console.log(`[QuoteDetail] ✅ Prix expédition sauvegardé dans Firestore: ${newShippingPrice}€`);
+                      // Note: La génération auto du lien de paiement est gérée uniquement par le useEffect au chargement
+                      // pour éviter plusieurs appels simultanés (triple génération)
                     } catch (e) {
                       console.error("[QuoteDetail] ❌ Erreur sauvegarde shippingPrice:", e);
                     }
@@ -1251,6 +1313,32 @@ export default function QuoteDetail() {
     } catch (error) {
       console.error('[Surcharge Email] Erreur:', error);
       toast.error('Erreur lors de l\'envoi de l\'email surcoût');
+    }
+  };
+
+  const [isSendingToMbehub, setIsSendingToMbehub] = useState(false);
+  const handleSendToMbeHub = async () => {
+    if (!quote?.id) return;
+    setIsSendingToMbehub(true);
+    try {
+      const res = await authenticatedFetch('/api/mbehub/send-quote', {
+        method: 'POST',
+        body: JSON.stringify({ quoteId: quote.id }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(data.error || data.message || 'Erreur lors de l\'envoi vers MBE Hub');
+        return;
+      }
+      if (data.success === false && data.message) {
+        toast.info(data.message);
+      } else {
+        toast.success('Devis envoyé vers MBE Hub');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSendingToMbehub(false);
     }
   };
 
@@ -2721,6 +2809,21 @@ export default function QuoteDetail() {
                     Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
                   </Button>
                 ))}
+                {showMbehubButton && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={handleSendToMbeHub}
+                    disabled={isSendingToMbehub}
+                  >
+                    {isSendingToMbehub ? (
+                      <Loader2 className="w-4 h-4 animate-spin" />
+                    ) : (
+                      <Globe className="w-4 h-4" />
+                    )}
+                    Envoyer vers MBE Hub
+                  </Button>
+                )}
               </CardContent>
             </Card>
           </div>
@@ -2767,6 +2870,7 @@ export default function QuoteDetail() {
           {quote && (
             <EditQuoteForm
               quote={quote}
+              isPrincipalPaid={isPrincipalPaidForEdit}
               onPaymentLinkCreated={() => {
                 // Forcer le rechargement des paiements dans QuotePaiements
                 setPaiementsRefreshKey(prev => prev + 1);
@@ -3170,9 +3274,10 @@ interface EditQuoteFormProps {
   onCancel: () => void;
   isSaving: boolean;
   onPaymentLinkCreated?: () => void; // Callback appelé après la création d'un nouveau paiement
+  isPrincipalPaid?: boolean; // Si true, on ne peut plus modifier les prix (emballage, expédition)
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
@@ -3779,7 +3884,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                 <CartonSelector
                   selectedCartonId={selectedCartonId}
                   onCartonSelect={handleCartonSelect}
-                  disabled={isSaving}
+                  disabled={isSaving || isPrincipalPaid}
                 />
               </div>
 
@@ -3963,9 +4068,11 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                 <div className="space-y-2">
                   <div className="flex items-center justify-between mb-1">
                     <Label htmlFor="packagingPrice">Prix d'emballage (€)</Label>
-                    <Badge variant="secondary" className="text-xs">
-                      Depuis le carton
-                    </Badge>
+                    {!isPrincipalPaid && (
+                      <Badge variant="secondary" className="text-xs">
+                        Modifiable pour ce devis uniquement
+                      </Badge>
+                    )}
                   </div>
                   <Input
                     id="packagingPrice"
@@ -3973,11 +4080,14 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                     step="0.01"
                     min="0"
                     value={formData.packagingPrice}
-                    disabled
-                    className="bg-muted"
+                    disabled={isPrincipalPaid}
+                    onChange={(e) => setFormData({ ...formData, packagingPrice: parseFloat(e.target.value) || 0 })}
+                    className={isPrincipalPaid ? 'bg-muted' : ''}
                   />
                   <p className="text-xs text-muted-foreground">
-                    Le prix est défini par le carton sélectionné
+                    {isPrincipalPaid
+                      ? 'Le paiement principal est effectué, le prix ne peut plus être modifié'
+                      : 'Valeur initiale du carton. La modification n\'affecte pas les Paramètres.'}
                   </p>
                 </div>
                 <div className="space-y-2">
@@ -3988,8 +4098,15 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                     step="0.01"
                     min="0"
                     value={formData.shippingPrice}
+                    disabled={isPrincipalPaid}
                     onChange={(e) => setFormData({ ...formData, shippingPrice: parseFloat(e.target.value) || 0 })}
+                    className={isPrincipalPaid ? 'bg-muted' : ''}
                   />
+                  {isPrincipalPaid && (
+                    <p className="text-xs text-muted-foreground">
+                      Le paiement principal est effectué, le prix ne peut plus être modifié
+                    </p>
+                  )}
                 </div>
                 <div className="space-y-2 col-span-2">
                   <div className="flex items-center space-x-2">
@@ -3998,6 +4115,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                       id="insurance"
                       checked={formData.insurance}
                       onChange={(e) => setFormData({ ...formData, insurance: e.target.checked })}
+                      disabled={isPrincipalPaid}
                       className="h-4 w-4 rounded border-gray-300"
                     />
                     <Label htmlFor="insurance">Assurance</Label>
@@ -4012,6 +4130,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                       step="0.01"
                       min="0"
                       value={formData.insuranceAmount}
+                      disabled={isPrincipalPaid}
                       onChange={(e) => setFormData({ ...formData, insuranceAmount: parseFloat(e.target.value) || 0 })}
                     />
                   </div>

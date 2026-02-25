@@ -44,7 +44,7 @@ export function ProtectedRoute({ children, requireSetup = true }: ProtectedRoute
   // - Sinon, rediriger vers setup-mbe
   if (requireSetup) {
     if (!userDoc || !isSetupComplete) {
-      return <Navigate to="/setup-mbe" replace />;
+      return <Navigate to="/choose-plan" replace />;
     }
   }
 

@@ -12,6 +12,7 @@ import { useQuotes } from "@/hooks/use-quotes";
 import { useAuctionHouses } from "@/hooks/use-auction-houses";
 import { doc, setDoc, getDoc, Timestamp } from "firebase/firestore";
 import { db } from "@/lib/firebase";
+import { authenticatedFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { createTimelineEvent, timelineEventToFirestore } from "@/lib/quoteTimeline";
@@ -199,6 +200,8 @@ export default function Collections() {
         });
         
         return {
+          id: quote.id,
+          saasAccountId: quote.saasAccountId,
           reference: quote.reference,
           lotNumber: lotNumber,
           lotId: quote.lot?.id,
@@ -220,11 +223,8 @@ export default function Collections() {
       const emailBody = `Demande de collecte pour ${houseQuotes.length} lot(s) de ${houseName}`;
 
       try {
-        const { getApiBaseUrl } = await import('@/lib/api-base');
-        const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
-        const response = await fetch(`${API_BASE}/api/send-collection-email`, {
+        const response = await authenticatedFetch('/api/send-collection-email', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             to: houseEmail,
             subject: emailSubject,
@@ -257,51 +257,17 @@ export default function Collections() {
     setManualEmails({});
   };
 
-  // Marquer un devis comme collecté
+  // Marquer un devis comme collecté (API → mise à jour Firestore + email automatique client)
   const handleMarkAsCollected = async (quoteId: string) => {
     try {
       const quote = collectionQuotes.find(q => q.id === quoteId);
       if (!quote) return;
 
-      // Récupérer le timeline existant depuis Firestore
-      const quoteDoc = await getDoc(doc(db, 'quotes', quoteId));
-      const existingData = quoteDoc.data();
-      const existingTimeline = existingData?.timeline || quote.timeline || [];
-
-      // Créer un nouvel événement "collecté"
-      const timelineEvent = createTimelineEvent(
-        'collected',
-        'Lot collecté auprès de la salle des ventes'
-      );
-
-      // Convertir l'événement pour Firestore
-      const firestoreEvent = timelineEventToFirestore(timelineEvent);
-
-      // Éviter les doublons (même description et statut dans les 5 dernières minutes)
-      const fiveMinutesAgo = Timestamp.fromMillis(Date.now() - 5 * 60 * 1000);
-      const isDuplicate = existingTimeline.some(
-        (e: any) =>
-          e.status === 'collected' &&
-          e.description === timelineEvent.description &&
-          (e.date?.toMillis ? e.date.toMillis() : new Date(e.date).getTime()) > fiveMinutesAgo.toMillis()
-      );
-
-      const updatedTimeline = isDuplicate 
-        ? existingTimeline 
-        : [...existingTimeline, firestoreEvent];
-
-      // Mettre à jour le devis avec le nouveau statut et le timeline
-      await setDoc(
-        doc(db, 'quotes', quoteId),
-        {
-          status: 'collected',
-          collectedAt: Timestamp.now(),
-          timeline: updatedTimeline,
-          updatedAt: Timestamp.now(),
-        },
-        { merge: true }
-      );
-
+      const res = await authenticatedFetch(`/api/devis/${quoteId}/mark-collected`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la mise à jour');
+      }
       queryClient.invalidateQueries({ queryKey: ['quotes'] });
       toast.success('Devis marqué comme collecté');
     } catch (error) {

@@ -1,4 +1,5 @@
 import { Quote } from "@/types/quote";
+import { authenticatedFetch } from "./api";
 
 export interface StripeLinkInput {
   quote: Quote;
@@ -13,7 +14,8 @@ export interface StripeLinkResult {
   id?: string;
 }
 
-export async function createStripeLink(
+/** Génère un lien de paiement (Stripe ou Paytweak selon les paramètres du compte) */
+export async function createPaymentLink(
   input: StripeLinkInput
 ): Promise<StripeLinkResult> {
   const currency = input.currency || "EUR";
@@ -22,32 +24,24 @@ export async function createStripeLink(
   const cancelUrl =
     input.cancelUrl || `${window.location.origin}/payment/cancel`;
 
-  // Construire la description : Nom prénom client | Numéro de bordereau | Salle de vente
   const clientName = input.quote.client.name || "Client";
   const bordereauNumber = input.quote.auctionSheet?.bordereauNumber || "";
-  const auctionHouse = input.quote.lot.auctionHouse && input.quote.lot.auctionHouse !== 'Non précisée' 
-    ? input.quote.lot.auctionHouse 
+  const auctionHouse = input.quote.lot.auctionHouse && input.quote.lot.auctionHouse !== 'Non précisée'
+    ? input.quote.lot.auctionHouse
     : "";
-  
-  // Construire la description avec les éléments disponibles
   const descriptionParts = [clientName];
   if (bordereauNumber) descriptionParts.push(bordereauNumber);
   if (auctionHouse) descriptionParts.push(auctionHouse);
-  
   const description = descriptionParts.join(" | ");
 
-  const { getApiBaseUrl } = await import('./api-base');
-  const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
-  const res = await fetch(`${API_BASE}/api/stripe/link`, {
+  const res = await authenticatedFetch('/api/payment/link', {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-    },
     body: JSON.stringify({
       amount: input.amount,
       currency,
       reference: input.quote.reference,
       description,
+      devisId: input.quote.id,
       customer: {
         name: input.quote.client.name,
         email: input.quote.client.email,
@@ -55,21 +49,37 @@ export async function createStripeLink(
       },
       successUrl,
       cancelUrl,
+      quote: {
+        id: input.quote.id,
+        reference: input.quote.reference,
+        auctionSheet: input.quote.auctionSheet,
+        lot: input.quote.lot,
+      },
     }),
   });
 
   if (!res.ok) {
     const text = await res.text();
-    throw new Error(
-      `[stripe] Erreur API ${res.status}: ${text || res.statusText}`
-    );
+    let errMsg = `Erreur API ${res.status}: ${text || res.statusText}`;
+    try {
+      const json = JSON.parse(text);
+      if (json?.error) errMsg = json.error;
+    } catch {}
+    throw new Error(errMsg);
   }
 
   const data = await res.json();
   if (!data?.url) {
-    throw new Error("[stripe] Réponse sans URL de paiement.");
+    throw new Error("Réponse sans URL de paiement.");
   }
 
   return { url: data.url, id: data.id };
+}
+
+/** @deprecated Utiliser createPaymentLink pour supporter Stripe et Paytweak */
+export async function createStripeLink(
+  input: StripeLinkInput
+): Promise<StripeLinkResult> {
+  return createPaymentLink(input);
 }
 

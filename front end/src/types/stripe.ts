@@ -37,6 +37,7 @@ export interface Paiement {
   clientSaasId: string;
   stripeSessionId: string;
   stripeCheckoutUrl?: string; // URL du Stripe Checkout
+  url?: string; // URL du lien (Firestore/API)
   stripePaymentIntentId?: string;
   amount: number;
   type: PaiementType;

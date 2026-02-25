@@ -716,6 +716,136 @@ export async function handleUpdateSettings(req, res, firestore) {
 }
 
 /**
+ * Calcule le prix d'expédition Express à partir de la grille tarifaire du compte SaaS
+ * Utilisé lors du changement de carton pour recalculer l'expédition selon le nouveau poids volumétrique
+ * @param {FirebaseFirestore.Firestore} firestore
+ * @param {string} saasAccountId
+ * @param {string} countryCode - Code pays ISO 2 lettres (ex: FR, BE)
+ * @param {number} volumetricWeight - Poids volumétrique en kg
+ * @returns {Promise<number>} Prix en € ou 0 si non trouvé
+ */
+export async function calculateShippingPriceFromGrid(
+  firestore,
+  saasAccountId,
+  countryCode,
+  volumetricWeight
+) {
+  if (!countryCode || countryCode.length !== 2) {
+    console.warn(`[ShippingRates] Code pays invalide: "${countryCode}"`);
+    return 0;
+  }
+  if (!volumetricWeight || isNaN(volumetricWeight) || volumetricWeight <= 0) {
+    console.warn(`[ShippingRates] Poids volumétrique invalide: ${volumetricWeight}`);
+    return 0;
+  }
+
+  const upperCountry = countryCode.toUpperCase();
+
+  const [zonesSnapshot, servicesSnapshot, bracketsSnapshot, ratesSnapshot] = await Promise.all([
+    firestore.collection("shippingZones").where("saasAccountId", "==", saasAccountId).orderBy("name", "asc").get(),
+    firestore.collection("shippingServices").where("saasAccountId", "==", saasAccountId).orderBy("order", "asc").get(),
+    firestore.collection("weightBrackets").where("saasAccountId", "==", saasAccountId).orderBy("order", "asc").get(),
+    firestore.collection("shippingRates").where("saasAccountId", "==", saasAccountId).get(),
+  ]);
+
+  const zones = zonesSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const services = servicesSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const weightBrackets = bracketsSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+  const rates = ratesSnapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+
+  const expressService = services.find((s) => s.name && s.name.toUpperCase() === "EXPRESS" && s.isActive !== false);
+  if (!expressService) {
+    console.warn("[ShippingRates] Service EXPRESS non trouvé");
+    return 0;
+  }
+
+  // Construire zones au format { zone, countries, express: { "1-2": price, ... } }
+  const zoneList = [];
+  for (const zone of zones) {
+    if (!zone.isActive) continue;
+    const expressRates = {};
+    const sortedBrackets = [...weightBrackets].sort((a, b) => (a.order || 0) - (b.order || 0));
+    for (let i = 0; i < sortedBrackets.length; i++) {
+      const bracket = sortedBrackets[i];
+      const nextBracket = sortedBrackets[i + 1];
+      const rate = rates.find(
+        (r) =>
+          r.zoneId === zone.id &&
+          r.serviceId === expressService.id &&
+          r.weightBracketId === bracket.id &&
+          r.price != null
+      );
+      if (rate && rate.price != null) {
+        const maxWeight = nextBracket ? nextBracket.minWeight : bracket.minWeight + 10;
+        expressRates[`${bracket.minWeight}-${maxWeight}`] = rate.price;
+      }
+    }
+    if (Object.keys(expressRates).length > 0) {
+      zoneList.push({
+        zone: zone.name || zone.code || `Zone ${zone.id}`,
+        countries: zone.countries || [],
+        express: expressRates,
+      });
+    }
+  }
+
+  const zone = zoneList.find((z) => z.countries.some((c) => (c || "").toUpperCase() === upperCountry));
+  if (!zone) {
+    console.warn(`[ShippingRates] Aucune zone trouvée pour ${upperCountry}`);
+    return 0;
+  }
+
+  const weightRanges = Object.keys(zone.express).sort((a, b) => {
+    const aMin = parseFloat(String(a).split("-")[0] || "0");
+    const bMin = parseFloat(String(b).split("-")[0] || "0");
+    return aMin - bMin;
+  });
+  const sortedRanges = weightRanges.map((range) => {
+    const [min, max] = String(range).split("-").map(Number);
+    return { range, min, max: max || Infinity };
+  }).sort((a, b) => a.min - b.min);
+
+  for (const { range, min, max } of sortedRanges) {
+    if (volumetricWeight >= min && volumetricWeight < max) {
+      const price = zone.express[range] || 0;
+      console.log(`[ShippingRates] Tarif trouvé: ${range}kg = ${price}€ pour ${volumetricWeight}kg`);
+      return price;
+    }
+  }
+  if (sortedRanges.length > 0) {
+    const last = sortedRanges[sortedRanges.length - 1];
+    if (volumetricWeight >= last.max) {
+      const price = zone.express[last.range] || 0;
+      console.log(`[ShippingRates] Tarif (dernière tranche): ${last.range}kg = ${price}€`);
+      return price;
+    }
+  }
+  return 0;
+}
+
+/**
+ * Mappe un nom de pays (ou chaîne) vers son code ISO 2 lettres
+ * @param {string} countryOrAddress - Nom du pays (ex: "France") ou adresse
+ * @returns {string} Code ISO (ex: "FR") ou 2 premiers caractères en majuscules
+ */
+export function mapCountryToCode(countryOrAddress) {
+  const countryMap = {
+    france: "FR", belgique: "BE", belgium: "BE", suisse: "CH", switzerland: "CH",
+    allemagne: "DE", germany: "DE", espagne: "ES", spain: "ES", italie: "IT", italy: "IT",
+    "royaume-uni": "GB", "united kingdom": "GB", uk: "GB", portugal: "PT", autriche: "AT",
+    austria: "AT", danemark: "DK", denmark: "DK", irlande: "IE", ireland: "IE",
+    suède: "SE", sweden: "SE", finlande: "FI", finland: "FI", pologne: "PL", poland: "PL",
+    "république tchèque": "CZ", "czech republic": "CZ", hongrie: "HU", hungary: "HU",
+    brésil: "BR", brazil: "BR", argentine: "AR", argentina: "AR", chili: "CL", chile: "CL",
+    colombie: "CO", colombia: "CO", pérou: "PE", peru: "PE", usa: "US",
+    "united states": "US", "états-unis": "US", canada: "CA", mexique: "MX", mexico: "MX",
+  };
+  if (!countryOrAddress) return "";
+  const s = String(countryOrAddress).toLowerCase().trim();
+  return countryMap[s] || s.substring(0, 2).toUpperCase();
+}
+
+/**
  * GET /api/shipping/grid
  * Récupérer toutes les données de la grille (zones + services + tranches + tarifs + settings)
  */

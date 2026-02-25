@@ -38,7 +38,7 @@ export function HomeRedirect() {
   // - L'utilisateur vient de se connecter mais n'a pas encore de document user
   // - L'utilisateur a un document user mais pas de saasAccountId
   if (isAuthenticated && (!userDoc || !isSetupComplete)) {
-    return <Navigate to="/setup-mbe" replace />;
+    return <Navigate to="/choose-plan" replace />;
   }
 
   // Dans TOUS les autres cas (non connecté, utilisateur anonyme), aller à la page de bienvenue
