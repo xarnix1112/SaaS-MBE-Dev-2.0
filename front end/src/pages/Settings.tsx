@@ -86,7 +86,8 @@ export default function Settings() {
     paytweakConfigured: boolean;
     stripeConnected: boolean;
   } | null>(null);
-  const [paytweakApiKeyInput, setPaytweakApiKeyInput] = useState('');
+  const [paytweakPublicKeyInput, setPaytweakPublicKeyInput] = useState('');
+  const [paytweakPrivateKeyInput, setPaytweakPrivateKeyInput] = useState('');
   const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
   const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
 
@@ -153,9 +154,11 @@ export default function Settings() {
     }
   };
 
-  const handleSavePaytweakKey = async () => {
-    if (!paytweakApiKeyInput.trim()) {
-      toast.error('Saisissez votre clé API Paytweak');
+  const handleSavePaytweakKeys = async () => {
+    const pub = paytweakPublicKeyInput.trim();
+    const priv = paytweakPrivateKeyInput.trim();
+    if (!pub || !priv) {
+      toast.error('Saisissez les deux clés Paytweak (publique et privée)');
       return;
     }
     try {
@@ -163,14 +166,15 @@ export default function Settings() {
       const { authenticatedFetch } = await import('@/lib/api');
       const res = await authenticatedFetch('/api/account/paytweak-key', {
         method: 'PUT',
-        body: JSON.stringify({ apiKey: paytweakApiKeyInput.trim() }),
+        body: JSON.stringify({ publicKey: pub, privateKey: priv }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Erreur lors de la sauvegarde');
       }
-      toast.success('Clé Paytweak enregistrée');
-      setPaytweakApiKeyInput('');
+      toast.success('Clés Paytweak enregistrées');
+      setPaytweakPublicKeyInput('');
+      setPaytweakPrivateKeyInput('');
       await loadPaymentSettings();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Erreur');
@@ -1467,27 +1471,37 @@ export default function Settings() {
                     </div>
                   ) : (
                     <>
-                      <div className="space-y-2">
-                        <Label>Clé API Paytweak</Label>
-                        <div className="flex gap-2">
+                      <div className="space-y-4">
+                        <div className="space-y-2">
+                          <Label>Clé publique Paytweak (Paytweak-API-KEY)</Label>
                           <Input
                             type="password"
-                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Votre clé API Paytweak"}
-                            value={paytweakApiKeyInput}
-                            onChange={(e) => setPaytweakApiKeyInput(e.target.value)}
-                            className="flex-1"
+                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Clé publique"}
+                            value={paytweakPublicKeyInput}
+                            onChange={(e) => setPaytweakPublicKeyInput(e.target.value)}
+                            className="w-full"
                           />
-                          <Button
-                            onClick={handleSavePaytweakKey}
-                            disabled={isSavingPaytweakKey || !paytweakApiKeyInput.trim()}
-                          >
-                            {isSavingPaytweakKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
-                          </Button>
                         </div>
+                        <div className="space-y-2">
+                          <Label>Clé privée Paytweak (Secret token)</Label>
+                          <Input
+                            type="password"
+                            placeholder={paymentSettings.paytweakConfigured ? "•••••••• (déjà configurée)" : "Clé privée"}
+                            value={paytweakPrivateKeyInput}
+                            onChange={(e) => setPaytweakPrivateKeyInput(e.target.value)}
+                            className="w-full"
+                          />
+                        </div>
+                        <Button
+                          onClick={handleSavePaytweakKeys}
+                          disabled={isSavingPaytweakKey || !paytweakPublicKeyInput.trim() || !paytweakPrivateKeyInput.trim()}
+                        >
+                          {isSavingPaytweakKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer les clés'}
+                        </Button>
                         {paymentSettings.paytweakConfigured && (
                           <p className="text-sm text-green-600 dark:text-green-400 flex items-center gap-1">
                             <CheckCircle2 className="w-4 h-4" />
-                            Paytweak configuré
+                            Paytweak configuré (clé publique + clé privée)
                           </p>
                         )}
                       </div>

@@ -58,7 +58,9 @@ import {
   hasCustomPaytweak,
   getPaymentProviderConfig,
   getPaytweakApiKey,
+  getPaytweakKeys,
   createPaytweakLinkForAccount,
+  parsePaytweakOrderId,
 } from "./payment-provider.js";
 import {
   sendPaymentReceivedEmail,
@@ -1300,6 +1302,173 @@ app.post("/api/stripe/webhook", async (req, res) => {
     return res.status(500).send("Webhook handler error");
   }
 });
+
+// ===== WEBHOOK PAYTWEAK =====
+// Paytweak envoie les notifications en POST (JSON) ou GET (query). Pas d'auth requise.
+app.post("/api/paytweak/webhook", async (req, res) => {
+  let body = req.body;
+  if (!body || typeof body !== 'object') body = {};
+  return handlePaytweakWebhook(body, res);
+});
+app.get("/api/paytweak/webhook", async (req, res) => {
+  return handlePaytweakWebhook(req.query || {}, res);
+});
+
+async function handlePaytweakWebhook(data, res) {
+  try {
+    const notice = data.notice || data.Notice;
+    if (notice !== 'PAYMENT' && notice !== 'PAYMENT ') {
+      if (notice) console.log('[paytweak-webhook] Notice ignorée:', notice);
+      return res.status(200).send('ok');
+    }
+
+    const status = Number(data.Status ?? data.status);
+    const orderId = data.order_id || data.orderId;
+    const amountRaw = data.amount;
+    const linkId = data.link_id || data.linkId;
+
+    if (!orderId) {
+      console.warn('[paytweak-webhook] order_id manquant');
+      return res.status(200).send('ok');
+    }
+
+    // Statuts 5 (autorisé) et 9 (exécuté) = paiement réussi
+    if (status !== 5 && status !== 9) {
+      console.log('[paytweak-webhook] Statut non payé:', status, 'order_id:', orderId);
+      return res.status(200).send('ok');
+    }
+
+    const parsed = parsePaytweakOrderId(orderId);
+    if (!parsed || (!parsed.devisId && !parsed.groupId && !parsed.reference)) {
+      console.warn('[paytweak-webhook] order_id non reconnu:', orderId);
+      return res.status(200).send('ok');
+    }
+
+    if (!firestore) {
+      console.error('[paytweak-webhook] Firestore non initialisé');
+      return res.status(500).send('error');
+    }
+
+    const amountEur = amountRaw != null ? Number(amountRaw) : null;
+
+    if (parsed.groupId) {
+      const groupId = parsed.groupId;
+      const groupDoc = await firestore.collection('shipmentGroups').doc(groupId).get();
+      if (!groupDoc.exists) {
+        console.warn('[paytweak-webhook] Groupe non trouvé:', groupId);
+        return res.status(200).send('ok');
+      }
+      const groupData = groupDoc.data();
+      const devisIds = groupData.devisIds || [];
+
+      await firestore.collection('shipmentGroups').doc(groupId).update({
+        status: 'paid',
+        paidAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      });
+
+      for (const devisId of devisIds) {
+        const quoteDoc = await firestore.collection('quotes').doc(devisId).get();
+        if (!quoteDoc.exists) continue;
+        const quoteData = quoteDoc.data();
+        const paymentLinks = (quoteData.paymentLinks || []).map((link) => {
+          const matches = linkId ? ((link.url && String(link.url).includes(linkId)) || link.id === linkId) : (link.status === 'active' || link.status === 'pending');
+          return matches ? { ...link, status: 'paid', paidAt: Timestamp.now() } : link.status === 'active' ? { ...link, status: 'expired' } : link;
+        });
+        await quoteDoc.ref.update({
+          paymentLinks,
+          paymentStatus: 'paid',
+          status: 'awaiting_collection',
+          timeline: (quoteData.timeline || []).concat({
+            id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+            date: Timestamp.now(),
+            status: 'paid',
+            description: 'Paiement reçu et confirmé (Paytweak)',
+            user: 'system',
+          }),
+          updatedAt: Timestamp.now(),
+        });
+
+        try {
+          const saasAccountId = quoteData.saasAccountId;
+          let commercialName = 'votre MBE';
+          if (saasAccountId) {
+            const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+            if (saasDoc.exists && saasDoc.data().commercialName) commercialName = saasDoc.data().commercialName;
+          }
+          const quoteForEmail = {
+            ...quoteData,
+            id: quoteDoc.id,
+            saasAccountId,
+            _saasCommercialName: commercialName,
+            client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail },
+          };
+          await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, { amount: amountEur, isPrincipal: true });
+        } catch (e) {
+          console.error('[paytweak-webhook] Email:', e.message);
+        }
+      }
+      console.log('[paytweak-webhook] Groupe payé:', groupId, devisIds.length, 'devis');
+    } else {
+      let quoteDoc = null;
+      if (parsed.devisId) {
+        quoteDoc = await firestore.collection('quotes').doc(parsed.devisId).get();
+      } else if (parsed.reference) {
+        const refSnap = await firestore.collection('quotes').where('reference', '==', parsed.reference).limit(1).get();
+        quoteDoc = refSnap.empty ? null : refSnap.docs[0];
+      }
+      if (!quoteDoc || !quoteDoc.exists) {
+        console.warn('[paytweak-webhook] Devis non trouvé:', parsed.devisId || parsed.reference);
+        return res.status(200).send('ok');
+      }
+      const devisId = quoteDoc.id;
+      const quoteData = quoteDoc.data();
+      const paymentLinks = (quoteData.paymentLinks || []).map((link) => {
+        const matches = linkId ? ((link.url && String(link.url).includes(linkId)) || link.id === linkId) : (link.status === 'active' || link.status === 'pending');
+        return matches ? { ...link, status: 'paid', paidAt: Timestamp.now() } : link.status === 'active' ? { ...link, status: 'expired' } : link;
+      });
+
+      await quoteDoc.ref.update({
+        paymentLinks,
+        paymentStatus: 'paid',
+        status: 'awaiting_collection',
+        timeline: (quoteData.timeline || []).concat({
+          id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+          date: Timestamp.now(),
+          status: 'paid',
+          description: 'Paiement reçu et confirmé (Paytweak)',
+          user: 'system',
+        }),
+        updatedAt: Timestamp.now(),
+      });
+
+      try {
+        const saasAccountId = quoteData.saasAccountId;
+        let commercialName = 'votre MBE';
+        if (saasAccountId) {
+          const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+          if (saasDoc.exists && saasDoc.data().commercialName) commercialName = saasDoc.data().commercialName;
+        }
+        const quoteForEmail = {
+          ...quoteData,
+          id: quoteDoc.id,
+          saasAccountId,
+          _saasCommercialName: commercialName,
+          client: quoteData.client || { name: quoteData.clientName, email: quoteData.clientEmail },
+        };
+        await sendPaymentReceivedEmail(firestore, sendEmail, quoteForEmail, { amount: amountEur, isPrincipal: true });
+      } catch (e) {
+        console.error('[paytweak-webhook] Email:', e.message);
+      }
+      console.log('[paytweak-webhook] Devis payé:', devisId);
+    }
+
+    return res.status(200).send('ok');
+  } catch (err) {
+    console.error('[paytweak-webhook] Erreur:', err);
+    return res.status(500).send('error');
+  }
+}
 
 /**
  * Convertit un buffer en base64
@@ -7897,6 +8066,8 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
         reference: devis.reference || devisId,
         description,
         customer: { name: devis.client?.name || '', email: devis.client?.email || '', phone: devis.client?.phone || '' },
+        devisId,
+        quote: devis,
       }, baseUrl);
       const paiementRef = firestore.collection('paiements').doc();
       try {
@@ -9704,6 +9875,8 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
                     email: devis.client?.email || '',
                     phone: devis.client?.phone || '',
                   },
+                  devisId,
+                  quote: devis,
                 }, baseUrl);
                 const paiementRef = await firestore.collection('paiements').add({
                   devisId,
@@ -10533,9 +10706,9 @@ app.put('/api/account/payment-settings', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
     }
     if (paymentProvider === 'paytweak') {
-      const apiKey = await getPaytweakApiKey(firestore, saasAccountId);
-      if (!apiKey) {
-        return res.status(400).json({ error: 'Configurez d\'abord votre clé API Paytweak dans les paramètres' });
+      const keys = await getPaytweakKeys(firestore, saasAccountId);
+      if (!keys?.publicKey || !keys?.privateKey) {
+        return res.status(400).json({ error: 'Configurez vos clés Paytweak (publique + privée) dans les paramètres' });
       }
     }
     await saasRef.update({
@@ -10556,9 +10729,9 @@ app.put('/api/account/paytweak-key', requireAuth, async (req, res) => {
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
   const saasAccountId = req.saasAccountId;
   if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
-  const { apiKey } = req.body;
-  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-    return res.status(400).json({ error: 'Clé API requise' });
+  const { publicKey, privateKey } = req.body;
+  if (!publicKey || typeof publicKey !== 'string' || !publicKey.trim() || !privateKey || typeof privateKey !== 'string' || !privateKey.trim()) {
+    return res.status(400).json({ error: 'Clés publique et privée Paytweak requises' });
   }
   try {
     const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
@@ -10568,10 +10741,11 @@ app.put('/api/account/paytweak-key', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Cette fonctionnalité n\'est pas disponible pour votre compte' });
     }
     await saasRef.collection('secrets').doc('paytweak').set({
-      apiKey: apiKey.trim(),
+      publicKey: publicKey.trim(),
+      privateKey: privateKey.trim(),
       updatedAt: Timestamp.now(),
     });
-    console.log(`[API] ✅ Clé Paytweak enregistrée pour saasAccountId=${saasAccountId}`);
+    console.log(`[API] ✅ Clés Paytweak enregistrées pour saasAccountId=${saasAccountId}`);
     return res.json({ success: true });
   } catch (error) {
     console.error('[API] Erreur paytweak-key:', error);

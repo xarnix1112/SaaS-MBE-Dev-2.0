@@ -41,6 +41,7 @@ export async function createPaymentLink(
       currency,
       reference: input.quote.reference,
       description,
+      devisId: input.quote.id,
       customer: {
         name: input.quote.client.name,
         email: input.quote.client.email,
@@ -48,6 +49,12 @@ export async function createPaymentLink(
       },
       successUrl,
       cancelUrl,
+      quote: {
+        id: input.quote.id,
+        reference: input.quote.reference,
+        auctionSheet: input.quote.auctionSheet,
+        lot: input.quote.lot,
+      },
     }),
   });
 

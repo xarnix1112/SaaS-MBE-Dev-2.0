@@ -509,6 +509,8 @@ export async function handleCreatePaiement(req, res, firestore) {
             email: devis.client?.email || '',
             phone: devis.client?.phone || '',
           },
+          devisId,
+          quote: devis,
         }, baseUrl);
         const paiementId = await createPaiement(firestore, {
           devisId,
@@ -1558,11 +1560,6 @@ export async function handleStripeDisconnect(req, res, firestore) {
 export async function handleCreateGroupPaiement(req, res, firestore) {
   try {
     console.log("[stripe-connect] 📥 Création de paiement groupé demandée");
-    
-    if (!stripe) {
-      console.error("[stripe-connect] ❌ Stripe non configuré");
-      return res.status(400).json({ error: "Stripe non configuré" });
-    }
 
     if (!firestore) {
       console.error("[stripe-connect] ❌ Firestore non initialisé");
@@ -1625,12 +1622,74 @@ export async function handleCreateGroupPaiement(req, res, firestore) {
       return res.status(400).json({ error: "Montant total invalide" });
     }
 
-    // Récupérer le client SaaS (utiliser le premier devis)
+    const totalWithShipping = totalAmount + (group.shippingCost || 0);
     const firstDevis = devisList[0];
-    let clientSaasId = group.saasAccountId || firstDevis.clientSaasId || process.env.DEFAULT_CLIENT_ID;
+    let clientSaasId = group.saasAccountId || firstDevis.saasAccountId || firstDevis.clientSaasId || process.env.DEFAULT_CLIENT_ID;
     console.log("[stripe-connect] Client SaaS:", clientSaasId);
 
-    // Récupérer le client SaaS
+    // Vérifier si Paytweak est utilisé pour ce compte
+    const paymentConfig = await getPaymentProviderConfig(firestore, clientSaasId);
+    const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
+
+    if (usePaytweak) {
+      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      try {
+        const paytweakResult = await createPaytweakLinkForAccount(firestore, clientSaasId, {
+          amount: totalWithShipping,
+          currency: 'EUR',
+          reference: `Groupe ${groupId}`,
+          description: `Paiement groupé - ${group.devisIds.length} devis`,
+          customer: {
+            name: firstDevis.client?.name || firstDevis.clientName || '',
+            email: firstDevis.client?.email || firstDevis.clientEmail || group.clientEmail || '',
+            phone: firstDevis.client?.phone || '',
+          },
+          groupId,
+          quote: firstDevis,
+        }, baseUrl);
+
+        const paiementData = {
+          groupId,
+          devisIds: group.devisIds,
+          clientSaasId,
+          saasAccountId: clientSaasId,
+          paytweakUrl: paytweakResult.url,
+          orderId: paytweakResult.order_id,
+          amount: totalWithShipping,
+          type: "GROUP",
+          status: "PENDING",
+          paymentProvider: "paytweak",
+          createdAt: Timestamp.now(),
+        };
+        const paiementRef = await firestore.collection("paiements").add(paiementData);
+
+        await firestore.collection("shipmentGroups").doc(groupId).update({
+          status: "validated",
+          updatedAt: Timestamp.now(),
+        });
+
+        await createNotification(firestore, {
+          clientSaasId,
+          type: NOTIFICATION_TYPES.DEVIS_SENT,
+          title: "Lien de paiement groupé créé (Paytweak)",
+          message: `Un lien de paiement a été créé pour le groupement ${groupId} (${group.devisIds.length} devis)`,
+        });
+
+        console.log("[stripe-connect] ✅ Lien Paytweak groupé créé:", paytweakResult.url);
+        return res.json({
+          success: true,
+          paiementId: paiementRef.id,
+          checkoutUrl: paytweakResult.url,
+          sessionId: paytweakResult.id,
+          amount: totalWithShipping,
+        });
+      } catch (paytweakErr) {
+        console.error("[stripe-connect] ❌ Erreur Paytweak groupé:", paytweakErr);
+        return res.status(500).json({ error: paytweakErr.message || "Erreur lors de la création du lien Paytweak" });
+      }
+    }
+
+    // Récupérer le client SaaS (pour Stripe)
     let client;
     try {
       client = await getClientById(firestore, clientSaasId);
@@ -1644,6 +1703,11 @@ export async function handleCreateGroupPaiement(req, res, firestore) {
       return res.status(404).json({ 
         error: `Client ${clientSaasId} non trouvé` 
       });
+    }
+
+    if (!stripe) {
+      console.error("[stripe-connect] ❌ Stripe non configuré");
+      return res.status(400).json({ error: "Stripe non configuré" });
     }
 
     if (!client.stripeAccountId) {
