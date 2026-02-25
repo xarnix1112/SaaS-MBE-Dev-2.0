@@ -5636,11 +5636,22 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
     const effectiveSaasId = saasAccountId || (quotes && quotes[0]?.saasAccountId);
     if (quotes && quotes.length > 0 && firestore) {
       const now = Timestamp.now();
+      // Afficher la date de collecte dans l'historique pour repérage rapide
+      let descSuffix = '';
+      if (plannedDate) {
+        try {
+          const d = new Date(plannedDate);
+          descSuffix = ` pour le ${d.toLocaleDateString('fr-FR', { day: 'numeric', month: 'short', year: 'numeric' })}`;
+          if (plannedTime) descSuffix += ` à ${plannedTime}`;
+        } catch (e) {
+          console.warn('[AI Proxy] Erreur format date collecte:', e);
+        }
+      }
       const timelineEvent = {
         id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
         date: now,
         status: 'awaiting_collection',
-        description: `Collecte planifiée - Demande envoyée à ${auctionHouse || 'la salle des ventes'}`,
+        description: `Collecte planifiée - Demande envoyée à ${auctionHouse || 'la salle des ventes'}${descSuffix}`,
       };
       for (const q of quotes) {
         try {
