@@ -1,0 +1,8 @@
+# Réduire le contexte de build
+node_modules
+dist
+.git
+.env.local
+.env*.local
+*.log
+.temp-pdf-*.pdf
