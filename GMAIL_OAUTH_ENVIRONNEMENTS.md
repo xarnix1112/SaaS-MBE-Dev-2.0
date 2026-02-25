@@ -22,7 +22,7 @@ Les variables sont lues par le **backend** (Railway). Le fichier `.env.local` n'
 |----------|-------------|-------------------|----------------------|
 | `GMAIL_CLIENT_ID` | ✅ `.env.local` | ✅ Variables Railway staging | ✅ Variables Railway prod |
 | `GMAIL_CLIENT_SECRET` | ✅ `.env.local` | ✅ Variables Railway staging | ✅ Variables Railway prod |
-| `GMAIL_REDIRECT_URI` | `http://localhost:5174/auth/gmail/callback` | `https://saas-mbe-dev-staging-staging.up.railway.app/auth/gmail/callback` | `https://focused-light-production.up.railway.app/auth/gmail/callback` |
+| `GMAIL_REDIRECT_URI` | `http://localhost:5174/auth/gmail/callback` | `https://saas-mbe-dev-staging-staging.up.railway.app/auth/gmail/callback` | `https://api.mbe-sdv.fr/auth/gmail/callback` |
 | `FRONTEND_URL` | `http://localhost:8080` | `https://staging.mbe-sdv.fr` | `https://mbe-sdv.fr` ou `https://www.mbe-sdv.fr` |
 
 ---
@@ -36,7 +36,7 @@ Un seul projet Google Cloud peut servir tous les environnements. Il suffit d'ajo
 3. Dans **Authorized redirect URIs**, ajoute :
    - `http://localhost:5174/auth/gmail/callback` (dev)
    - `https://saas-mbe-dev-staging-staging.up.railway.app/auth/gmail/callback` (staging)
-   - `https://focused-light-production.up.railway.app/auth/gmail/callback` (production)
+   - `https://api.mbe-sdv.fr/auth/gmail/callback` (production)
 4. **Save**
 
 Tu peux utiliser le **même** `GMAIL_CLIENT_ID` et `GMAIL_CLIENT_SECRET` pour dev, staging et prod.
@@ -114,21 +114,21 @@ Les logs peuvent aussi afficher une erreur Firebase 403 liée à `saas-mbe-sdv-s
 
 ---
 
-## Envoi d'emails en STAGING (compte Gmail connecté)
+## Envoi d'emails via Gmail connecté (staging ET production)
 
-En environnement **staging** (`NODE_ENV=staging`), tous les emails (devis, paiement reçu, collecte, expédié, etc.) sont envoyés via le **compte Gmail connecté** dans Paramètres > Compte Email, et non via Resend.
+En **staging** et en **production**, tous les emails (devis, relances, collecte, expédié, etc.) sont envoyés via le **compte Gmail connecté** dans Paramètres > Compte Email.
 
 ### Prérequis
 
-1. **NODE_ENV=staging** sur Railway (service staging)
+1. **Gmail OAuth configuré** sur Railway pour staging ET production
 2. **Compte Gmail connecté** pour chaque espace MBE (Paramètres > Compte Email)
-3. **Reconnexion nécessaire** : le scope `gmail.send` a été ajouté. Si vous aviez déjà connecté Gmail avant, **reconnectez-le** (Paramètres > Compte Email > Changer de compte) pour obtenir la permission d'envoi.
+3. **Redirect URI production** : `https://api.mbe-sdv.fr/auth/gmail/callback` dans Google Cloud Console
+4. Variables Railway production : `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REDIRECT_URI=https://api.mbe-sdv.fr/auth/gmail/callback`
 
 ### Comportement
 
-- Sans compte Gmail connecté → erreur explicite : *"Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email pour envoyer des emails en staging."*
-- L'email part de l'adresse du compte Gmail connecté (ex. `contact@mbe-sdv.fr`), pas de `devis@mbe-sdv.fr`
-- En production : Resend reste utilisé comme avant
+- Sans compte Gmail connecté → erreur : *"Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email."*
+- L'email part de l'adresse du compte Gmail connecté (ex. `contact@gmail.com` ou `nom@domaine.fr`), pas de `devis@mbe-sdv.fr`
 
 ---
 

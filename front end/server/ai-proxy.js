@@ -4327,13 +4327,13 @@ function isStagingEnv() {
 
 /**
  * Envoie un email via l'API Gmail (compte connecté dans les paramètres)
- * Utilisé uniquement en staging. Nécessite saasAccountId et un compte Gmail connecté.
+ * Utilisé en staging ET en production. Nécessite saasAccountId et un compte Gmail connecté.
  * @param {Object} params - idem sendEmail
  * @returns {Promise<{ id: string, messageId: string, source: 'GMAIL' }>}
  */
 async function sendEmailViaGmail({ to, subject, text, html, saasAccountId }) {
   if (!firestore || !saasAccountId) {
-    throw new Error('En staging, un compte Gmail doit être connecté. Connectez un compte Gmail dans Paramètres > Compte Email.');
+    throw new Error('Un compte Gmail doit être connecté. Connectez un compte Gmail dans Paramètres > Compte Email.');
   }
 
   const saasAccountRef = firestore.collection('saasAccounts').doc(saasAccountId);
@@ -4344,7 +4344,7 @@ async function sendEmailViaGmail({ to, subject, text, html, saasAccountId }) {
 
   const gmailIntegration = saasAccountDoc.data().integrations?.gmail;
   if (!gmailIntegration?.connected || !gmailIntegration?.email) {
-    throw new Error('Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email pour envoyer des emails en staging.');
+    throw new Error('Aucun compte Gmail connecté pour cet espace. Connectez un compte Gmail dans Paramètres > Compte Email pour envoyer des emails.');
   }
 
   const toEmail = extractEmailAddress(to);
@@ -4414,24 +4414,21 @@ async function sendEmailViaGmail({ to, subject, text, html, saasAccountId }) {
 }
 
 /**
- * Envoie un email via Resend API (production) ou Gmail (staging)
+ * Envoie un email via le compte Gmail connecté dans Paramètres > Compte Email.
+ * Staging ET production : tous les emails partent de l'adresse Gmail de l'utilisateur.
  * @param {Object} params
  * @param {string} params.to - Email destinataire
  * @param {string} params.subject - Sujet
  * @param {string} params.text - Contenu texte brut (fallback)
  * @param {string} params.html - Contenu HTML
- * @param {string} [params.saasAccountId] - ID du compte SaaS (optionnel, pour récupérer le nom commercial)
+ * @param {string} [params.saasAccountId] - ID du compte SaaS (requis)
  * @returns {Promise<Object>} Réponse avec messageId
  */
 async function sendEmail({ to, subject, text, html, saasAccountId }) {
-  if (isStagingEnv()) {
-    if (!saasAccountId) {
-      throw new Error('En staging, le saasAccountId est requis. Connectez un compte Gmail dans Paramètres > Compte Email.');
-    }
-    return sendEmailViaGmail({ to, subject, text, html, saasAccountId });
+  if (!saasAccountId) {
+    throw new Error('Impossible d\'envoyer l\'email : connectez un compte Gmail dans Paramètres > Compte Email.');
   }
-
-  console.log('[Resend] ===== DÉBUT sendEmail =====');
+  return sendEmailViaGmail({ to, subject, text, html, saasAccountId });
   console.log('[Resend] Paramètres reçus:', {
     to: typeof to === 'string' ? to.substring(0, 50) : String(to),
     subject: typeof subject === 'string' ? subject.substring(0, 50) : String(subject),
