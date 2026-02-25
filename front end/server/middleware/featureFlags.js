@@ -18,8 +18,16 @@ import { Timestamp } from "firebase-admin/firestore";
 function resolvePlanId(raw) {
   if (!raw) return "starter";
   const mapping = { free: "starter", basic: "starter", enterprise: "ultra" };
-  return mapping[raw] || raw;
+  const resolved = mapping[raw] || raw;
+  return ["starter", "pro", "ultra"].includes(resolved) ? resolved : "starter";
 }
+
+/** Valeurs par défaut si la collection plans n'est pas initialisée (ex: Firebase prod) */
+const DEFAULT_PLANS = {
+  starter: { name: "Starter", limits: { quotesPerYear: 2000 } },
+  pro: { name: "Pro", limits: { quotesPerYear: 5000 } },
+  ultra: { name: "Ultra", limits: { quotesPerYear: 12000 }, features: { customizeAutoEmails: true } },
+};
 
 /**
  * Récupère les features finales pour un saasAccountId
@@ -40,8 +48,14 @@ async function getAccountFeatures(firestore, saasAccountId) {
   const customFeatures = saasData.customFeatures || {};
 
   const planSnapshot = await firestore.collection("plans").doc(planId).get();
-  const plan = planSnapshot.exists ? planSnapshot.data() : null;
-  const planFeatures = plan?.features || {};
+  let plan = planSnapshot.exists ? planSnapshot.data() : null;
+  if (!plan) {
+    plan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
+    console.warn("[featureFlags] Plan Firestore manquant pour", planId, "- utilisation des valeurs par défaut. Exécutez: npm run plans:init");
+  }
+  // Fusionner avec les features par défaut pour garantir customizeAutoEmails etc. même si plan Firestore incomplet
+  const defaultPlan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
+  const planFeatures = { ...(defaultPlan.features || {}), ...(plan?.features || {}) };
 
   // customFeatures écrase le plan
   const finalFeatures = { ...planFeatures, ...customFeatures };
@@ -83,7 +97,12 @@ async function getAccountFeaturesAndLimits(firestore, saasAccountId) {
   const saasData = saasDoc.data();
   const planId = resolvePlanId(saasData.planId || saasData.plan);
   let usage = { ...(saasData.usage || {}) };
-  const limits = plan?.limits || {};
+  // Si plan Firestore vide, utiliser les limites par défaut
+  let limits = plan?.limits || {};
+  if (Object.keys(limits).length === 0) {
+    const defaultPlan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
+    limits = defaultPlan.limits || { quotesPerYear: 2000 };
+  }
 
   // Recalculer usage.quotesPerYear à partir du nombre réel de devis (corrige les désyncs)
   if (limits.quotesPerYear != null && limits.quotesPerYear !== -1) {

@@ -7,6 +7,7 @@
 
 import { useEffect, useState } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
+import { useQueryClient } from '@tanstack/react-query';
 import { auth } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { authenticatedFetch } from '@/lib/api';
@@ -74,7 +75,8 @@ const PLANS = [
 
 export default function ChoosePlan() {
   const navigate = useNavigate();
-  const { saasAccount, isLoading } = useAuth();
+  const queryClient = useQueryClient();
+  const { saasAccount } = useAuth();
   const [updatingPlanId, setUpdatingPlanId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -100,6 +102,7 @@ export default function ChoosePlan() {
           throw new Error(data.error || 'Erreur lors du changement de plan');
         }
         toast.success(`Plan ${planId === 'starter' ? 'Starter' : planId === 'pro' ? 'Pro' : 'Ultra'} activé`);
+        queryClient.invalidateQueries({ queryKey: ['features'] });
         navigate('/account', { replace: true });
       } catch (error) {
         console.error('[ChoosePlan] Erreur changement plan:', error);
