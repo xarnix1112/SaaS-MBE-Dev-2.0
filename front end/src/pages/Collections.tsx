@@ -155,6 +155,16 @@ export default function Collections() {
       return;
     }
 
+    if (!plannedDate?.trim()) {
+      toast.error("Veuillez sélectionner une date pour la collecte");
+      return;
+    }
+
+    if (!plannedTime?.trim()) {
+      toast.error("Veuillez sélectionner une heure pour la collecte");
+      return;
+    }
+
     // Envoyer un email pour chaque salle des ventes
     const emailPromises = Object.entries(byHouse).map(async ([houseName, houseQuotes]) => {
       // Priorité 1: Email manuel saisi dans le dialogue
@@ -529,19 +539,21 @@ export default function Collections() {
                   })()}
                   
                   <div>
-                    <Label>Date souhaitée</Label>
+                    <Label>Date souhaitée (obligatoire)</Label>
                     <Input
                       type="date"
                       value={plannedDate}
                       onChange={(e) => setPlannedDate(e.target.value)}
+                      required
                     />
                   </div>
                   <div>
-                    <Label>Heure souhaitée</Label>
+                    <Label>Heure souhaitée (obligatoire)</Label>
                     <Input
                       type="time"
                       value={plannedTime}
                       onChange={(e) => setPlannedTime(e.target.value)}
+                      required
                     />
                   </div>
                   <div>
