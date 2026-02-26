@@ -197,6 +197,9 @@ export interface Quote {
   shipmentGroupId?: string | null; // ID du groupe d'expédition
   isGrouped?: boolean; // Indicateur rapide de groupement
   clientId?: string; // ID du client SaaS
+
+  /** Indique qu'une collecte a été planifiée (email envoyé à la SDV) */
+  collectionPlannedAt?: Date | { toDate: () => Date } | null;
   clientName?: string; // Nom du client
   clientEmail?: string; // Email du client
   recipientAddress?: string; // Adresse du destinataire

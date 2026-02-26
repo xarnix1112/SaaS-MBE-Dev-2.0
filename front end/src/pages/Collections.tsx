@@ -30,6 +30,7 @@ import {
   Euro,
   FileText,
   Building2,
+  AlertCircle,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useState, useMemo } from 'react';
@@ -48,6 +49,11 @@ export default function Collections() {
   const [collectionNote, setCollectionNote] = useState('');
   // Stocker les emails manuels par salle des ventes
   const [manualEmails, setManualEmails] = useState<Record<string, string>>({});
+  // Dialog "Lot non récupéré"
+  const [isCollectionFailedDialogOpen, setIsCollectionFailedDialogOpen] = useState(false);
+  const [collectionFailedQuoteId, setCollectionFailedQuoteId] = useState<string | null>(null);
+  const [collectionFailedReason, setCollectionFailedReason] = useState('');
+  const [isSendingCollectionFailed, setIsSendingCollectionFailed] = useState(false);
 
   // Inclure uniquement les devis en attente de collecte (pas encore collectés)
   // Exclure les devis avec le statut 'collected' car ils doivent apparaître dans "Préparation"
@@ -146,6 +152,16 @@ export default function Collections() {
 
     if (missingEmails.length > 0) {
       toast.error(`Veuillez saisir un email pour: ${missingEmails.join(', ')}`);
+      return;
+    }
+
+    if (!plannedDate?.trim()) {
+      toast.error("Veuillez sélectionner une date pour la collecte");
+      return;
+    }
+
+    if (!plannedTime?.trim()) {
+      toast.error("Veuillez sélectionner une heure pour la collecte");
       return;
     }
 
@@ -249,6 +265,7 @@ export default function Collections() {
     });
 
     await Promise.all(emailPromises);
+    queryClient.invalidateQueries({ queryKey: ['quotes'] });
     setIsPlanningDialogOpen(false);
     setSelectedQuotes([]);
     setPlannedDate('');
@@ -273,6 +290,46 @@ export default function Collections() {
     } catch (error) {
       console.error('Erreur:', error);
       toast.error('Erreur lors de la mise à jour');
+    }
+  };
+
+  // Notifier le client qu'un lot n'a pas pu être récupéré
+  const handleNotifyCollectionFailed = (quoteId: string) => {
+    setCollectionFailedQuoteId(quoteId);
+    setCollectionFailedReason('');
+    setIsCollectionFailedDialogOpen(true);
+  };
+
+  const handleSubmitCollectionFailed = async () => {
+    if (!collectionFailedQuoteId || !collectionFailedReason.trim()) {
+      toast.error('Veuillez indiquer la raison');
+      return;
+    }
+    if (collectionFailedReason.trim().length > 250) {
+      toast.error('La raison ne doit pas dépasser 250 caractères');
+      return;
+    }
+    setIsSendingCollectionFailed(true);
+    try {
+      const res = await authenticatedFetch(`/api/devis/${collectionFailedQuoteId}/notify-collection-failed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ reason: collectionFailedReason.trim() }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de l\'envoi');
+      }
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      toast.success('Client notifié par email');
+      setIsCollectionFailedDialogOpen(false);
+      setCollectionFailedQuoteId(null);
+      setCollectionFailedReason('');
+    } catch (error) {
+      console.error('[Collections] Erreur notify collection failed:', error);
+      toast.error(error instanceof Error ? error.message : 'Erreur lors de la notification');
+    } finally {
+      setIsSendingCollectionFailed(false);
     }
   };
 
@@ -482,19 +539,21 @@ export default function Collections() {
                   })()}
                   
                   <div>
-                    <Label>Date souhaitée</Label>
+                    <Label>Date souhaitée (obligatoire)</Label>
                     <Input
                       type="date"
                       value={plannedDate}
                       onChange={(e) => setPlannedDate(e.target.value)}
+                      required
                     />
                   </div>
                   <div>
-                    <Label>Heure souhaitée</Label>
+                    <Label>Heure souhaitée (obligatoire)</Label>
                     <Input
                       type="time"
                       value={plannedTime}
                       onChange={(e) => setPlannedTime(e.target.value)}
+                      required
                     />
                   </div>
                   <div>
@@ -519,6 +578,50 @@ export default function Collections() {
             </Dialog>
           </div>
         )}
+
+        {/* Dialog Lot non récupéré */}
+        <Dialog open={isCollectionFailedDialogOpen} onOpenChange={setIsCollectionFailedDialogOpen}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Lot non récupéré</DialogTitle>
+              <DialogDescription>
+                Envoyer un email au client pour l'informer que le lot n'a pas pu être récupéré auprès de la salle des ventes, et lui indiquer de la contacter.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <Label htmlFor="collectionFailedReason">
+                  Raison (obligatoire)
+                </Label>
+                <Textarea
+                  id="collectionFailedReason"
+                  value={collectionFailedReason}
+                  onChange={(e) => setCollectionFailedReason(e.target.value)}
+                  placeholder="Ex. : Lot non disponible, délai dépassé, document manquant…"
+                  maxLength={250}
+                  rows={4}
+                  className="mt-2"
+                />
+                <p className="text-xs text-muted-foreground mt-1">
+                  {collectionFailedReason.length}/250 caractères
+                </p>
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setIsCollectionFailedDialogOpen(false)} disabled={isSendingCollectionFailed}>
+                Annuler
+              </Button>
+              <Button onClick={handleSubmitCollectionFailed} disabled={isSendingCollectionFailed || !collectionFailedReason.trim()}>
+                {isSendingCollectionFailed ? 'Envoi...' : (
+                  <>
+                    <Mail className="w-4 h-4 mr-2" />
+                    Envoyer l'email au client
+                  </>
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Collection List - Groupée par salle des ventes */}
         {Object.entries(quotesByAuctionHouse).map(([auctionHouse, houseQuotes]) => (
@@ -617,16 +720,29 @@ export default function Collections() {
                         )}
 
                         {/* Actions */}
-                        <div className="flex items-center gap-2 pt-2 border-t border-border">
+                        <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
                           {(quote.status === 'awaiting_collection' || (quote.paymentStatus === 'paid' && quote.status !== 'collected')) && (
-                            <Button 
-                              size="sm" 
-                              className="gap-1"
-                              onClick={() => handleMarkAsCollected(quote.id)}
-                            >
-                              <Truck className="w-4 h-4" />
-                              Marquer comme collecté
-                            </Button>
+                            <>
+                              <Button 
+                                size="sm" 
+                                className="gap-1"
+                                onClick={() => handleMarkAsCollected(quote.id)}
+                              >
+                                <Truck className="w-4 h-4" />
+                                Marquer comme collecté
+                              </Button>
+                              {(quote as { collectionPlannedAt?: unknown }).collectionPlannedAt && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  className="gap-1"
+                                  onClick={() => handleNotifyCollectionFailed(quote.id)}
+                                >
+                                  <AlertCircle className="w-4 h-4" />
+                                  Lot non récupéré
+                                </Button>
+                              )}
+                            </>
                           )}
                           {quote.status === 'collected' && (
                             <>

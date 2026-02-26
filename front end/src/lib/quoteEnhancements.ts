@@ -458,6 +458,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         auctionSheetFull: auctionSheet, // Log complet pour debug
       });
       
+      const collectionPlannedAt = d?.collectionPlannedAt ?? null;
       enhancements.set(s.id, {
         auctionSheet,
         lotEnriched: (d?.lotEnriched as PersistedLotEnriched) || null,
@@ -465,6 +466,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         shippingPrice,
         status: firestoreStatus, // Récupérer le statut depuis Firestore
         paymentStatus: firestorePaymentStatus, // Récupérer le statut de paiement depuis Firestore
+        collectionPlannedAt,
         timeline, // Récupérer l'historique depuis Firestore
         paymentLinks,
         internalNotes, // Récupérer les notes internes depuis Firestore
@@ -583,6 +585,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
               packagingPrice: d?.packagingPrice || null,
               shippingPrice: d?.shippingPrice || null,
               status: d?.status || null, // Récupérer le statut depuis Firestore
+              collectionPlannedAt: d?.collectionPlannedAt ?? null,
                 paymentStatus: d?.paymentStatus || null, // Récupérer le statut de paiement depuis Firestore
                 timeline, // Récupérer l'historique depuis Firestore
               paymentLinks,
@@ -621,6 +624,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
                 packagingPrice: d?.packagingPrice || null,
                 shippingPrice: d?.shippingPrice || null,
                 status: d?.status || null, // Récupérer le statut depuis Firestore
+                collectionPlannedAt: d?.collectionPlannedAt ?? null,
                 paymentStatus: d?.paymentStatus || null, // Récupérer le statut de paiement depuis Firestore
                 timeline, // Récupérer l'historique depuis Firestore (IMPORTANT)
                 paymentLinks,
@@ -869,11 +873,15 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         const finalInsuranceAmount2 = firestoreData.insuranceAmount !== null && firestoreData.insuranceAmount !== undefined ? firestoreData.insuranceAmount : q.options.insuranceAmount;
         const finalInsurance2 = firestoreData.insurance !== null && firestoreData.insurance !== undefined ? firestoreData.insurance : q.options.insurance;
         
-        if (finalStatus !== q.status || finalTimeline.length > 0 || finalPaymentStatus !== q.paymentStatus || finalInternalNotes.length !== (q.internalNotes?.length || 0) || finalRealDimensions !== q.lot.realDimensions || finalCarrier !== q.carrier || finalTrackingNumber !== q.trackingNumber || finalClientName2 !== q.client.name || finalClientEmail2 !== q.client.email || finalLotDescription2 !== q.lot.description) {
+        const finalCollectionPlannedAt = snap?.collectionPlannedAt != null
+          ? (snap.collectionPlannedAt?.toDate ? snap.collectionPlannedAt.toDate() : snap.collectionPlannedAt)
+          : q.collectionPlannedAt;
+        if (finalStatus !== q.status || finalTimeline.length > 0 || finalPaymentStatus !== q.paymentStatus || finalInternalNotes.length !== (q.internalNotes?.length || 0) || finalRealDimensions !== q.lot.realDimensions || finalCarrier !== q.carrier || finalTrackingNumber !== q.trackingNumber || finalClientName2 !== q.client.name || finalClientEmail2 !== q.client.email || finalLotDescription2 !== q.lot.description || finalCollectionPlannedAt !== q.collectionPlannedAt) {
           console.log(`[mergeEnhancements] ✅ Statut/historique mis à jour depuis Firestore pour ${q.reference} (sans autres enrichissements): ${q.status} → ${finalStatus}, paymentStatus: ${q.paymentStatus} → ${finalPaymentStatus}, timeline: ${finalTimeline.length} événements, notes: ${finalInternalNotes.length}, carrier: ${finalCarrier || 'non renseigné'}`);
           return {
             ...q,
             status: finalStatus,
+            collectionPlannedAt: finalCollectionPlannedAt,
             paymentStatus: finalPaymentStatus, // PRIORITÉ au statut de paiement depuis Firestore
             timeline: finalTimeline, // PRIORITÉ à l'historique depuis Firestore
             internalNotes: finalInternalNotes, // PRIORITÉ aux notes internes depuis Firestore
@@ -977,6 +985,9 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
       const finalInsuranceAmount3 = enh?.insuranceAmount !== null && enh?.insuranceAmount !== undefined ? enh.insuranceAmount : q.options.insuranceAmount;
       const finalInsurance3 = enh?.insurance !== null && enh?.insurance !== undefined ? enh.insurance : q.options.insurance;
       
+      const finalCollectionPlannedAt = enh?.collectionPlannedAt != null
+        ? (enh.collectionPlannedAt?.toDate ? enh.collectionPlannedAt.toDate() : enh.collectionPlannedAt)
+        : q.collectionPlannedAt;
       if (firestoreTimeline && firestoreTimeline.length > 0) {
         const finalPaymentStatus = enh?.paymentStatus 
           ? (enh.paymentStatus as Quote['paymentStatus'])
@@ -986,6 +997,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
           ...q,
           paymentStatus: finalPaymentStatus, // PRIORITÉ au statut de paiement depuis Firestore
           timeline: firestoreTimeline,
+          collectionPlannedAt: finalCollectionPlannedAt,
           internalNotes: finalInternalNotes, // PRIORITÉ aux notes internes depuis Firestore
           client: {
             ...q.client,
@@ -1040,6 +1052,7 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
           ...q,
           paymentStatus: enh?.paymentStatus ? (enh.paymentStatus as Quote['paymentStatus']) : q.paymentStatus,
           internalNotes: finalInternalNotes, // PRIORITÉ aux notes internes depuis Firestore
+          collectionPlannedAt: finalCollectionPlannedAt,
           client: {
             ...q.client,
             name: finalClientName3,
@@ -1163,7 +1176,10 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         };
       }
       
-      return q;
+      const fallbackCollectionPlannedAt = enh?.collectionPlannedAt != null
+        ? (enh.collectionPlannedAt?.toDate ? enh.collectionPlannedAt.toDate() : enh.collectionPlannedAt)
+        : undefined;
+      return fallbackCollectionPlannedAt !== undefined ? { ...q, collectionPlannedAt: fallbackCollectionPlannedAt } : q;
     }
 
     // Appliquer aussi au lot (pour remplir "Informations du lot" au redémarrage)
@@ -1292,6 +1308,9 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
       timeline: finalTimeline, // Utiliser l'historique depuis Firestore si disponible
       paymentLinks: finalPaymentLinks,
       internalNotes: finalInternalNotes, // PRIORITÉ aux notes internes depuis Firestore
+      collectionPlannedAt: enh.collectionPlannedAt != null
+        ? (enh.collectionPlannedAt?.toDate ? enh.collectionPlannedAt.toDate() : enh.collectionPlannedAt)
+        : q.collectionPlannedAt,
       client: {
         ...q.client,
         name: finalClientName,
