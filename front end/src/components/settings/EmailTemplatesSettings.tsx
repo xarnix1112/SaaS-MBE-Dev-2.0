@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { authenticatedFetch } from '@/lib/api';
 import { Mail, RotateCcw, Eye, Loader2, ChevronDown, ChevronUp, Plus, Trash2, ImageIcon } from 'lucide-react';
 
-const SECTION_BASED_TYPES = ['quote_send'] as const;
+const SECTION_BASED_TYPES = ['quote_send', 'payment_received'] as const;
 
 export interface SectionItem {
   id: string;
