@@ -4,6 +4,16 @@ import { useQuotes } from '@/hooks/use-quotes';
 import { Link } from 'react-router-dom';
 import { Badge } from '@/components/ui/badge';
 import { XCircle, FileText } from 'lucide-react';
+import type { ClientRefusalReason } from '@/types/quote';
+
+const REFUSAL_REASON_LABELS: Record<ClientRefusalReason, string> = {
+  tarif_trop_eleve: 'Tarif trop élevé',
+  client_a_paye_concurrent: 'Client a payé un concurrent',
+  plus_interesse: 'Plus intéressé',
+  autre: 'Autre',
+  pas_de_reponse: 'Pas de réponse / Abandonné',
+  refus_explicite: 'Refus explicite',
+};
 
 const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
 
@@ -53,7 +63,10 @@ export default function RefusedQuotes() {
                       })
                     : '-';
                   const reason =
-                    quote.clientRefusalReason === 'refus_explicite' ? 'Refus explicite' : 'Pas de réponse / abandon';
+                    (quote.clientRefusalReason && REFUSAL_REASON_LABELS[quote.clientRefusalReason])
+                      ? REFUSAL_REASON_LABELS[quote.clientRefusalReason]
+                      : (quote.clientRefusalReason === 'refus_explicite' ? 'Refus explicite' : quote.clientRefusalReason === 'pas_de_reponse' ? 'Pas de réponse / abandon' : 'Refusé');
+                  const detail = quote.clientRefusalReasonDetail;
                   return (
                     <Link
                       key={quote.id}
@@ -70,7 +83,7 @@ export default function RefusedQuotes() {
                           </p>
                         </div>
                         <Badge variant="outline" className="text-xs">
-                          {reason}
+                          {reason}{detail ? ` – ${detail}` : ''}
                         </Badge>
                         <span className="text-xs text-muted-foreground">{dateStr}</span>
                       </div>

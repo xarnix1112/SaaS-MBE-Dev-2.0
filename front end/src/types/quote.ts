@@ -15,8 +15,14 @@ export type QuoteStatus =
   | 'shipped'
   | 'completed';
 
-/** Refus ou abandon par le client final */
-export type ClientRefusalReason = 'refus_explicite' | 'pas_de_reponse';
+/** Refus ou abandon par le client final - raisons prédéfinies */
+export type ClientRefusalReason =
+  | 'tarif_trop_eleve'
+  | 'client_a_paye_concurrent'
+  | 'plus_interesse'
+  | 'autre'
+  | 'refus_explicite'   // legacy
+  | 'pas_de_reponse';   // abandon
 
 export type VerificationStatus = 
   | 'valid'
@@ -210,6 +216,8 @@ export interface Quote {
   /** Refus/abandon par le client : status + raison */
   clientRefusalStatus?: 'client_refused';
   clientRefusalReason?: ClientRefusalReason;
+  /** Détail libre (optionnel) quand raison = "Autre" ou pour préciser */
+  clientRefusalReasonDetail?: string;
   clientRefusalAt?: Date | { toDate: () => Date } | null;
 
   /** Date d'envoi de la relance (pour abandon après 1 mois sans réponse) */

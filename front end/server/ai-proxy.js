@@ -7175,13 +7175,23 @@ app.post('/api/bilan/sync-quote/:quoteId', requireAuth, async (req, res) => {
 // REFUS / ABANDON CLIENT - Devis refusé ou abandonné par le client final
 // ============================================================================
 
+const REFUSAL_REASON_LABELS = {
+  tarif_trop_eleve: 'Tarif trop élevé',
+  client_a_paye_concurrent: 'Client a payé un concurrent',
+  plus_interesse: 'Plus intéressé',
+  autre: 'Autre',
+  pas_de_reponse: 'Pas de réponse / Abandonné',
+  refus_explicite: 'Refus explicite',
+};
+
 app.post('/api/quotes/:quoteId/client-refused', requireAuth, async (req, res) => {
   if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
   const { quoteId } = req.params;
-  const { reason } = req.body;
+  const { reason, reasonDetail } = req.body;
   if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
-  const validReasons = ['refus_explicite', 'pas_de_reponse'];
-  const clientRefusalReason = validReasons.includes(reason) ? reason : 'refus_explicite';
+  const validReasons = ['tarif_trop_eleve', 'client_a_paye_concurrent', 'plus_interesse', 'autre', 'pas_de_reponse', 'refus_explicite'];
+  const clientRefusalReason = validReasons.includes(reason) ? reason : 'autre';
+  const clientRefusalReasonDetail = typeof reasonDetail === 'string' ? reasonDetail.trim() : undefined;
 
   try {
     const ref = firestore.collection('quotes').doc(quoteId);
@@ -7191,21 +7201,24 @@ app.post('/api/quotes/:quoteId/client-refused', requireAuth, async (req, res) =>
     if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
     if (data.paymentStatus === 'paid') return res.status(400).json({ error: 'Un devis payé ne peut pas être marqué refusé' });
 
+    const desc = REFUSAL_REASON_LABELS[clientRefusalReason] || 'Devis refusé par le client';
     const timelineEvent = {
       id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       date: Timestamp.now(),
       status: 'client_refused',
-      description: clientRefusalReason === 'refus_explicite' ? 'Devis refusé par le client' : 'Devis abandonné (pas de réponse)',
+      description: clientRefusalReasonDetail ? `${desc} – ${clientRefusalReasonDetail}` : desc,
       user: 'Utilisateur',
     };
 
-    await ref.update({
+    const updateData = {
       clientRefusalStatus: 'client_refused',
       clientRefusalReason,
       clientRefusalAt: Timestamp.now(),
       timeline: FieldValue.arrayUnion(timelineEvent),
       updatedAt: Timestamp.now(),
-    });
+    };
+    if (clientRefusalReasonDetail) updateData.clientRefusalReasonDetail = clientRefusalReasonDetail;
+    await ref.update(updateData);
 
     const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
     if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
@@ -11704,6 +11717,7 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
       const allPaymentLinks = [...existingPaymentLinks, ...paymentLinksFromPaiements];
       
       // Convertir les Timestamps en Dates pour le frontend
+      const toIso = (v) => (v?.toDate ? v.toDate().toISOString() : v);
       return {
         id: doc.id,
         ...data,
@@ -11711,6 +11725,8 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
         paymentLinks: allPaymentLinks,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
+        clientRefusalAt: toIso(data.clientRefusalAt),
+        reminderSentAt: toIso(data.reminderSentAt),
         // Convertir timeline si présent
         timeline: data.timeline?.map((event) => ({
           ...event,

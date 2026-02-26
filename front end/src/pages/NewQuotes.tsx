@@ -42,11 +42,11 @@ export default function NewQuotes() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
 
   // Devis sans action jusqu'au statut "en attente de paiement" = tous ceux dont le statut
-  // n'a PAS encore atteint awaiting_payment (ni au-delà). Inclut: new, to_verify, verified,
-  // payment_link_sent, calculated, bordereau_linked, waiting_for_slip, ou tout statut inconnu.
+  // n'a PAS encore atteint awaiting_payment (ni au-delà). Exclut les devis refusés par le client.
   const newQuotes = useMemo(
     () =>
       quotes.filter((q) => {
+        if (q.clientRefusalStatus === 'client_refused') return false;
         const status = q.status || 'new';
         return !STATUS_APRES_ATTENTE_PAIEMENT.includes(status as typeof STATUS_APRES_ATTENTE_PAIEMENT[number]);
       }),

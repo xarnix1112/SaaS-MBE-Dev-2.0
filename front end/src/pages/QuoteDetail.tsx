@@ -18,11 +18,12 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
-import { Quote, DeliveryMode, DeliveryInfo, PaymentLink } from '@/types/quote';
+import { Quote, DeliveryMode, DeliveryInfo, PaymentLink, ClientRefusalReason } from '@/types/quote';
 import { toast } from 'sonner';
 import { useShipmentGrouping } from '@/hooks/useShipmentGrouping';
 import { GroupingSuggestion } from '@/components/shipment/GroupingSuggestion';
@@ -170,6 +171,17 @@ export default function QuoteDetail() {
   const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
   const [isRefusingQuote, setIsRefusingQuote] = useState(false);
   const [isSendingReminder, setIsSendingReminder] = useState(false);
+  const [isRefusalDialogOpen, setIsRefusalDialogOpen] = useState(false);
+  const [refusalReason, setRefusalReason] = useState<ClientRefusalReason>('tarif_trop_eleve');
+  const [refusalReasonDetail, setRefusalReasonDetail] = useState('');
+
+  const REFUSAL_REASONS: { value: ClientRefusalReason; label: string }[] = [
+    { value: 'tarif_trop_eleve', label: 'Tarif trop élevé' },
+    { value: 'client_a_paye_concurrent', label: 'Client a payé un concurrent' },
+    { value: 'plus_interesse', label: 'Plus intéressé' },
+    { value: 'pas_de_reponse', label: 'Pas de réponse / Abandonné' },
+    { value: 'autre', label: 'Autre' },
+  ];
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -1389,26 +1401,32 @@ export default function QuoteDetail() {
     }
   }, [quote?.id]);
 
-  const handleMarkRefused = async (reason: 'refus_explicite' | 'pas_de_reponse') => {
+  const handleMarkRefused = async (reason: ClientRefusalReason, reasonDetail?: string) => {
     if (!quote?.id) return;
     setIsRefusingQuote(true);
     try {
       const res = await authenticatedFetch(`/api/quotes/${quote.id}/client-refused`, {
         method: 'POST',
-        body: JSON.stringify({ reason }),
+        body: JSON.stringify({ reason, reasonDetail }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Erreur');
       }
-      toast.success(reason === 'refus_explicite' ? 'Devis marqué refusé' : 'Devis marqué abandonné');
+      toast.success('Devis marqué refusé par le client');
       queryClient.invalidateQueries({ queryKey: ['quotes'] });
-      setQuote((prev) => (prev ? { ...prev, clientRefusalStatus: 'client_refused', clientRefusalReason: reason, clientRefusalAt: new Date() } : prev));
+      setQuote((prev) => (prev ? { ...prev, clientRefusalStatus: 'client_refused', clientRefusalReason: reason, clientRefusalReasonDetail: reasonDetail, clientRefusalAt: new Date() } : prev));
+      setIsRefusalDialogOpen(false);
+      setRefusalReasonDetail('');
     } catch (e) {
       toast.error(e instanceof Error ? e.message : 'Erreur');
     } finally {
       setIsRefusingQuote(false);
     }
+  };
+
+  const handleRefusalDialogSubmit = () => {
+    handleMarkRefused(refusalReason, refusalReasonDetail.trim() || undefined);
   };
 
   const handleSendReminder = async () => {
@@ -2005,13 +2023,19 @@ export default function QuoteDetail() {
             </Button>
           </Link>
           <div className="flex items-center gap-2">
-            {/* N'afficher le badge de statut général que si le statut n'est pas "paid" 
-                (car le badge de paiement suffit pour indiquer que c'est payé) */}
-            {safeQuote.status !== 'paid' && (
-            <StatusBadge status={safeQuote.status} />
+            {safeQuote.clientRefusalStatus === 'client_refused' ? (
+              <Badge variant="destructive" className="gap-1">
+                <XCircle className="w-3 h-3" />
+                Refusé par le client
+              </Badge>
+            ) : (
+              <>
+                {safeQuote.status !== 'paid' && (
+                  <StatusBadge status={safeQuote.status} />
+                )}
+                <StatusBadge status={safeQuote.paymentStatus} type="payment" />
+              </>
             )}
-            {/* Toujours afficher le badge de paiement */}
-            <StatusBadge status={safeQuote.paymentStatus} type="payment" />
           </div>
         </div>
 
@@ -2909,30 +2933,19 @@ export default function QuoteDetail() {
                   </Button>
                 )}
                 {canMarkAbandoned && (
-                  <>
-                    <Alert variant="default" className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
-                      <AlertTriangle className="h-4 w-4" />
-                      <AlertTitle>Peut être marqué abandonné</AlertTitle>
-                      <AlertDescription>
-                        Relance envoyée il y a plus d'un mois sans réponse du client.
-                      </AlertDescription>
-                    </Alert>
-                    <Button
-                      variant="outline"
-                      className="w-full justify-start gap-2 text-amber-700 border-amber-300 hover:bg-amber-100"
-                      onClick={() => handleMarkRefused('pas_de_reponse')}
-                      disabled={isRefusingQuote}
-                    >
-                      {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
-                      Abandonné par le client
-                    </Button>
-                  </>
+                  <Alert variant="default" className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Peut être marqué abandonné</AlertTitle>
+                    <AlertDescription>
+                      Relance envoyée il y a plus d'un mois sans réponse du client. Cliquez sur « Refusé par le client » et choisissez « Pas de réponse / Abandonné ».
+                    </AlertDescription>
+                  </Alert>
                 )}
                 {canMarkRefused && (
                   <Button
                     variant="outline"
                     className="w-full justify-start gap-2"
-                    onClick={() => handleMarkRefused('refus_explicite')}
+                    onClick={() => setIsRefusalDialogOpen(true)}
                     disabled={isRefusingQuote}
                   >
                     {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
@@ -2985,6 +2998,59 @@ export default function QuoteDetail() {
             driveFileIdFromLink={(safeQuote as { driveFileIdFromLink?: string }).driveFileIdFromLink}
             onRetryOCR={() => triggerBordereauProcess(true)}
           />
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialogue refus client */}
+      <Dialog open={isRefusalDialogOpen} onOpenChange={setIsRefusalDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Refusé par le client</DialogTitle>
+            <DialogDescription>
+              Indiquez la raison du refus pour ce devis.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm font-medium">Raison</Label>
+              <RadioGroup
+                value={refusalReason}
+                onValueChange={(v) => setRefusalReason(v as ClientRefusalReason)}
+                className="mt-2 space-y-2"
+              >
+                {REFUSAL_REASONS.map((r) => (
+                  <div key={r.value} className="flex items-center space-x-2">
+                    <RadioGroupItem value={r.value} id={`refusal-${r.value}`} />
+                    <Label htmlFor={`refusal-${r.value}`} className="font-normal cursor-pointer">
+                      {r.label}
+                    </Label>
+                  </div>
+                ))}
+              </RadioGroup>
+            </div>
+            <div>
+              <Label htmlFor="refusal-detail" className="text-sm font-medium">
+                Précisions (optionnel)
+              </Label>
+              <Textarea
+                id="refusal-detail"
+                placeholder="Ex. : délai trop long, changement de projet..."
+                value={refusalReasonDetail}
+                onChange={(e) => setRefusalReasonDetail(e.target.value)}
+                className="mt-2 min-h-[80px]"
+                rows={3}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setIsRefusalDialogOpen(false)}>
+                Annuler
+              </Button>
+              <Button onClick={handleRefusalDialogSubmit} disabled={isRefusingQuote}>
+                {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Confirmer
+              </Button>
+            </div>
+          </div>
         </DialogContent>
       </Dialog>
 

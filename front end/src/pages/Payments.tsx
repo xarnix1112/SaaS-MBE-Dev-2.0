@@ -68,8 +68,9 @@ export default function Payments() {
   }, [quotes]);
 
   // Afficher tous les devis qui ont au moins un lien de paiement créé
-  // (peu importe leur statut actuel - ils peuvent être paid, awaiting_collection, collected, etc.)
+  // Exclure les devis refusés par le client (visibles via page Refusés, recherche, lien direct)
   const quotesWithPayment = quotes.filter(q => 
+    q.clientRefusalStatus !== 'client_refused' &&
     q.paymentLinks && q.paymentLinks.length > 0
   );
 

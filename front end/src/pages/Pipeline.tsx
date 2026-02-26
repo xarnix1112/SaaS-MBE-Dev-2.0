@@ -29,8 +29,11 @@ const pipelineColumns: PipelineColumn[] = [
 export default function Pipeline() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
 
+  // Exclure les devis refusés par le client (visibles via page Refusés, recherche, lien direct)
+  const visibleQuotes = quotes.filter(q => q.clientRefusalStatus !== 'client_refused');
+
   const getQuotesForColumn = (status: QuoteStatus) => {
-    return quotes.filter(q => q.status === status);
+    return visibleQuotes.filter(q => q.status === status);
   };
 
   return (

@@ -26,8 +26,10 @@ import { Link } from "react-router-dom";
 export default function Dashboard() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
   
+  // Exclure les devis refusés par le client (visibles uniquement via page Refusés, recherche, lien direct)
+  const visibleQuotes = quotes.filter((q) => q.clientRefusalStatus !== 'client_refused');
   // Sécuriser les quotes pour éviter les erreurs sur les propriétés manquantes
-  const safeQuotes = quotes.map((q) => ({
+  const safeQuotes = visibleQuotes.map((q) => ({
     ...q,
     status: q.status || "new",
     verificationIssues: q.verificationIssues || [],
