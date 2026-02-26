@@ -44,60 +44,73 @@ export const PLACEHOLDERS_EXTENDED = [
   { key: '{{amount}}', label: 'Montant (€)', alt: '{amount}' },
 ];
 
-/** Template par défaut - Envoi de devis (fourni par l'utilisateur) - structure HTML avec paragraphes et espacements */
-export const DEFAULT_QUOTE_SEND_HTML = `<p style="margin:0 0 1em 0;">Bonjour,</p>
+/** Template par défaut - Envoi de devis - espacement généreux pour lisibilité (Gmail, Outlook, etc.) */
+export const DEFAULT_QUOTE_SEND_HTML = `<div style="margin-bottom:24px;">
+<p style="margin:0 0 16px 0; line-height:1.6;">Bonjour,</p>
+<p style="margin:0 0 0; line-height:1.6;">Suite à votre demande, nous avons le plaisir de vous proposer notre devis pour la Collecte, l'Emballage et l'Expédition de vos lot(s) du bordereau n° {{bordereauNum}}, acquis à {{nomSalleVentes}}.</p>
+</div>
 
-<p style="margin:0 0 1em 0;">Suite à votre demande, nous avons le plaisir de vous proposer notre devis pour la Collecte, l'Emballage et l'Expédition de vos lot(s) du bordereau n° {{bordereauNum}}, acquis à {{nomSalleVentes}}.</p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>1 – Détail du devis</strong></p>
+<p style="margin:0 0 8px 0; line-height:1.6;">Retrait des lots + Emballage sur mesure (fournitures d'emballage / carton + main-d'œuvre) : {{prixEmballage}} €</p>
+<p style="margin:0 0 8px 0; line-height:1.6;">Transport + Gestion de dossier : {{prixTransport}} €</p>
+<p style="margin:0 0 8px 0; line-height:1.6;">Assurance (optionnelle) : {{prixAssurance}}</p>
+<p style="margin:0 0 8px 0; font-size:13px; line-height:1.5;"><em>La couverture d'expédition couvre la valeur d'adjudication (hors frais de la salle des ventes) des lots en cas de perte, vol ou dégradation.</em></p>
+<p style="margin:0 0 0; font-size:13px; line-height:1.5;"><em>Pour les envois de tableaux, l'assurance ne prend pas en compte la détérioration du cadre et/ou de la vitre durant le transport.</em></p>
+</div>
 
-<p style="margin:0 0 0.5em 0;"><strong>1 – Détail du devis</strong></p>
-<p style="margin:0 0 0.3em 0;">Retrait des lots + Emballage sur mesure (fournitures d'emballage / carton + main-d'œuvre) : {{prixEmballage}} €</p>
-<p style="margin:0 0 0.3em 0;">Transport + Gestion de dossier : {{prixTransport}} €</p>
-<p style="margin:0 0 0.3em 0;">Assurance (optionnelle) : {{prixAssurance}}</p>
-<p style="margin:0 0 0.5em 0;font-size:0.95em;"><em>La couverture d'expédition couvre la valeur d'adjudication (hors frais de la salle des ventes) des lots en cas de perte, vol ou dégradation.</em></p>
-<p style="margin:0 0 1em 0;font-size:0.95em;"><em>Pour les envois de tableaux, l'assurance ne prend pas en compte la détérioration du cadre et/ou de la vitre durant le transport.</em></p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>Total : {{prixTotal}} € TTC</strong></p>
+<p style="margin:0 0 0; line-height:1.6;">Offre valable 15 jours à compter de ce jour. Ce devis est exprimé en TTC si l'expédition a lieu en Europe et H.T. pour des expéditions hors zone Euro.</p>
+</div>
 
-<p style="margin:0 0 0.5em 0;"><strong>Total : {{prixTotal}} € TTC</strong></p>
-<p style="margin:0 0 1em 0;">Offre valable 15 jours à compter de ce jour. Ce devis est exprimé en TTC si l'expédition a lieu en Europe et H.T. pour des expéditions hors zone Euro.</p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 8px 0; line-height:1.6;">⚠ Le chiffrage est approximatif, réalisé avec la description du bordereau, sans avoir les objets sous les yeux.</p>
+<p style="margin:0 0 0; line-height:1.6;">Si dimensions/poids réels sont différents, un ajustement pourra être appliqué (nous vous préviendrons avant).</p>
+</div>
 
-<p style="margin:0 0 0.5em 0;">⚠ Le chiffrage est approximatif, réalisé avec la description du bordereau, sans avoir les objets sous les yeux.</p>
-<p style="margin:0 0 1em 0;">Si dimensions/poids réels sont différents, un ajustement pourra être appliqué (nous vous préviendrons avant).</p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>2 – Paiement (acceptation du devis)</strong></p>
+<p style="margin:0 0 8px 0; line-height:1.6;">Le règlement se fait par carte bancaire via notre lien sécurisé :</p>
+<p style="margin:0 0 16px 0; line-height:1.6;">👉 {{lienPaiementSecurise}}</p>
+<p style="margin:0 0 0; line-height:1.6;">En validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : <a href="https://linktr.ee/mbe026">https://linktr.ee/mbe026</a></p>
+</div>
 
-<p style="margin:0 0 0.5em 0;"><strong>2 – Paiement (acceptation du devis)</strong></p>
-<p style="margin:0 0 0.3em 0;">Le règlement se fait par carte bancaire via notre lien sécurisé :</p>
-<p style="margin:0 0 1em 0;">👉 {{lienPaiementSecurise}}</p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>3 – Collecte – Emballage – Expédition</strong></p>
+<p style="margin:0 0 12px 0; line-height:1.6;">D'une manière générale, nous collectons les lots 1 fois par semaine (sauf exception en fonction des disponibilités et du planning des salles des ventes). Une fois collectés, nous préparons les emballages sur mesure des lots pour l'expédition des colis, dont vous êtes averti personnellement, par e-mail, par le transporteur avec le numéro de suivi.</p>
+<p style="margin:0 0 4px 0; line-height:1.6;">• Délais : Emballage + expédition : habituellement sous une semaine</p>
+<p style="margin:0 0 4px 0; line-height:1.6;">• Livraison en France métropolitaine : 48 h en moyenne (non garanti).</p>
+<p style="margin:0 0 0; line-height:1.6;">Mode EXPRESS possible sur simple demande (engendre une modification du devis).</p>
+</div>
 
-<p style="margin:0 0 1em 0;">En validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : <a href="https://linktr.ee/mbe026">https://linktr.ee/mbe026</a></p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>4 – Livraison</strong></p>
+<p style="margin:0 0 8px 0; line-height:1.6;">Votre colis sera expédié à l'adresse suivante :</p>
+<p style="margin:0 0 16px 0; line-height:1.6;"><strong>{{adresseDestinataire}}</strong></p>
+<p style="margin:0 0 12px 0; line-height:1.6;">Si vous souhaitez une livraison en point relais ou à une autre adresse que celle de votre bordereau, merci de nous l'indiquer par retour de cet e-mail uniquement.</p>
+<p style="margin:0 0 12px 0; line-height:1.6;">⚠ Après envoi du colis, tout changement d'adresse sera facturé 15 € TTC.</p>
+<p style="margin:0 0 8px 0; line-height:1.6;">En cas de problème à la livraison, merci de :</p>
+<p style="margin:0 0 4px 0; line-height:1.6;">• prendre plusieurs photos du colis et de l'emballage,</p>
+<p style="margin:0 0 4px 0; line-height:1.6;">• garder tous les matériaux d'emballage,</p>
+<p style="margin:0 0 0; line-height:1.6;">• nous prévenir immédiatement (sans dépasser les délais du transporteur).</p>
+</div>
 
-<p style="margin:0 0 0.5em 0;"><strong>3 – Collecte – Emballage – Expédition</strong></p>
-<p style="margin:0 0 0.5em 0;">D'une manière générale, nous collectons les lots 1 fois par semaine (sauf exception en fonction des disponibilités et du planning des salles des ventes). Une fois collectés, nous préparons les emballages sur mesure des lots pour l'expédition des colis, dont vous êtes averti personnellement, par e-mail, par le transporteur avec le numéro de suivi.</p>
-<ul style="margin:0 0 0.5em 1.5em;padding:0;">
-  <li style="margin-bottom:0.3em;">Délais : Emballage + expédition : habituellement sous une semaine</li>
-  <li style="margin-bottom:0.3em;">Livraison en France métropolitaine : 48 h en moyenne (non garanti).</li>
-</ul>
-<p style="margin:0 0 1em 0;">Mode EXPRESS possible sur simple demande (engendre une modification du devis).</p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>5 – CGV – Responsabilités – Informations utiles</strong></p>
+<p style="margin:0 0 8px 0; line-height:1.6;">La responsabilité de MBE ne peut être engagée si le transporteur refuse l'indemnisation en raison de la nature, de la valeur ou de l'emballage.</p>
+<p style="margin:0 0 0; line-height:1.6;">Lien vers nos conditions générales ainsi que celles de nos transporteurs : <a href="https://linktr.ee/mbe026">https://linktr.ee/mbe026</a></p>
+</div>
 
-<p style="margin:0 0 0.5em 0;"><strong>4 – Livraison</strong></p>
-<p style="margin:0 0 0.3em 0;">Votre colis sera expédié à l'adresse suivante :</p>
-<p style="margin:0 0 0.5em 0;"><strong>{{adresseDestinataire}}</strong></p>
+<div style="margin-bottom:24px;">
+<p style="margin:0 0 12px 0; line-height:1.6;"><strong>6 – Facture</strong></p>
+<p style="margin:0 0 8px 0; line-height:1.6;">L'envoi d'une facture n'est pas automatique.</p>
+<p style="margin:0 0 0; line-height:1.6;">👉 Merci de préciser dans votre réponse si vous souhaitez une facture et, le cas échéant, d'indiquer les coordonnées de votre société.</p>
+</div>
 
-<p style="margin:0 0 0.5em 0;">Si vous souhaitez une livraison en point relais ou à une autre adresse que celle de votre bordereau, merci de nous l'indiquer par retour de cet e-mail uniquement.</p>
-<p style="margin:0 0 0.5em 0;">⚠ Après envoi du colis, tout changement d'adresse sera facturé 15 € TTC.</p>
-<p style="margin:0 0 0.3em 0;">En cas de problème à la livraison, merci de :</p>
-<ul style="margin:0 0 1em 1.5em;padding:0;">
-  <li style="margin-bottom:0.3em;">prendre plusieurs photos du colis et de l'emballage,</li>
-  <li style="margin-bottom:0.3em;">garder tous les matériaux d'emballage,</li>
-  <li style="margin-bottom:0.3em;">nous prévenir immédiatement (sans dépasser les délais du transporteur).</li>
-</ul>
-
-<p style="margin:0 0 0.5em 0;"><strong>5 – CGV – Responsabilités – Informations utiles</strong></p>
-<p style="margin:0 0 0.5em 0;">La responsabilité de MBE ne peut être engagée si le transporteur refuse l'indemnisation en raison de la nature, de la valeur ou de l'emballage.</p>
-<p style="margin:0 0 1em 0;">Lien vers nos conditions générales ainsi que celles de nos transporteurs : <a href="https://linktr.ee/mbe026">https://linktr.ee/mbe026</a></p>
-
-<p style="margin:0 0 0.5em 0;"><strong>6 – Facture</strong></p>
-<p style="margin:0 0 0.5em 0;">L'envoi d'une facture n'est pas automatique.</p>
-<p style="margin:0 0 1em 0;">👉 Merci de préciser dans votre réponse si vous souhaitez une facture et, le cas échéant, d'indiquer les coordonnées de votre société.</p>
-
-<p style="margin:0 0 0;">Nous restons à votre disposition pour toute question et vous remercions de votre confiance.</p>`;
+<div style="margin-bottom:0;">
+<p style="margin:0; line-height:1.6;">Nous restons à votre disposition pour toute question et vous remercions de votre confiance.</p>
+</div>`;
 
 export const DEFAULT_QUOTE_SEND_SIGNATURE = `Bien à vous,`;
 
