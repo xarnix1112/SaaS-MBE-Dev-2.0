@@ -128,8 +128,18 @@ export const DEFAULT_QUOTE_SEND_SECTIONS = [
   { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions de votre confiance.' },
 ];
 
+/** Sections par défaut pour confirmation de paiement */
+export const DEFAULT_PAYMENT_RECEIVED_SECTIONS = [
+  { id: 'intro', title: '', content: 'Bonjour,\n\nNous vous confirmons que le paiement de votre devis a bien été reçu, et nous vous remercions sincèrement de votre confiance. Votre dossier est désormais complet.' },
+  { id: 's1', title: '1 – Retrait des lots', content: 'Par retour, je vous confirme que votre bordereau sera bien présenté à l\'étude pour l\'enlèvement du ou des lots lors de notre prochain passage.\n\nNous mettons tout en œuvre pour réaliser en moyenne une collecte par semaine. Ceci étant rendu possible selon les disponibilités de l\'Hôtel des Ventes.\n\nVous serez averti(e) par email dès que la collecte aura été effectuée.' },
+  { id: 's2', title: '2 – Emballage & expédition des lots', content: 'Nous recevons de nombreuses demandes à chaque vente, et nous vous remercions pour votre confiance.\n\nChaque lot est emballé soigneusement et individuellement, dans l\'ordre d\'arrivée des dossiers, de manière à garantir une protection optimale, un traitement équitable pour tous, des délais d\'expédition généralement sous une semaine après collecte.\n\nDès l\'expédition, vous recevrez un email contenant votre numéro de suivi.\n\nEn France métropolitaine, les délais de livraison sont en moyenne de 48 heures (non garantis).\n\n👉 Si vous souhaitez une solution d\'envoi et traitement Express, merci de nous contacter pour valider la faisabilité et vous établir l\'ajustement du devis en conséquence.' },
+  { id: 's3', title: '3 – À réception de votre colis', content: 'Le numéro de suivi qui vous est communiqué par e-mail vous permet un suivi précis de votre colis. Vous pourrez ainsi vous organiser pour la livraison.\n\nVous devez contrôler la marchandise en présence du livreur avant de signer l\'acceptation du colis.\n\n• N\'acceptez jamais de déposer votre colis chez un voisin, devant une porte, par-dessus votre clôture, dans la boîte aux lettres.\n• La mention " sous réserve de déballage " ne vaut rien sur le bon de livraison du livreur.\n• Si vous constatez des avaries et que vous acceptez le colis, alors vous devez rédiger clairement les détails du problème constaté.\n\nSi vous rencontrez une avarie de livraison, et sans respect de ces consignes ainsi que celles présentées dans les CGV des transporteurs partenaires, nous ne pouvons pas demander réparation au titre de la responsabilité du transporteur ou de l\'assurance souscrite.' },
+  { id: 's4', title: '4 – Votre facture acquittée', content: 'Si vous avez demandé une facture, nous vous l\'enverrons une fois que votre colis aura été expédié et votre livraison aura été confirmée comme reçue.\n\nLes factures sont éditées deux fois par mois de manière groupée.' },
+  { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions encore de votre confiance.' },
+];
+
 /** Types de templates utilisant l\'éditeur par sections (add/remove) */
-export const SECTION_BASED_TEMPLATES = ['quote_send'];
+export const SECTION_BASED_TEMPLATES = ['quote_send', 'payment_received'];
 
 /** Valeurs par défaut - templates étendus */
 export const DEFAULT_TEMPLATES_EXTENDED = {
@@ -160,16 +170,10 @@ Nous vous contactons concernant votre devis de transport {{reference}}.
     buttonLabel: 'Payer {{amount}} € maintenant',
   },
   payment_received: {
-    subject: 'Paiement reçu - Devis {{reference}}',
-    bodyHtml: `Bonjour {{clientName}},
-
-Nous vous remercions pour votre règlement.
-
-<strong>Montant reçu :</strong> {{amount}} €<br>
-Référence : {{reference}}
-
-Nous allons nous occuper d'aller chercher votre/vos lot(s) le plus rapidement possible. Vous serez tenu au courant par email de l'avancée de votre colis.`,
-    signature: 'Cordialement,<br><strong>{{mbeName}}</strong>',
+    subject: '{{mbeName}} – Confirmation de paiement - Dossier complet',
+    bodyHtml: `Bonjour {{clientName}}, Nous vous remercions pour votre règlement. Montant reçu : {{amount}} €. Référence : {{reference}}.`,
+    bodySections: DEFAULT_PAYMENT_RECEIVED_SECTIONS,
+    signature: 'Bien à vous,',
     bannerColor: '#2563eb',
     buttonColor: '#2563eb',
     bannerTitle: '✅ Paiement reçu',
@@ -280,6 +284,38 @@ export function buildBodyHtmlFromSections(sections, values) {
     out.push(`<div style="margin-bottom:${marginBottom}">${titleHtml}${html}</div>`);
   }
   return out.join('');
+}
+
+/**
+ * Construit le HTML complet d'un email (bandeau + corps + signature).
+ * Utilisé par quote-automatic-emails et ai-proxy.
+ */
+export function buildEmailHtmlFromTemplate(template, bodyHtml, signatureHtml, values = {}) {
+  const bannerColor = template?.bannerColor || '#2563eb';
+  const bannerTitle = replacePlaceholdersExtended(template?.bannerTitle || '', values);
+  const bannerLogoUrl = template?.bannerLogoUrl || '';
+  const fontFamily = template?.fontFamily || 'Arial, sans-serif';
+  const fontSize = template?.fontSize ?? 14;
+
+  const logoHtml = bannerLogoUrl
+    ? `<img src="${String(bannerLogoUrl).replace(/"/g, '&quot;')}" alt="Logo" style="max-height:60px;max-width:200px;display:block;margin:0 auto 12px auto;" />`
+    : '';
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:${fontFamily};font-size:${fontSize}px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px;}</style></head>
+<body>
+  <div style="background:${bannerColor};color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
+    ${logoHtml}
+    <h1 style="margin:0;">${bannerTitle}</h1>
+  </div>
+  <div style="background:#f9fafb;padding:30px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
+    <div style="margin-bottom:20px;">${bodyHtml}</div>
+    <p style="margin-top:30px;">${signatureHtml}</p>
+  </div>
+</body>
+</html>`.trim();
 }
 
 /**

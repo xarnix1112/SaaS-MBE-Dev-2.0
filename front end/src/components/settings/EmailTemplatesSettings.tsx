@@ -367,7 +367,7 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
                       className="mt-1"
                     />
                   </div>
-                  {['quote_send', 'surcharge'].includes(type) && (
+                  {['quote_send', 'surcharge', 'payment_received'].includes(type) && (
                     <div>
                       <Label>Logo du bandeau</Label>
                       <p className="text-xs text-muted-foreground mt-0.5 mb-1">URL ou sélectionnez un fichier depuis votre ordinateur</p>
