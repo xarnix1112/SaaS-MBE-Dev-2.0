@@ -21,6 +21,13 @@ function resolvePlanId(raw) {
   return mapping[raw] || raw;
 }
 
+/** Valeurs par défaut si la collection plans n'est pas initialisée (ex: Firebase prod) */
+const DEFAULT_PLANS = {
+  starter: { name: "Starter", limits: { quotesPerYear: 2000 }, features: { customizeAutoEmails: true } },
+  pro: { name: "Pro", limits: { quotesPerYear: 5000 }, features: { customizeAutoEmails: true } },
+  ultra: { name: "Ultra", limits: { quotesPerYear: 12000 }, features: { customizeAutoEmails: true } },
+};
+
 /**
  * Récupère les features finales pour un saasAccountId
  * @param {FirebaseFirestore.Firestore} firestore
@@ -41,7 +48,8 @@ async function getAccountFeatures(firestore, saasAccountId) {
 
   const planSnapshot = await firestore.collection("plans").doc(planId).get();
   const plan = planSnapshot.exists ? planSnapshot.data() : null;
-  const planFeatures = plan?.features || {};
+  const defaultPlan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
+  const planFeatures = { ...(defaultPlan.features || {}), ...(plan?.features || {}) };
 
   // customFeatures écrase le plan
   const finalFeatures = { ...planFeatures, ...customFeatures };

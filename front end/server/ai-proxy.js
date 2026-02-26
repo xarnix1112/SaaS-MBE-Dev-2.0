@@ -79,6 +79,14 @@ import {
   PLACEHOLDERS,
   LIMITS,
 } from "./email-templates.js";
+import {
+  getTemplatesExtendedForAccount,
+  replacePlaceholdersExtended,
+  EMAIL_TYPES_EXTENDED,
+  EMAIL_TYPE_LABELS_EXTENDED,
+  PLACEHOLDERS_EXTENDED,
+  DEFAULT_TEMPLATES_EXTENDED,
+} from "./email-templates-extended.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -4897,6 +4905,58 @@ app.post('/api/send-quote-email', async (req, res) => {
     const finalTotal = activePaymentLink?.amount || calculatedTotal;
     console.log('[Email] Final total:', finalTotal, '(from:', activePaymentLink ? 'payment link' : 'calculated', ')');
 
+    // Charger le template personnalisable (quote_send)
+    const saasAccountId = quote.saasAccountId || req.saasAccountId;
+    let mbeName = quote._saasCommercialName || 'MBE';
+    if (firestore && saasAccountId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        if (saasDoc.exists && saasDoc.data().commercialName) {
+          mbeName = saasDoc.data().commercialName;
+        }
+      } catch (e) {
+        console.warn('[Email] Impossible de charger commercialName:', e.message);
+      }
+    }
+    const templateValues = {
+      bordereauNum: quote.auctionSheet?.bordereauNumber || 'N/A',
+      reference,
+      nomSalleVentes: auctionHouse,
+      prixEmballage: packagingPrice.toFixed(2),
+      prixTransport: shippingPrice.toFixed(2),
+      prixAssurance: insuranceEnabled ? `${finalInsuranceAmount.toFixed(2)} €` : 'NON (Si vous souhaitez une assurance, merci de nous le signaler par retour de mail)',
+      prixTotal: finalTotal.toFixed(2),
+      lienPaiementSecurise: paymentUrl || '',
+      paymentUrl: paymentUrl || '',
+      adresseDestinataire: [
+        quote.delivery?.address?.line1,
+        quote.delivery?.address?.line2,
+        quote.delivery?.address?.zip,
+        quote.delivery?.address?.city,
+        quote.delivery?.address?.country,
+      ].filter(Boolean).join(', ') || deliveryAddress,
+      clientName,
+      date: new Date().toLocaleDateString('fr-FR'),
+      lotNumber,
+      lotDescription,
+      mbeName,
+      amount: finalTotal.toFixed(2),
+    };
+    const emailTemplates = firestore && saasAccountId
+      ? (await firestore.collection('saasAccounts').doc(saasAccountId).get()).data()?.emailTemplates
+      : null;
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates.quote_send || {};
+    const renderedBody = replacePlaceholdersExtended(t.bodyHtml || DEFAULT_TEMPLATES_EXTENDED.quote_send.bodyHtml, templateValues);
+    const renderedSignature = replacePlaceholdersExtended(t.signature || DEFAULT_TEMPLATES_EXTENDED.quote_send.signature, templateValues).replace(/\n/g, '<br>');
+    const htmlContent = buildEmailHtmlFromTemplate(
+      { ...t, bannerColor: t.bannerColor || '#2563eb', buttonColor: t.buttonColor || '#2563eb', fontFamily: t.fontFamily || 'Arial, sans-serif', fontSize: t.fontSize || 14 },
+      renderedBody,
+      renderedSignature,
+      { ...templateValues, lienPaiementSecurise: paymentUrl || '' }
+    );
+    const emailSubject = replacePlaceholdersExtended(t.subject || DEFAULT_TEMPLATES_EXTENDED.quote_send.subject, templateValues);
+
     // Texte brut
     const textContent = `
 Bonjour ${clientName},
@@ -4945,127 +5005,11 @@ Cordialement,
 L'équipe MBE
     `.trim();
 
-    // HTML (optionnel, plus joli)
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .section { margin-bottom: 20px; }
-    .label { font-weight: bold; color: #6b7280; font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
-    .value { font-size: 16px; color: #111827; margin-bottom: 15px; }
-    .total { background: #fef3c7; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; color: #92400e; text-align: center; margin-top: 20px; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1 style="margin:0;">📦 Votre Devis de Transport</h1>
-  </div>
-  <div class="content">
-    <p>Bonjour <strong>${clientName}</strong>,</p>
-    <p>Voici votre devis de transport :</p>
-    
-    <div class="section">
-      <div class="label">Référence</div>
-      <div class="value">${reference}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">📦 Lot ${lotNumber}</div>
-      <div class="value">${lotDescription}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">🏛️ Salle des ventes</div>
-      <div class="value">${auctionHouse}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">📍 Adresse de livraison</div>
-      <div class="value">${deliveryAddress}</div>
-    </div>
-
-    <div class="section" style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
-      <div class="label" style="font-size: 14px; margin-bottom: 15px;">DÉTAIL DES COÛTS</div>
-      <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #e5e7eb;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6;">
-          <span style="color: #6b7280;">Emballage${(() => {
-            const carton = quote.auctionSheet?.recommendedCarton;
-            if (!carton) return '';
-            const displayName = carton.label ? cleanCartonRef(carton.label) : (carton.ref ? cleanCartonRef(carton.ref) : '');
-            return displayName ? ` <span style="font-size: 11px;">(carton ${displayName})</span>` : '';
-          })()}</span>
-          <span style="font-weight: 600;">${packagingPrice.toFixed(2)}€</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6;">
-          <span style="color: #6b7280;">Expédition (Express)${quote.delivery?.address?.country ? ` <span style="font-size: 11px;">(${quote.delivery.address.country})</span>` : ''}</span>
-          <span style="font-weight: 600;">${shippingPrice.toFixed(2)}€</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: ${insuranceEnabled ? '5px' : '0'};">
-          <span style="color: #6b7280;">Assurance</span>
-          <span style="font-weight: 600;">${insuranceEnabled ? '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">Oui</span>' : '<span style="color: #9ca3af;">Non</span>'}</span>
-        </div>
-        ${insuranceEnabled ? `
-        <div style="padding-left: 15px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f3f4f6;">
-          <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 13px;">
-            <span style="color: #9ca3af;">Valeur assurée</span>
-            <span style="font-weight: 500;">${lotValue.toFixed(2)}€</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px;">
-            <span style="color: #9ca3af;">Coût assurance (2.5%${lotValue < 500 ? ', min. 12€' : ''})</span>
-            <span style="font-weight: 500;">${finalInsuranceAmount.toFixed(2)}€</span>
-          </div>
-        </div>
-        ` : ''}
-      </div>
-    </div>
-
-    <div class="total" style="margin-top: 25px;">
-      💰 Montant total : ${finalTotal.toFixed(2)}€
-    </div>
-
-    ${paymentUrl ? `
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid #2563eb;">
-      <p style="margin: 0 0 15px 0; font-size: 14px; color: #1e40af; font-weight: 600;">💳 Procéder au paiement</p>
-      <a href="${paymentUrl}" 
-         style="display: inline-block; background: #2563eb; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); transition: background 0.2s; letter-spacing: 0.5px;">
-        Payer ${finalTotal.toFixed(2)}€ maintenant
-      </a>
-      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
-        Ou copiez ce lien dans votre navigateur :<br>
-        <a href="${paymentUrl}" style="color: #2563eb; word-break: break-all; text-decoration: underline;">${paymentUrl}</a>
-      </p>
-    </div>
-    ` : `
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 15px; background: #fef3c7; border-radius: 8px; border: 1px solid #f59e0b;">
-      <p style="margin: 0; font-size: 14px; color: #92400e;">
-        ⚠️ Le lien de paiement sera disponible prochainement. Vous recevrez un email avec le lien de paiement.
-      </p>
-    </div>
-    `}
-
-    <p style="margin-top: 30px; color: #6b7280;">Pour toute question, n'hésitez pas à nous contacter.</p>
-  </div>
-  <div class="footer">
-    Cordialement,<br>
-    <strong>L'équipe MBE</strong>
-  </div>
-</body>
-</html>
-    `.trim();
-
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email via Resend à:', clientEmail);
-    // Récupérer saasAccountId depuis le quote ou req.saasAccountId
-    const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
-      subject: `Votre devis de transport - ${reference}`,
+      subject: emailSubject,
       text: textContent,
       html: htmlContent,
       saasAccountId,
@@ -5085,7 +5029,7 @@ L'équipe MBE
           source: result.source || 'RESEND',
           from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
-          subject: `Votre devis de transport - ${reference}`,
+          subject: emailSubject,
           bodyText: textContent,
           bodyHtml: htmlContent,
           messageId: result.id || result.messageId || null,
@@ -11136,6 +11080,174 @@ app.post('/api/email-templates/preview', requireAuth, checkCustomizeAutoEmails, 
     return res.status(500).json({ error: 'Erreur prévisualisation' });
   }
 });
+
+// ===== MODÈLES D'EMAILS ÉTENDUS (tous les types, couleurs, corps HTML) =====
+app.get('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    return res.json({
+      templates,
+      customTemplates: emailTemplates,
+      meta: {
+        EMAIL_TYPE_LABELS: EMAIL_TYPE_LABELS_EXTENDED,
+        PLACEHOLDERS: PLACEHOLDERS_EXTENDED,
+        DEFAULT_TEMPLATES: DEFAULT_TEMPLATES_EXTENDED,
+      },
+    });
+  } catch (err) {
+    console.error('[API] Erreur GET email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur récupération templates' });
+  }
+});
+
+app.put('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type, subject, bodyHtml, signature, bannerColor, buttonColor, bannerTitle, buttonLabel } = req.body || {};
+  if (!type || !EMAIL_TYPES_EXTENDED.includes(type)) {
+    return res.status(400).json({ error: 'Type d\'email invalide' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const prev = current[type] || {};
+    const def = DEFAULT_TEMPLATES_EXTENDED[type] || {};
+    const updated = {
+      ...current,
+      [type]: {
+        subject: subject !== undefined ? subject : (prev.subject ?? def.subject),
+        bodyHtml: bodyHtml !== undefined ? bodyHtml : (prev.bodyHtml ?? def.bodyHtml),
+        signature: signature !== undefined ? signature : (prev.signature ?? def.signature),
+        bannerColor: bannerColor !== undefined ? bannerColor : (prev.bannerColor ?? def.bannerColor ?? '#2563eb'),
+        buttonColor: buttonColor !== undefined ? buttonColor : (prev.buttonColor ?? def.buttonColor ?? '#2563eb'),
+        bannerTitle: bannerTitle !== undefined ? bannerTitle : (prev.bannerTitle ?? def.bannerTitle ?? ''),
+        buttonLabel: buttonLabel !== undefined ? buttonLabel : (prev.buttonLabel ?? def.buttonLabel ?? ''),
+        updatedAt: Timestamp.now(),
+      },
+    };
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesExtendedForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur PUT email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur sauvegarde templates' });
+  }
+});
+
+app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  if (!type || !EMAIL_TYPES_EXTENDED.includes(type)) return res.status(400).json({ error: 'Type invalide' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const commercialName = saasDoc.exists ? saasDoc.data().commercialName : 'Mon MBE';
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates[type];
+    const sampleValues = {
+      bordereauNum: '0260-25',
+      reference: 'GS-1771934590732-25',
+      nomSalleVentes: 'Millon Riviera',
+      prixEmballage: '18.00',
+      prixTransport: '3.00',
+      prixAssurance: 'NON (Si vous souhaitez une assurance, merci de nous le signaler par retour de mail)',
+      prixTotal: '21.00',
+      lienPaiementSecurise: 'https://checkout.stripe.com/example',
+      adresseDestinataire: '3 boulevard Delfino, 06000 Nice',
+      clientName: 'Jeanne Launey',
+      date: new Date().toLocaleDateString('fr-FR'),
+      lotNumber: '38',
+      lotDescription: 'Corbeille en argent - Maison Boin-Taburet',
+      mbeName: commercialName,
+      amount: '21.00',
+      description: 'Surcoût pour dimensions réelles',
+    };
+    const subject = replacePlaceholdersExtended(t.subject || '', sampleValues);
+    const bodyHtml = replacePlaceholdersExtended(t.bodyHtml || '', sampleValues);
+    const signature = replacePlaceholdersExtended(t.signature || '', sampleValues).replace(/\n/g, '<br>');
+    const fullHtml = buildEmailHtmlFromTemplate(t, bodyHtml, signature, sampleValues);
+    return res.json({
+      subject,
+      bodyHtml: fullHtml,
+      signature,
+      sampleValues,
+    });
+  } catch (err) {
+    console.error('[API] Erreur preview email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur prévisualisation' });
+  }
+});
+
+app.post('/api/email-templates-extended/reset', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    let updated;
+    if (type && EMAIL_TYPES_EXTENDED.includes(type)) {
+      const { [type]: _removed, ...rest } = current;
+      updated = rest;
+    } else {
+      updated = {};
+    }
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesExtendedForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur reset email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur réinitialisation' });
+  }
+});
+
+/** Helper: construit le HTML complet d'un email depuis un template (bandeau + corps + bouton + signature) */
+function buildEmailHtmlFromTemplate(template, bodyHtml, signatureHtml, values = {}) {
+  const bannerColor = template.bannerColor || '#2563eb';
+  const buttonColor = template.buttonColor || '#2563eb';
+  const bannerTitle = replacePlaceholdersExtended(template.bannerTitle || '', values);
+  const buttonLabel = template.buttonLabel ? replacePlaceholdersExtended(template.buttonLabel, values) : null;
+  const paymentUrl = values.lienPaiementSecurise || values.paymentUrl || '';
+
+  let buttonSection = '';
+  if (paymentUrl && buttonLabel) {
+    buttonSection = `
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid ${buttonColor};">
+      <p style="margin: 0 0 15px 0; font-size: 14px; color: ${buttonColor}; font-weight: 600;">💳 Procéder au paiement</p>
+      <a href="${paymentUrl}" style="display: inline-block; background: ${buttonColor}; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px;">
+        ${buttonLabel}
+      </a>
+      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
+        Ou copiez ce lien : <a href="${paymentUrl}" style="color: ${buttonColor}; word-break: break-all;">${paymentUrl}</a>
+      </p>
+    </div>`;
+  }
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:${template.fontFamily || 'Arial, sans-serif'};font-size:${template.fontSize || 14}px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px;}</style></head>
+<body>
+  <div style="background:${bannerColor};color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
+    <h1 style="margin:0;">${bannerTitle}</h1>
+  </div>
+  <div style="background:#f9fafb;padding:30px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
+    <div style="margin-bottom:20px;">${bodyHtml}</div>
+    ${buttonSection}
+    <p style="margin-top:30px;">${signatureHtml}</p>
+  </div>
+</body>
+</html>`.trim();
+}
 
 // ===== ROUTE RÉCUPÉRATION DEVIS (FILTRÉS PAR SAAS ACCOUNT) =====
 

@@ -11,6 +11,7 @@ import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
 import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
+import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
 import { useFeatures } from '@/hooks/use-features';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -781,10 +782,15 @@ export default function Settings() {
               MBE Hub
             </TabsTrigger>
             {canCustomizeAutoEmails && (
-              <TabsTrigger value="auto-emails" className="gap-2">
-                <Send className="w-4 h-4" />
-                Emails automatiques
-              </TabsTrigger>
+              <>
+                <TabsTrigger value="modeles-emails" className="gap-2">
+                  <Send className="w-4 h-4" />
+                  Modèles d&apos;emails
+                </TabsTrigger>
+                <TabsTrigger value="auto-emails" className="gap-2">
+                  Emails auto (ton)
+                </TabsTrigger>
+              </>
             )}
           </TabsList>
 
@@ -1545,9 +1551,14 @@ export default function Settings() {
 
           {/* MBE Hub - plans Pro et Ultra */}
           {canCustomizeAutoEmails && (
-            <TabsContent value="auto-emails" className="space-y-6">
-              <AutoEmailsSettings />
-            </TabsContent>
+            <>
+              <TabsContent value="modeles-emails" className="space-y-6">
+                <EmailTemplatesSettings />
+              </TabsContent>
+              <TabsContent value="auto-emails" className="space-y-6">
+                <AutoEmailsSettings />
+              </TabsContent>
+            </>
           )}
           <TabsContent value="mbehub" className="space-y-6">
             <Card>
