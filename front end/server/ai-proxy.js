@@ -154,9 +154,14 @@ const __dirname = dirname(__filename);
 // Charger les variables d'environnement depuis le répertoire parent (front end/)
 // car .env.local est dans front end/, pas dans front end/server/
 const envLocalPath = path.resolve(__dirname, '..', '.env.local');
+const envDevLocalPath = path.resolve(__dirname, '..', '.env.development.local');
 const envPath = path.resolve(__dirname, '..', '.env');
 dotenv.config({ path: envPath });
 dotenv.config({ path: envLocalPath, override: true });
+if ((!process.env.NODE_ENV || process.env.NODE_ENV === 'development') && fs.existsSync(envDevLocalPath)) {
+  dotenv.config({ path: envDevLocalPath, override: true });
+  console.log('[Config] .env.development.local chargé');
+}
 
 console.log('[Config] Chargement .env depuis:', { 
   env: envPath, 
@@ -781,17 +786,21 @@ try {
     }
   }
 
+  const effectiveProjectId = serviceAccount?.project_id || firebaseConfig.projectId;
+  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET
+    || process.env.VITE_FIREBASE_STORAGE_BUCKET
+    || `${effectiveProjectId}.firebasestorage.app`
+    || `${effectiveProjectId}.appspot.com`;
+
   if (serviceAccount) {
-    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || `${firebaseConfig.projectId}.appspot.com`;
     console.log("[ai-proxy] 🔧 Initialisation de Firebase Admin avec credentials...");
     initializeApp({
       credential: cert(serviceAccount),
-      projectId: firebaseConfig.projectId,
+      projectId: effectiveProjectId,
       storageBucket,
     });
-    console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials");
+    console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials, storageBucket:", storageBucket);
   } else {
-    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || `${firebaseConfig.projectId}.appspot.com`;
     console.warn("[ai-proxy] ⚠️  Aucun fichier ni variables FIREBASE_* trouvés, utilisation des Application Default Credentials");
     initializeApp({
       projectId: firebaseConfig.projectId,
