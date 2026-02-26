@@ -5080,8 +5080,7 @@ L'équipe MBE
       }
     }
 
-    // Synchroniser vers le Bilan Google Sheet si configuré
-    const saasAccountId = quote.saasAccountId;
+    // Synchroniser vers le Bilan Google Sheet si configuré (saasAccountId déjà défini plus haut)
     if (firestore && quote.id && saasAccountId) {
       try {
         const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
