@@ -213,6 +213,10 @@ export interface Quote {
   /** Date d'envoi du devis au client (email avec lien de paiement) */
   quoteSentAt?: Date | { toDate: () => Date } | null;
 
+  /** Paiement manuel (virement / CB téléphone) - permet d'annuler */
+  manualPaymentMethod?: 'virement' | 'cb_telephone';
+  manualPaymentDate?: Date | { toDate: () => Date } | null;
+
   /** Refus/abandon par le client : status + raison */
   clientRefusalStatus?: 'client_refused';
   clientRefusalReason?: ClientRefusalReason;

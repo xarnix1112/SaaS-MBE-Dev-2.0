@@ -19,6 +19,7 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
 import { useQueryClient } from "@tanstack/react-query";
@@ -60,6 +61,8 @@ import {
   CheckCircle2,
   Loader2,
   Globe,
+  Banknote,
+  RotateCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -174,6 +177,8 @@ export default function QuoteDetail() {
   const [isRefusalDialogOpen, setIsRefusalDialogOpen] = useState(false);
   const [refusalReason, setRefusalReason] = useState<ClientRefusalReason>('tarif_trop_eleve');
   const [refusalReasonDetail, setRefusalReasonDetail] = useState('');
+  const [isMarkPaidManualDialogOpen, setIsMarkPaidManualDialogOpen] = useState(false);
+  const [isUnmarkingPaid, setIsUnmarkingPaid] = useState(false);
 
   const REFUSAL_REASONS: { value: ClientRefusalReason; label: string }[] = [
     { value: 'tarif_trop_eleve', label: 'Tarif trop élevé' },
@@ -1392,6 +1397,16 @@ export default function QuoteDetail() {
     safeQuoteData?.paymentStatus !== 'paid' &&
     safeQuoteData?.clientRefusalStatus !== 'client_refused';
 
+  const canMarkPaidManually =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused';
+
+  const canUnmarkPaid =
+    quote?.id &&
+    safeQuoteData?.paymentStatus === 'paid' &&
+    (safeQuoteData?.manualPaymentMethod === 'virement' || safeQuoteData?.manualPaymentMethod === 'cb_telephone');
+
   const syncQuoteToBilan = useCallback(async () => {
     if (!quote?.id) return;
     try {
@@ -1427,6 +1442,25 @@ export default function QuoteDetail() {
 
   const handleRefusalDialogSubmit = () => {
     handleMarkRefused(refusalReason, refusalReasonDetail.trim() || undefined);
+  };
+
+  const handleUnmarkPaid = async () => {
+    if (!quote?.id) return;
+    setIsUnmarkingPaid(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/unmark-paid`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success('Paiement annulé – retour en attente de paiement');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, paymentStatus: 'pending', status: 'awaiting_payment', manualPaymentMethod: undefined, manualPaymentDate: undefined, paidAmount: 0 } : prev));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
+    } finally {
+      setIsUnmarkingPaid(false);
+    }
   };
 
   const handleSendReminder = async () => {
@@ -2952,6 +2986,27 @@ export default function QuoteDetail() {
                     Refusé par le client
                   </Button>
                 )}
+                {canMarkPaidManually && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={() => setIsMarkPaidManualDialogOpen(true)}
+                  >
+                    <Banknote className="w-4 h-4" />
+                    Marquer payé (virement/CB)
+                  </Button>
+                )}
+                {canUnmarkPaid && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2 text-amber-700 border-amber-300 hover:bg-amber-50"
+                    onClick={handleUnmarkPaid}
+                    disabled={isUnmarkingPaid}
+                  >
+                    {isUnmarkingPaid ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                    Annuler paiement
+                  </Button>
+                )}
                 {showMbehubButton && (
                   <Button
                     variant="outline"
@@ -3053,6 +3108,18 @@ export default function QuoteDetail() {
           </div>
         </DialogContent>
       </Dialog>
+
+      {/* Dialogue marquer payé (virement/CB) */}
+      <MarkPaidManualDialog
+        open={isMarkPaidManualDialogOpen}
+        onOpenChange={setIsMarkPaidManualDialogOpen}
+        quoteId={quote?.id || ''}
+        quoteReference={safeQuote.reference}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          toast.success('Devis marqué payé – en attente de collecte');
+        }}
+      />
 
       {/* Dialogue pour modifier le devis */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>

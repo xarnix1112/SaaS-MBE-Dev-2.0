@@ -7267,6 +7267,112 @@ app.post('/api/quotes/:quoteId/send-reminder', requireAuth, async (req, res) => 
 });
 
 // ============================================================================
+// PAIEMENT MANUEL - Virement / CB téléphone
+// ============================================================================
+
+app.post('/api/quotes/:quoteId/mark-paid-manually', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  const { method, paymentDate } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  const validMethods = ['virement', 'cb_telephone'];
+  const paymentMethod = validMethods.includes(method) ? method : 'virement';
+
+  let paymentDateTimestamp;
+  if (paymentDate && typeof paymentDate === 'string') {
+    const d = new Date(paymentDate);
+    if (!isNaN(d.getTime())) paymentDateTimestamp = Timestamp.fromDate(d);
+  }
+  if (!paymentDateTimestamp) paymentDateTimestamp = Timestamp.now();
+
+  const desc = paymentMethod === 'virement' ? 'Payé par virement' : 'Payé par CB téléphone';
+  const dateStr = new Date(paymentDateTimestamp.toDate?.() || paymentDateTimestamp).toLocaleDateString('fr-FR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid') return res.status(400).json({ error: 'Ce devis est déjà marqué comme payé' });
+    if (data.clientRefusalStatus === 'client_refused') return res.status(400).json({ error: 'Un devis refusé ne peut pas être marqué payé' });
+
+    const totalAmount = (data.options?.packagingPrice ?? 0) + (data.options?.shippingPrice ?? 0) + (data.options?.insuranceAmount ?? 0)
+      || data.totalAmount || 0;
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: paymentDateTimestamp,
+      status: 'awaiting_collection',
+      description: `${desc} le ${dateStr}`,
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      paymentStatus: 'paid',
+      status: 'awaiting_collection',
+      manualPaymentMethod: paymentMethod,
+      manualPaymentDate: paymentDateTimestamp,
+      paidAmount: totalAmount,
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[mark-paid-manually]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/quotes/:quoteId/unmark-paid', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus !== 'paid') return res.status(400).json({ error: 'Ce devis n\'est pas marqué comme payé' });
+    if (!data.manualPaymentMethod) return res.status(400).json({ error: 'Seuls les paiements manuels (virement/CB) peuvent être annulés' });
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'awaiting_payment',
+      description: 'Paiement annulé – retour en attente de paiement',
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      paymentStatus: 'pending',
+      status: 'awaiting_payment',
+      manualPaymentMethod: FieldValue.delete(),
+      manualPaymentDate: FieldValue.delete(),
+      paidAmount: 0,
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[unmark-paid]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
 // GOOGLE DRIVE API - GESTION DES BORDEREAUX
 // ============================================================================
 
@@ -11727,6 +11833,7 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
         clientRefusalAt: toIso(data.clientRefusalAt),
         reminderSentAt: toIso(data.reminderSentAt),
+        manualPaymentDate: toIso(data.manualPaymentDate),
         // Convertir timeline si présent
         timeline: data.timeline?.map((event) => ({
           ...event,

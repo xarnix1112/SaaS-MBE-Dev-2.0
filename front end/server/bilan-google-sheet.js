@@ -68,6 +68,11 @@ function toLocalDateString(val) {
   });
 }
 
+const MANUAL_PAYMENT_LABELS = {
+  virement: 'Virement',
+  cb_telephone: 'CB téléphone',
+};
+
 /**
  * Construit une ligne de données pour le Sheet à partir d'un devis
  */
@@ -79,7 +84,20 @@ export function buildQuoteRow(quote, paymentInfo = null) {
   const totalAmount = quote.totalAmount ?? 0;
   const createdAt = toLocalDateString(quote.createdAt);
   const quoteSentAt = toLocalDateString(quote.quoteSentAt);
-  const paidAt = paymentInfo?.paidAt ? toLocalDateString(paymentInfo.paidAt) : '';
+
+  // Date paiement et moyen : priorité au paiement manuel, sinon Stripe/Paytweak
+  let paidAt = '';
+  let paymentMethod = '';
+  if (quote.manualPaymentMethod && quote.manualPaymentDate) {
+    paidAt = toLocalDateString(quote.manualPaymentDate);
+    paymentMethod = MANUAL_PAYMENT_LABELS[quote.manualPaymentMethod] || quote.manualPaymentMethod;
+  } else if (paymentInfo) {
+    paidAt = paymentInfo.paidAt ? toLocalDateString(paymentInfo.paidAt) : '';
+    paymentMethod = paymentInfo.paymentMethod === 'Paytweak' || paymentInfo.paymentMethod === 'Stripe'
+      ? 'Lien de paiement'
+      : (paymentInfo.paymentMethod || '');
+  }
+
   const shippedAt = quote.status === 'shipped' || quote.status === 'completed'
     ? toLocalDateString(quote.updatedAt) // Approximation si pas de champ dédié
     : '';
@@ -87,7 +105,6 @@ export function buildQuoteRow(quote, paymentInfo = null) {
     ? STATUS_LABELS.client_refused
     : (STATUS_LABELS[quote.status] || quote.status || '');
   const isPaid = (quote.paymentStatus === 'paid' || quote.paidAmount > 0) ? 'Oui' : 'Non';
-  const paymentMethod = paymentInfo?.paymentMethod || '';
 
   return [
     quote.reference || '',
