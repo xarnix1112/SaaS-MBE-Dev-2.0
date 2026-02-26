@@ -80,6 +80,49 @@ export default function Settings() {
   const { data: featuresData } = useFeatures();
   const canCustomizeAutoEmails = featuresData?.features?.customizeAutoEmails === true;
 
+  // Groupes d'onglets pour une navigation plus ergonomique
+  const SETTINGS_GROUPS = {
+    emails: {
+      label: 'Emails',
+      icon: Mail,
+      tabs: canCustomizeAutoEmails
+        ? [
+            { id: 'emails', label: 'Comptes Email', icon: Mail },
+            { id: 'modeles-emails', label: "Modèles d'emails", icon: Send },
+            { id: 'auto-emails', label: 'Emails auto (ton)', icon: Send },
+          ]
+        : [{ id: 'emails', label: 'Comptes Email', icon: Mail }],
+    },
+    integrations: {
+      label: 'Intégrations',
+      icon: Globe,
+      tabs: [
+        { id: 'google-sheets', label: 'Google Sheets', icon: FileSpreadsheet },
+        { id: 'google-drive', label: 'Google Drive', icon: Folder },
+        { id: 'typeform', label: 'Typeform', icon: FormInput },
+        { id: 'paiements', label: 'Paiements', icon: CreditCard },
+        { id: 'mbehub', label: 'MBE Hub', icon: Globe },
+      ],
+    },
+    operations: {
+      label: 'Opérations',
+      icon: Package,
+      tabs: [
+        { id: 'cartons', label: 'Cartons', icon: Package },
+        { id: 'expedition', label: 'Expédition', icon: Truck },
+      ],
+    },
+  } as const;
+
+  const getGroupForTab = (tabId: string): keyof typeof SETTINGS_GROUPS => {
+    for (const [group, data] of Object.entries(SETTINGS_GROUPS)) {
+      if (data.tabs.some((t) => t.id === tabId)) return group as keyof typeof SETTINGS_GROUPS;
+    }
+    return 'emails';
+  };
+
+  const currentGroup = getGroupForTab(settingsTab);
+
   // État Paytweak / Payment Provider (feature customPaytweak)
   const [paymentSettings, setPaymentSettings] = useState<{
     hasCustomPaytweak: boolean;
@@ -760,39 +803,41 @@ export default function Settings() {
         </div>
 
         <Tabs value={settingsTab} onValueChange={setSettingsTab} className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="emails">Comptes Email</TabsTrigger>
-            <TabsTrigger value="google-sheets">Google Sheets</TabsTrigger>
-            <TabsTrigger value="google-drive">Google Drive</TabsTrigger>
-            <TabsTrigger value="typeform" className="gap-2">
-              <FormInput className="w-4 h-4" />
-              Typeform
-            </TabsTrigger>
-            <TabsTrigger value="cartons">
-              <Package className="w-4 h-4 mr-2" />
-              Cartons
-            </TabsTrigger>
-            <TabsTrigger value="expedition">
-              <Truck className="w-4 h-4 mr-2" />
-              Expédition
-            </TabsTrigger>
-            <TabsTrigger value="paiements">Paiements</TabsTrigger>
-            <TabsTrigger value="mbehub" className="gap-2">
-              <Globe className="w-4 h-4" />
-              MBE Hub
-            </TabsTrigger>
-            {canCustomizeAutoEmails && (
-              <>
-                <TabsTrigger value="modeles-emails" className="gap-2">
-                  <Send className="w-4 h-4" />
-                  Modèles d&apos;emails
-                </TabsTrigger>
-                <TabsTrigger value="auto-emails" className="gap-2">
-                  Emails auto (ton)
-                </TabsTrigger>
-              </>
+          {/* Groupes principaux */}
+          <div className="flex flex-col gap-3">
+            <div className="flex gap-2 flex-wrap">
+              {(Object.entries(SETTINGS_GROUPS) as [keyof typeof SETTINGS_GROUPS, (typeof SETTINGS_GROUPS)['emails']][]).map(([groupKey, groupData]) => {
+                const Icon = groupData.icon;
+                const isActive = currentGroup === groupKey;
+                return (
+                  <Button
+                    key={groupKey}
+                    variant={isActive ? 'default' : 'outline'}
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => setSettingsTab(groupData.tabs[0].id)}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {groupData.label}
+                  </Button>
+                );
+              })}
+            </div>
+            {/* Sous-onglets du groupe actif (masqués si un seul onglet) */}
+            {SETTINGS_GROUPS[currentGroup].tabs.length > 1 && (
+              <TabsList className="w-fit">
+                {SETTINGS_GROUPS[currentGroup].tabs.map((tab) => {
+                  const Icon = tab.icon;
+                  return (
+                    <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
+                      <Icon className="w-4 h-4" />
+                      {tab.label}
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
             )}
-          </TabsList>
+          </div>
 
           <TabsContent value="emails" className="space-y-6">
             <Card>
