@@ -114,11 +114,29 @@ export const DEFAULT_QUOTE_SEND_HTML = `<div style="margin-bottom:24px;">
 
 export const DEFAULT_QUOTE_SEND_SIGNATURE = `Bien à vous,`;
 
+/** Sections par défaut pour le template devis (Option B - édition structurée, add/remove possible) */
+export const DEFAULT_QUOTE_SEND_SECTIONS = [
+  { id: 'intro', title: '', content: 'Bonjour,\n\nSuite à votre demande, nous avons le plaisir de vous proposer notre devis pour la Collecte, l\'Emballage et l\'Expédition de vos lot(s) du bordereau n° {{bordereauNum}}, acquis à {{nomSalleVentes}}.' },
+  { id: 's1', title: '1 – Détail du devis', content: 'Retrait des lots + Emballage sur mesure (fournitures d\'emballage / carton + main-d\'œuvre) : {{prixEmballage}} €\nTransport + Gestion de dossier : {{prixTransport}} €\nAssurance (optionnelle) : {{prixAssurance}}\n\nLa couverture d\'expédition couvre la valeur d\'adjudication (hors frais de la salle des ventes) des lots en cas de perte, vol ou dégradation.\n\nPour les envois de tableaux, l\'assurance ne prend pas en compte la détérioration du cadre et/ou de la vitre durant le transport.' },
+  { id: 's2', title: 'Total et validité', content: 'Total : {{prixTotal}} € TTC\n\nOffre valable 15 jours à compter de ce jour. Ce devis est exprimé en TTC si l\'expédition a lieu en Europe et H.T. pour des expéditions hors zone Euro.' },
+  { id: 's3', title: 'Avertissement chiffrage', content: '⚠ Le chiffrage est approximatif, réalisé avec la description du bordereau, sans avoir les objets sous les yeux.\n\nSi dimensions/poids réels sont différents, un ajustement pourra être appliqué (nous vous préviendrons avant).' },
+  { id: 's4', title: '2 – Paiement (acceptation du devis)', content: 'Le règlement se fait par carte bancaire via notre lien sécurisé :\n\n👉 {{lienPaiementSecurise}}\n\nEn validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },
+  { id: 's5', title: '3 – Collecte – Emballage – Expédition', content: 'D\'une manière générale, nous collectons les lots 1 fois par semaine (sauf exception en fonction des disponibilités et du planning des salles des ventes). Une fois collectés, nous préparons les emballages sur mesure des lots pour l\'expédition des colis, dont vous êtes averti personnellement, par e-mail, par le transporteur avec le numéro de suivi.\n\n• Délais : Emballage + expédition : habituellement sous une semaine\n• Livraison en France métropolitaine : 48 h en moyenne (non garanti).\n\nMode EXPRESS possible sur simple demande (engendre une modification du devis).' },
+  { id: 's6', title: '4 – Livraison', content: 'Votre colis sera expédié à l\'adresse suivante :\n\n{{adresseDestinataire}}\n\nSi vous souhaitez une livraison en point relais ou à une autre adresse que celle de votre bordereau, merci de nous l\'indiquer par retour de cet e-mail uniquement.\n\n⚠ Après envoi du colis, tout changement d\'adresse sera facturé 15 € TTC.\n\nEn cas de problème à la livraison, merci de :\n• prendre plusieurs photos du colis et de l\'emballage,\n• garder tous les matériaux d\'emballage,\n• nous prévenir immédiatement (sans dépasser les délais du transporteur).' },
+  { id: 's7', title: '5 – CGV – Responsabilités – Informations utiles', content: 'La responsabilité de MBE ne peut être engagée si le transporteur refuse l\'indemnisation en raison de la nature, de la valeur ou de l\'emballage.\n\nLien vers nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },
+  { id: 's8', title: '6 – Facture', content: 'L\'envoi d\'une facture n\'est pas automatique.\n\n👉 Merci de préciser dans votre réponse si vous souhaitez une facture et, le cas échéant, d\'indiquer les coordonnées de votre société.' },
+  { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions de votre confiance.' },
+];
+
+/** Types de templates utilisant l\'éditeur par sections (add/remove) */
+export const SECTION_BASED_TEMPLATES = ['quote_send'];
+
 /** Valeurs par défaut - templates étendus */
 export const DEFAULT_TEMPLATES_EXTENDED = {
   quote_send: {
     subject: 'Votre devis de transport - {{reference}}',
     bodyHtml: DEFAULT_QUOTE_SEND_HTML,
+    bodySections: DEFAULT_QUOTE_SEND_SECTIONS,
     signature: DEFAULT_QUOTE_SEND_SIGNATURE,
     bannerColor: '#2563eb',
     buttonColor: '#2563eb',
@@ -216,6 +234,55 @@ Nous vous remercions d'avoir choisi de travailler avec <strong>{{mbeName}}</stro
 };
 
 /**
+ * Échappe le HTML pour affichage sécurisé
+ */
+function escapeHtml(str) {
+  if (!str || typeof str !== 'string') return '';
+  return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+}
+
+/**
+ * Construit le HTML du corps depuis les sections (Option B)
+ * Chaque section : title (optionnel) + content (texte avec \n, placeholders)
+ * Lignes commençant par • ou - deviennent des <li>, les autres des <p>
+ */
+export function buildBodyHtmlFromSections(sections, values) {
+  if (!sections || !Array.isArray(sections) || sections.length === 0) return '';
+  const out = [];
+  for (const s of sections) {
+    const title = replacePlaceholdersExtended(String(s.title || ''), values);
+    let content = replacePlaceholdersExtended(String(s.content || ''), values);
+    content = escapeHtml(content);
+    const lines = content.split('\n');
+    let html = '';
+    let inList = false;
+    for (const line of lines) {
+      const t = line.trim();
+      if (t.startsWith('• ') || t.startsWith('- ')) {
+        if (!inList) {
+          html += '<ul style="margin:0 0 12px 1.5em;padding:0;">';
+          inList = true;
+        }
+        html += `<li style="margin-bottom:4px;line-height:1.6;">${t.slice(2)}</li>`;
+      } else {
+        if (inList) {
+          html += '</ul>';
+          inList = false;
+        }
+        if (t) html += `<p style="margin:0 0 8px 0;line-height:1.6;">${t}</p>`;
+      }
+    }
+    if (inList) html += '</ul>';
+    const marginBottom = html ? '24px' : '0';
+    const titleHtml = title
+      ? `<p style="margin:0 0 12px 0;line-height:1.6;"><strong>${escapeHtml(title)}</strong></p>`
+      : '';
+    out.push(`<div style="margin-bottom:${marginBottom}">${titleHtml}${html}</div>`);
+  }
+  return out.join('');
+}
+
+/**
  * Remplace les placeholders dans une chaîne (format {{key}} et {key})
  */
 export function replacePlaceholdersExtended(str, values) {
@@ -237,13 +304,17 @@ export function getTemplatesExtendedForAccount(customTemplates) {
   for (const type of EMAIL_TYPES_EXTENDED) {
     const custom = customTemplates?.[type];
     const def = DEFAULT_TEMPLATES_EXTENDED[type];
+    const defSections = def?.bodySections;
+    const customSections = custom?.bodySections;
     result[type] = {
       subject: custom?.subject ?? def?.subject ?? '',
       bodyHtml: custom?.bodyHtml ?? def?.bodyHtml ?? '',
+      bodySections: Array.isArray(customSections) ? customSections : (Array.isArray(defSections) ? defSections : null),
       signature: custom?.signature ?? def?.signature ?? '',
       bannerColor: custom?.bannerColor ?? def?.bannerColor ?? '#2563eb',
       buttonColor: custom?.buttonColor ?? def?.buttonColor ?? '#2563eb',
       bannerTitle: custom?.bannerTitle ?? def?.bannerTitle ?? '',
+      bannerLogoUrl: custom?.bannerLogoUrl ?? def?.bannerLogoUrl ?? '',
       buttonLabel: custom?.buttonLabel ?? def?.buttonLabel ?? '',
       fontFamily: custom?.fontFamily ?? 'Arial, sans-serif',
       fontSize: custom?.fontSize ?? 14,

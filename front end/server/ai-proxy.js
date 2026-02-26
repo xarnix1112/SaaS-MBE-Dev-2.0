@@ -22,6 +22,7 @@ import { Resend } from "resend";
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import { getStorage } from "firebase-admin/storage";
 import { google } from "googleapis";
 import * as Sentry from "@sentry/node";
 import {
@@ -82,6 +83,7 @@ import {
 import {
   getTemplatesExtendedForAccount,
   replacePlaceholdersExtended,
+  buildBodyHtmlFromSections,
   EMAIL_TYPES_EXTENDED,
   EMAIL_TYPE_LABELS_EXTENDED,
   PLACEHOLDERS_EXTENDED,
@@ -780,16 +782,20 @@ try {
   }
 
   if (serviceAccount) {
+    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || `${firebaseConfig.projectId}.appspot.com`;
     console.log("[ai-proxy] 🔧 Initialisation de Firebase Admin avec credentials...");
     initializeApp({
       credential: cert(serviceAccount),
       projectId: firebaseConfig.projectId,
+      storageBucket,
     });
     console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials");
   } else {
+    const storageBucket = process.env.FIREBASE_STORAGE_BUCKET || `${firebaseConfig.projectId}.appspot.com`;
     console.warn("[ai-proxy] ⚠️  Aucun fichier ni variables FIREBASE_* trouvés, utilisation des Application Default Credentials");
     initializeApp({
       projectId: firebaseConfig.projectId,
+      storageBucket,
     });
   }
 
@@ -4947,7 +4953,9 @@ app.post('/api/send-quote-email', async (req, res) => {
       : null;
     const templates = getTemplatesExtendedForAccount(emailTemplates);
     const t = templates.quote_send || {};
-    const renderedBody = replacePlaceholdersExtended(t.bodyHtml || DEFAULT_TEMPLATES_EXTENDED.quote_send.bodyHtml, templateValues);
+    const renderedBody = Array.isArray(t.bodySections) && t.bodySections.length > 0
+      ? buildBodyHtmlFromSections(t.bodySections, templateValues)
+      : replacePlaceholdersExtended(t.bodyHtml || DEFAULT_TEMPLATES_EXTENDED.quote_send.bodyHtml, templateValues);
     const renderedSignature = replacePlaceholdersExtended(t.signature || DEFAULT_TEMPLATES_EXTENDED.quote_send.signature, templateValues).replace(/\n/g, '<br>');
     const htmlContent = buildEmailHtmlFromTemplate(
       { ...t, bannerColor: t.bannerColor || '#2563eb', buttonColor: t.buttonColor || '#2563eb', fontFamily: t.fontFamily || 'Arial, sans-serif', fontSize: t.fontSize || 14 },
@@ -11105,7 +11113,7 @@ app.get('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, 
 
 app.put('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
   if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
-  const { type, subject, bodyHtml, signature, bannerColor, buttonColor, bannerTitle, buttonLabel } = req.body || {};
+  const { type, subject, bodyHtml, bodySections, signature, bannerColor, buttonColor, bannerTitle, bannerLogoUrl, buttonLabel } = req.body || {};
   if (!type || !EMAIL_TYPES_EXTENDED.includes(type)) {
     return res.status(400).json({ error: 'Type d\'email invalide' });
   }
@@ -11120,10 +11128,12 @@ app.put('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, 
       [type]: {
         subject: subject !== undefined ? subject : (prev.subject ?? def.subject),
         bodyHtml: bodyHtml !== undefined ? bodyHtml : (prev.bodyHtml ?? def.bodyHtml),
+        bodySections: bodySections !== undefined ? bodySections : (prev.bodySections ?? def.bodySections),
         signature: signature !== undefined ? signature : (prev.signature ?? def.signature),
         bannerColor: bannerColor !== undefined ? bannerColor : (prev.bannerColor ?? def.bannerColor ?? '#2563eb'),
         buttonColor: buttonColor !== undefined ? buttonColor : (prev.buttonColor ?? def.buttonColor ?? '#2563eb'),
         bannerTitle: bannerTitle !== undefined ? bannerTitle : (prev.bannerTitle ?? def.bannerTitle ?? ''),
+        bannerLogoUrl: bannerLogoUrl !== undefined ? bannerLogoUrl : (prev.bannerLogoUrl ?? def.bannerLogoUrl ?? ''),
         buttonLabel: buttonLabel !== undefined ? buttonLabel : (prev.buttonLabel ?? def.buttonLabel ?? ''),
         updatedAt: Timestamp.now(),
       },
@@ -11169,7 +11179,9 @@ app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAut
       description: 'Surcoût pour dimensions réelles',
     };
     const subject = replacePlaceholdersExtended(t.subject || '', sampleValues);
-    const bodyHtml = replacePlaceholdersExtended(t.bodyHtml || '', sampleValues);
+    const bodyHtml = Array.isArray(t.bodySections) && t.bodySections.length > 0
+      ? buildBodyHtmlFromSections(t.bodySections, sampleValues)
+      : replacePlaceholdersExtended(t.bodyHtml || '', sampleValues);
     const signature = replacePlaceholdersExtended(t.signature || '', sampleValues).replace(/\n/g, '<br>');
     const fullHtml = buildEmailHtmlFromTemplate(t, bodyHtml, signature, sampleValues);
     return res.json({
@@ -11181,6 +11193,34 @@ app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAut
   } catch (err) {
     console.error('[API] Erreur preview email-templates-extended:', err);
     return res.status(500).json({ error: 'Erreur prévisualisation' });
+  }
+});
+
+/** Upload logo pour le bandeau des emails - POST multipart avec fichier "logo" et champ "type" */
+app.post('/api/email-templates-extended/upload-logo', requireAuth, checkCustomizeAutoEmails, upload.single('logo'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  if (!req.file || !req.file.buffer) return res.status(400).json({ error: 'Aucun fichier envoyé' });
+  const templateType = req.body?.type || 'quote_send';
+  const ext = req.file.originalname?.match(/\.(jpe?g|png|gif|webp)$/i)?.[1]?.toLowerCase() || 'png';
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  if (!allowedTypes.includes(req.file.mimetype)) return res.status(400).json({ error: 'Format non autorisé (jpg, png, gif, webp)' });
+  try {
+    const bucket = getStorage().bucket();
+    const fileName = `saasAccounts/${req.saasAccountId}/email-logo-${templateType}.${ext}`;
+    const storageFile = bucket.file(fileName);
+    await storageFile.save(req.file.buffer, { contentType: req.file.mimetype });
+    await storageFile.makePublic();
+    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const target = current[templateType] || {};
+    const updated = { ...current, [templateType]: { ...target, bannerLogoUrl: publicUrl } };
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({ url: publicUrl, success: true });
+  } catch (err) {
+    console.error('[API] Erreur upload logo:', err);
+    return res.status(500).json({ error: err.message || 'Erreur upload' });
   }
 });
 
@@ -11215,6 +11255,7 @@ function buildEmailHtmlFromTemplate(template, bodyHtml, signatureHtml, values = 
   const bannerColor = template.bannerColor || '#2563eb';
   const buttonColor = template.buttonColor || '#2563eb';
   const bannerTitle = replacePlaceholdersExtended(template.bannerTitle || '', values);
+  const bannerLogoUrl = template.bannerLogoUrl || '';
   const buttonLabel = template.buttonLabel ? replacePlaceholdersExtended(template.buttonLabel, values) : null;
   const paymentUrl = values.lienPaiementSecurise || values.paymentUrl || '';
 
@@ -11232,12 +11273,17 @@ function buildEmailHtmlFromTemplate(template, bodyHtml, signatureHtml, values = 
     </div>`;
   }
 
+  const logoHtml = bannerLogoUrl
+    ? `<img src="${bannerLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" style="max-height:60px;max-width:200px;display:block;margin:0 auto 12px auto;" />`
+    : '';
+
   return `
 <!DOCTYPE html>
 <html>
 <head><meta charset="utf-8"><style>body{font-family:${template.fontFamily || 'Arial, sans-serif'};font-size:${template.fontSize || 14}px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px;}</style></head>
 <body>
   <div style="background:${bannerColor};color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
+    ${logoHtml}
     <h1 style="margin:0;">${bannerTitle}</h1>
   </div>
   <div style="background:#f9fafb;padding:30px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">

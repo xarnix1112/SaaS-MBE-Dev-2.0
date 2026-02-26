@@ -1,9 +1,10 @@
 /**
  * Modèles d'emails - personnalisation complète par type
- * Sujet, corps HTML, signature, couleurs bandeau/bouton
+ * Sujet, corps HTML, signature, couleurs bandeau/bouton, logo
+ * Option B : pour quote_send, édition par sections (add/remove)
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -11,7 +12,15 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { toast } from 'sonner';
 import { authenticatedFetch } from '@/lib/api';
-import { Mail, RotateCcw, Eye, Loader2, ChevronDown, ChevronUp } from 'lucide-react';
+import { Mail, RotateCcw, Eye, Loader2, ChevronDown, ChevronUp, Plus, Trash2, ImageIcon } from 'lucide-react';
+
+const SECTION_BASED_TYPES = ['quote_send'] as const;
+
+export interface SectionItem {
+  id: string;
+  title: string;
+  content: string;
+}
 
 const EMAIL_TYPES = [
   'quote_send',
@@ -54,10 +63,12 @@ const PLACEHOLDERS = [
 interface TemplateData {
   subject: string;
   bodyHtml: string;
+  bodySections?: SectionItem[] | null;
   signature: string;
   bannerColor: string;
   buttonColor: string;
   bannerTitle: string;
+  bannerLogoUrl?: string;
   buttonLabel: string;
 }
 
@@ -100,7 +111,7 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
     const t = templates[type];
     const e = edits[type];
     if (!t && !e) return;
-    const payload = {
+    const payload: Record<string, unknown> = {
       type,
       subject: e?.subject ?? t?.subject,
       bodyHtml: e?.bodyHtml ?? t?.bodyHtml,
@@ -110,6 +121,12 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
       bannerTitle: e?.bannerTitle ?? t?.bannerTitle,
       buttonLabel: e?.buttonLabel ?? t?.buttonLabel,
     };
+    if (SECTION_BASED_TYPES.includes(type as (typeof SECTION_BASED_TYPES)[number])) {
+      payload.bodySections = e?.bodySections ?? t?.bodySections ?? [];
+    }
+    if (e?.bannerLogoUrl !== undefined || t?.bannerLogoUrl) {
+      payload.bannerLogoUrl = e?.bannerLogoUrl ?? t?.bannerLogoUrl ?? '';
+    }
     try {
       setSaving(type);
       const res = await authenticatedFetch('/api/email-templates-extended', {
@@ -179,6 +196,80 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
     const e = edits[type];
     if (e && e[field] !== undefined) return e[field] as string;
     return (templates[type]?.[field] as string) ?? '';
+  };
+
+  const getSections = (type: string): SectionItem[] => {
+    const e = edits[type];
+    if (e?.bodySections !== undefined) return e.bodySections as SectionItem[];
+    const arr = templates[type]?.bodySections;
+    return Array.isArray(arr) ? arr : [];
+  };
+
+  const updateSection = (type: string, index: number, field: 'title' | 'content', value: string) => {
+    const sections = [...getSections(type)];
+    if (index < 0 || index >= sections.length) return;
+    sections[index] = { ...sections[index], [field]: value };
+    setEdits((prev) => {
+      const current = prev[type] ?? templates[type] ?? {};
+      return { ...prev, [type]: { ...current, bodySections: sections } };
+    });
+  };
+
+  const addSection = (type: string) => {
+    const sections = [...getSections(type)];
+    sections.push({ id: `s${Date.now()}`, title: '', content: '' });
+    setEdits((prev) => {
+      const current = prev[type] ?? templates[type] ?? {};
+      return { ...prev, [type]: { ...current, bodySections: sections } };
+    });
+  };
+
+  const removeSection = (type: string, index: number) => {
+    const sections = getSections(type).filter((_, i) => i !== index);
+    setEdits((prev) => {
+      const current = prev[type] ?? templates[type] ?? {};
+      return { ...prev, [type]: { ...current, bodySections: sections } };
+    });
+  };
+
+  const logoUploadRef = useRef<HTMLInputElement>(null);
+  const [logoUploading, setLogoUploading] = useState(false);
+
+  const handleLogoUpload = async (type: string) => {
+    const file = logoUploadRef.current?.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      toast.error('Veuillez sélectionner une image (jpg, png, gif, webp)');
+      return;
+    }
+    try {
+      setLogoUploading(true);
+      const formData = new FormData();
+      formData.append('logo', file);
+      formData.append('type', type);
+      const res = await authenticatedFetch('/api/email-templates-extended/upload-logo', {
+        method: 'POST',
+        body: formData,
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.error || 'Erreur upload');
+      }
+      const data = await res.json();
+      if (data.url) {
+        setEdits((prev) => {
+          const current = prev[type] ?? templates[type] ?? {};
+          return { ...prev, [type]: { ...current, bannerLogoUrl: data.url } };
+        });
+        toast.success('Logo ajouté');
+        await loadTemplates();
+      }
+    } catch (err) {
+      toast.error(err instanceof Error ? err.message : 'Erreur upload');
+    } finally {
+      setLogoUploading(false);
+      logoUploadRef.current!.value = '';
+    }
   };
 
   if (loading) {
@@ -276,16 +367,110 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
                       className="mt-1"
                     />
                   </div>
-                  <div>
-                    <Label>Corps de l&apos;email (HTML)</Label>
-                    <textarea
-                      value={getValue(type, 'bodyHtml')}
-                      onChange={(e) => updateEdit(type, 'bodyHtml', e.target.value)}
-                      placeholder="Contenu HTML avec placeholders {{...}}"
-                      rows={8}
-                      className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono mt-1"
-                    />
-                  </div>
+                  {['quote_send', 'surcharge'].includes(type) && (
+                    <div>
+                      <Label>Logo du bandeau</Label>
+                      <p className="text-xs text-muted-foreground mt-0.5 mb-1">URL ou sélectionnez un fichier depuis votre ordinateur</p>
+                      <div className="flex gap-2 mt-1">
+                        <Input
+                          value={getValue(type, 'bannerLogoUrl') || ''}
+                          onChange={(e) => updateEdit(type, 'bannerLogoUrl', e.target.value)}
+                          placeholder="https://..."
+                          className="flex-1"
+                        />
+                        <input
+                          ref={logoUploadRef}
+                          type="file"
+                          accept="image/jpeg,image/png,image/gif,image/webp"
+                          className="hidden"
+                          onChange={() => type && handleLogoUpload(type)}
+                        />
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={() => logoUploadRef.current?.click()}
+                          disabled={logoUploading}
+                        >
+                          {logoUploading ? <Loader2 className="w-4 h-4 animate-spin" /> : <ImageIcon className="w-4 h-4" />}
+                          Fichier
+                        </Button>
+                      </div>
+                      {(getValue(type, 'bannerLogoUrl') || templates[type]?.bannerLogoUrl) && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <img
+                            src={getValue(type, 'bannerLogoUrl') || templates[type]?.bannerLogoUrl}
+                            alt="Logo actuel"
+                            className="h-10 object-contain border rounded"
+                          />
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => updateEdit(type, 'bannerLogoUrl', '')}
+                          >
+                            Supprimer
+                          </Button>
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  {SECTION_BASED_TYPES.includes(type as (typeof SECTION_BASED_TYPES)[number]) ? (
+                    <div>
+                      <Label>Corps de l&apos;email (par sections)</Label>
+                      <p className="text-xs text-muted-foreground mb-2">Modifiez le texte de chaque section. Utilisez • ou - en début de ligne pour des puces.</p>
+                      {getSections(type).length === 0 && (templates[type] as TemplateData)?.bodyHtml && (
+                        <p className="text-sm text-amber-600 dark:text-amber-500 bg-amber-50 dark:bg-amber-950/30 p-2 rounded mb-2">
+                          Ce modèle utilise l&apos;ancien format. Cliquez sur &quot;Réinitialiser&quot; pour passer au nouvel éditeur par sections.
+                        </p>
+                      )}
+                      <div className="space-y-3">
+                        {getSections(type).map((sec, idx) => (
+                          <div key={sec.id} className="border rounded p-3 bg-muted/30 space-y-2">
+                            <div className="flex justify-between items-center">
+                              <Input
+                                value={sec.title}
+                                onChange={(e) => updateSection(type, idx, 'title', e.target.value)}
+                                placeholder="Titre de section (vide = pas de titre)"
+                                className="font-medium"
+                              />
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => removeSection(type, idx)}
+                                className="text-destructive shrink-0"
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </div>
+                            <textarea
+                              value={sec.content}
+                              onChange={(e) => updateSection(type, idx, 'content', e.target.value)}
+                              placeholder="Contenu... (placeholders {{bordereauNum}}, {{prixTotal}}, etc.)"
+                              rows={4}
+                              className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm mt-1 resize-y"
+                            />
+                          </div>
+                        ))}
+                        <Button type="button" variant="outline" size="sm" onClick={() => addSection(type)}>
+                          <Plus className="w-4 h-4 mr-1" />
+                          Ajouter une section
+                        </Button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div>
+                      <Label>Corps de l&apos;email (HTML)</Label>
+                      <textarea
+                        value={getValue(type, 'bodyHtml')}
+                        onChange={(e) => updateEdit(type, 'bodyHtml', e.target.value)}
+                        placeholder="Contenu HTML avec placeholders {{...}}"
+                        rows={8}
+                        className="flex min-h-[120px] w-full rounded-md border border-input bg-background px-3 py-2 text-sm font-mono mt-1"
+                      />
+                    </div>
+                  )}
                   <div>
                     <Label>Signature (HTML)</Label>
                     <textarea

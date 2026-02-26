@@ -37,9 +37,10 @@ export async function authenticatedFetch(
 ): Promise<Response> {
   const { forceRefresh, ...fetchOptions } = options;
   const token = await getAuthToken(!!forceRefresh);
-  
-  const headers = {
-    'Content-Type': 'application/json',
+  const isFormData = fetchOptions.body instanceof FormData;
+
+  const headers: Record<string, string> = {
+    ...(isFormData ? {} : { 'Content-Type': 'application/json' }),
     ...(token && { Authorization: `Bearer ${token}` }),
     ...(import.meta.env.DEV && { 'X-Client-Dev': 'true' }),
     ...(fetchOptions.headers as Record<string, string>),
