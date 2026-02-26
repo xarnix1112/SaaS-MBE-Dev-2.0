@@ -89,6 +89,11 @@ import {
   PLACEHOLDERS_EXTENDED,
   DEFAULT_TEMPLATES_EXTENDED,
 } from "./email-templates-extended.js";
+import {
+  createBilanSpreadsheet,
+  exportAllQuotesToBilan,
+  syncQuoteToBilanSheet,
+} from "./bilan-google-sheet.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -5062,6 +5067,32 @@ L'équipe MBE
       // Ne pas faire échouer l'envoi d'email si la sauvegarde Firestore échoue
       console.error('[emailMessages] ❌ Erreur lors de la sauvegarde de l\'email dans Firestore:', firestoreError);
     }
+
+    // Enregistrer la date d'envoi du devis (pour Bilan)
+    if (firestore && quote.id) {
+      try {
+        await firestore.collection('quotes').doc(quote.id).update({
+          quoteSentAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        });
+      } catch (e) {
+        console.warn('[emailMessages] quoteSentAt non mis à jour:', e?.message);
+      }
+    }
+
+    // Synchroniser vers le Bilan Google Sheet si configuré
+    const saasAccountId = quote.saasAccountId;
+    if (firestore && quote.id && saasAccountId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        if (saasDoc.exists) {
+          const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+          if (auth) await syncQuoteToBilanSheet(firestore, auth, saasAccountId, quote.id);
+        }
+      } catch (bilanErr) {
+        console.warn('[Bilan] Sync après envoi email:', bilanErr?.message);
+      }
+    }
     
     res.json({ success: true, messageId: result.id, to: clientEmail });
   } catch (error) {
@@ -6600,10 +6631,12 @@ app.get('/auth/google-sheets/start', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Compte SaaS non configuré. Veuillez compléter la configuration MBE.' });
   }
 
-  // Scopes nécessaires pour lire les Google Sheets ET Google Drive (bordereaux)
+  // Scopes: lecture pour bordereaux Typeform + écriture pour Bilan devis MBE
   const scopes = [
     'https://www.googleapis.com/auth/spreadsheets.readonly',
+    'https://www.googleapis.com/auth/spreadsheets', // Écriture pour Bilan devis MBE
     'https://www.googleapis.com/auth/drive.readonly', // CRITIQUE: Nécessaire pour accéder aux bordereaux dans Drive
+    'https://www.googleapis.com/auth/drive.file', // Création/écriture fichiers (Bilan)
     'https://www.googleapis.com/auth/drive.metadata.readonly' // Pour lister les dossiers
   ];
 
@@ -7010,6 +7043,214 @@ app.delete('/api/google-sheets/disconnect', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[API] Erreur lors de la déconnexion Google Sheets:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// BILAN DEVIS MBE - Google Sheet dédié (En cours, Terminés, Refusés)
+// ============================================================================
+
+/** Crée une instance OAuth2 pour un compte SaaS (tokens depuis Google Sheets) */
+function getGoogleAuthForSaasAccount(saasAccountData) {
+  const gs = saasAccountData.integrations?.googleSheets;
+  const tokens = gs?.oauthTokens || (gs?.accessToken ? {
+    accessToken: gs.accessToken,
+    refreshToken: gs.refreshToken,
+    expiresAt: gs.expiresAt,
+  } : null);
+  if (!tokens?.accessToken) return null;
+
+  let expiryDate = null;
+  if (tokens.expiresAt) {
+    if (tokens.expiresAt?.toDate) expiryDate = tokens.expiresAt.toDate().getTime();
+    else if (tokens.expiresAt instanceof Date) expiryDate = tokens.expiresAt.getTime();
+    else expiryDate = new Date(tokens.expiresAt).getTime();
+  }
+
+  const auth = new google.auth.OAuth2(
+    GOOGLE_SHEETS_CLIENT_ID,
+    GOOGLE_SHEETS_CLIENT_SECRET,
+    GOOGLE_SHEETS_REDIRECT_URI
+  );
+  auth.setCredentials({
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    expiry_date: expiryDate,
+  });
+  return auth;
+}
+
+// Route: Créer le Bilan devis MBE (spreadsheet + 3 feuilles)
+app.post('/api/bilan/create', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const saasData = saasDoc.data();
+    if (saasData.integrations?.bilanSheet?.spreadsheetId) {
+      return res.status(400).json({ error: 'Le Bilan devis MBE existe déjà. Utilisez "Voir le bilan" pour l\'ouvrir.' });
+    }
+
+    const auth = getGoogleAuthForSaasAccount(saasData);
+    if (!auth) {
+      return res.status(400).json({ error: 'Connectez d\'abord Google Sheets dans Paramètres pour créer le Bilan.' });
+    }
+
+    const { spreadsheetId, spreadsheetUrl } = await createBilanSpreadsheet(auth, req.saasAccountId);
+
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).update({
+      'integrations.bilanSheet': {
+        spreadsheetId,
+        spreadsheetUrl,
+        createdAt: Timestamp.now(),
+      },
+    });
+
+    // Export initial de tous les devis
+    await exportAllQuotesToBilan(firestore, auth, req.saasAccountId);
+
+    console.log('[Bilan] ✅ Spreadsheet créé pour saasAccountId:', req.saasAccountId);
+    res.json({ success: true, spreadsheetId, spreadsheetUrl });
+  } catch (error) {
+    console.error('[Bilan] Erreur création:', error);
+    res.status(500).json({ error: error.message || 'Erreur lors de la création du Bilan' });
+  }
+});
+
+// Route: Récupérer le statut du Bilan
+app.get('/api/bilan/status', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const bilanSheet = saasDoc.data().integrations?.bilanSheet;
+    res.json({
+      exists: Boolean(bilanSheet?.spreadsheetId),
+      spreadsheetId: bilanSheet?.spreadsheetId || null,
+      spreadsheetUrl: bilanSheet?.spreadsheetUrl || null,
+    });
+  } catch (error) {
+    console.error('[Bilan] Erreur statut:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Route: Synchroniser un devis vers le Bilan (appelée après chaque mise à jour)
+app.post('/api/bilan/sync-quote/:quoteId', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const bilanSheet = saasDoc.data().integrations?.bilanSheet;
+    if (!bilanSheet?.spreadsheetId) {
+      return res.json({ success: true, skipped: true, reason: 'Bilan non créé' });
+    }
+
+    const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+    if (!auth) return res.json({ success: true, skipped: true, reason: 'OAuth non configuré' });
+
+    await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Bilan] Erreur sync devis:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// REFUS / ABANDON CLIENT - Devis refusé ou abandonné par le client final
+// ============================================================================
+
+app.post('/api/quotes/:quoteId/client-refused', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  const { reason } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  const validReasons = ['refus_explicite', 'pas_de_reponse'];
+  const clientRefusalReason = validReasons.includes(reason) ? reason : 'refus_explicite';
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid') return res.status(400).json({ error: 'Un devis payé ne peut pas être marqué refusé' });
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'client_refused',
+      description: clientRefusalReason === 'refus_explicite' ? 'Devis refusé par le client' : 'Devis abandonné (pas de réponse)',
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      clientRefusalStatus: 'client_refused',
+      clientRefusalReason,
+      clientRefusalAt: Timestamp.now(),
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[client-refused]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/quotes/:quoteId/send-reminder', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid' || data.clientRefusalStatus === 'client_refused') {
+      return res.status(400).json({ error: 'Cette action n\'est pas possible pour ce devis' });
+    }
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: data.status || 'awaiting_payment',
+      description: 'Relance envoyée au client',
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      reminderSentAt: Timestamp.now(),
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[send-reminder]', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -10144,6 +10385,36 @@ if (firestore && googleSheetsOAuth2Client) {
   setTimeout(syncAllGoogleSheets, 30_000);
 } else {
   console.warn('[Google Sheets Sync] ⚠️  Polling Google Sheets désactivé (Firestore ou OAuth non configuré)');
+}
+
+// ============================================================================
+// NETTOYAGE DEVIS REFUSÉS > 6 MOIS (suppression Firestore, conservés dans Bilan Sheet)
+// ============================================================================
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+async function cleanupOldRefusedQuotes() {
+  if (!firestore) return;
+  try {
+    const cutoff = Timestamp.fromMillis(Date.now() - SIX_MONTHS_MS);
+    const snap = await firestore.collection('quotes')
+      .where('clientRefusalStatus', '==', 'client_refused')
+      .where('clientRefusalAt', '<', cutoff)
+      .get();
+    if (snap.empty) return;
+    const batch = firestore.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    console.log(`[Cleanup] ✅ ${snap.size} devis refusé(s) supprimé(s) (> 6 mois)`);
+  } catch (e) {
+    if (e.code === 9) {
+      console.warn('[Cleanup] Index Firestore manquant pour clientRefusalStatus/clientRefusalAt - ignorer');
+    } else {
+      console.error('[Cleanup] Erreur:', e?.message);
+    }
+  }
+}
+if (firestore) {
+  setInterval(cleanupOldRefusedQuotes, 24 * 60 * 60 * 1000);
+  setTimeout(cleanupOldRefusedQuotes, 60_000);
 }
 
 console.log('[AI Proxy] Routes /api/test et /api/health définies');

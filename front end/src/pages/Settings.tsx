@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
@@ -48,6 +48,8 @@ export default function Settings() {
   }
   const [googleSheetsStatus, setGoogleSheetsStatus] = useState<GoogleSheetsStatus | null>(null);
   const [isLoadingGoogleSheets, setIsLoadingGoogleSheets] = useState(false);
+  const [bilanStatus, setBilanStatus] = useState<{ exists: boolean; spreadsheetUrl?: string | null } | null>(null);
+  const [isLoadingBilan, setIsLoadingBilan] = useState(false);
   const [availableSheets, setAvailableSheets] = useState<GoogleSheet[]>([]);
   const [isLoadingSheetsList, setIsLoadingSheetsList] = useState(false);
   const [showSheetSelector, setShowSheetSelector] = useState(false);
@@ -392,6 +394,21 @@ export default function Settings() {
   }, [settingsTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Charger le statut Google Sheets
+  const loadBilanStatus = async () => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/bilan/status');
+      if (response.ok) {
+        const data = await response.json();
+        setBilanStatus(data);
+      } else {
+        setBilanStatus({ exists: false });
+      }
+    } catch {
+      setBilanStatus({ exists: false });
+    }
+  };
+
   const loadGoogleSheetsStatus = async () => {
     try {
       setIsLoadingGoogleSheets(true);
@@ -413,6 +430,7 @@ export default function Settings() {
       
       const status = await response.json();
       setGoogleSheetsStatus(status);
+      if (status.oauthAuthorized) loadBilanStatus();
       
       // Si OAuth autorisé mais pas de sheet sélectionné, afficher le sélecteur
       if (status.oauthAuthorized && !status.connected) {
@@ -594,6 +612,30 @@ export default function Settings() {
     } finally {
       setIsLoadingGoogleSheets(false);
     }
+  };
+
+  const handleCreateBilan = async () => {
+    try {
+      setIsLoadingBilan(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/bilan/create', { method: 'POST' });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la création');
+      }
+      const data = await response.json();
+      toast.success('Bilan devis MBE créé avec succès');
+      await loadBilanStatus();
+      if (data.spreadsheetUrl) window.open(data.spreadsheetUrl, '_blank');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur lors de la création du Bilan');
+    } finally {
+      setIsLoadingBilan(false);
+    }
+  };
+
+  const handleViewBilan = () => {
+    if (bilanStatus?.spreadsheetUrl) window.open(bilanStatus.spreadsheetUrl, '_blank');
   };
 
   // ==========================================
@@ -1040,6 +1082,34 @@ export default function Settings() {
                           )}
                         </Card>
                       )}
+
+                      {/* Bilan devis MBE - visible dès que OAuth autorisé */}
+                      <Card className="mt-4">
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-2">Bilan devis MBE</CardTitle>
+                          <CardDescription>
+                            Feuille Google Sheet dédiée (En cours, Terminés, Refusés) – export en temps réel
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          {isLoadingBilan ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Chargement...
+                            </div>
+                          ) : bilanStatus?.exists ? (
+                            <Button onClick={handleViewBilan} variant="outline" className="gap-2">
+                              <ExternalLink className="w-4 h-4" />
+                              Voir le bilan
+                            </Button>
+                          ) : (
+                            <Button onClick={handleCreateBilan} disabled={isLoadingBilan} className="gap-2">
+                              <FileSpreadsheet className="w-4 h-4" />
+                              Créer la page Google Sheet
+                            </Button>
+                          )}
+                        </CardContent>
+                      </Card>
                     </div>
                   </>
                 ) : (
@@ -1122,6 +1192,34 @@ export default function Settings() {
                           </Button>
                         </div>
                       </div>
+                    </Card>
+
+                    {/* Bilan devis MBE */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">Bilan devis MBE</CardTitle>
+                        <CardDescription>
+                          Feuille Google Sheet dédiée (En cours, Terminés, Refusés) – export en temps réel
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {isLoadingBilan ? (
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Chargement...
+                          </div>
+                        ) : bilanStatus?.exists ? (
+                          <Button onClick={handleViewBilan} variant="outline" className="gap-2">
+                            <ExternalLink className="w-4 h-4" />
+                            Voir le bilan
+                          </Button>
+                        ) : (
+                          <Button onClick={handleCreateBilan} disabled={isLoadingBilan} className="gap-2">
+                            <FileSpreadsheet className="w-4 h-4" />
+                            Créer la page Google Sheet
+                          </Button>
+                        )}
+                      </CardContent>
                     </Card>
                   </>
                 )}

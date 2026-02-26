@@ -15,6 +15,9 @@ export type QuoteStatus =
   | 'shipped'
   | 'completed';
 
+/** Refus ou abandon par le client final */
+export type ClientRefusalReason = 'refus_explicite' | 'pas_de_reponse';
+
 export type VerificationStatus = 
   | 'valid'
   | 'doubtful'
@@ -200,6 +203,17 @@ export interface Quote {
 
   /** Indique qu'une collecte a été planifiée (email envoyé à la SDV) */
   collectionPlannedAt?: Date | { toDate: () => Date } | null;
+
+  /** Date d'envoi du devis au client (email avec lien de paiement) */
+  quoteSentAt?: Date | { toDate: () => Date } | null;
+
+  /** Refus/abandon par le client : status + raison */
+  clientRefusalStatus?: 'client_refused';
+  clientRefusalReason?: ClientRefusalReason;
+  clientRefusalAt?: Date | { toDate: () => Date } | null;
+
+  /** Date d'envoi de la relance (pour abandon après 1 mois sans réponse) */
+  reminderSentAt?: Date | { toDate: () => Date } | null;
   clientName?: string; // Nom du client
   clientEmail?: string; // Email du client
   recipientAddress?: string; // Adresse du destinataire

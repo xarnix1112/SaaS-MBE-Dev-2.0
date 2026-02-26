@@ -4,6 +4,14 @@
       "collectionGroup": "quotes",
       "queryScope": "COLLECTION",
       "fields": [
+        { "fieldPath": "clientRefusalStatus", "order": "ASCENDING" },
+        { "fieldPath": "clientRefusalAt", "order": "ASCENDING" }
+      ]
+    },
+    {
+      "collectionGroup": "quotes",
+      "queryScope": "COLLECTION",
+      "fields": [
         { "fieldPath": "saasAccountId", "order": "ASCENDING" },
         { "fieldPath": "createdAt", "order": "DESCENDING" }
       ]

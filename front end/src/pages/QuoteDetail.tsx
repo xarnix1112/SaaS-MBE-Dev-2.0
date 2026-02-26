@@ -18,6 +18,7 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
@@ -167,6 +168,8 @@ export default function QuoteDetail() {
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
   const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
   const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
+  const [isRefusingQuote, setIsRefusingQuote] = useState(false);
+  const [isSendingReminder, setIsSendingReminder] = useState(false);
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -1115,6 +1118,7 @@ export default function QuoteDetail() {
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           
           console.log('[Email] ✅ Statut mis à jour: awaiting_payment / pending');
+          syncQuoteToBilan();
           toast.success(`Email envoyé avec succès à ${clientEmail}. Statut: En attente de paiement`);
         } catch (firestoreError) {
           console.error('[Email] Erreur lors de la mise à jour du statut:', firestoreError);
@@ -1167,7 +1171,7 @@ export default function QuoteDetail() {
           
           // Mettre à jour le state local
           setQuote(updatedQuote);
-          
+          syncQuoteToBilan();
           // Invalider le cache React Query pour forcer le rechargement
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           
@@ -1339,6 +1343,90 @@ export default function QuoteDetail() {
       toast.error(error instanceof Error ? error.message : 'Erreur');
     } finally {
       setIsSendingToMbehub(false);
+    }
+  };
+
+  const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+  const toDate = (v: unknown): Date | null => {
+    if (!v) return null;
+    if (v instanceof Date) return v;
+    if (typeof v === 'object' && v !== null && 'toDate' in v && typeof (v as { toDate: () => Date }).toDate === 'function') {
+      return (v as { toDate: () => Date }).toDate();
+    }
+    try {
+      const d = new Date(v as string | number);
+      return isNaN(d.getTime()) ? null : d;
+    } catch {
+      return null;
+    }
+  };
+  const safeQuoteData = quote || foundQuote;
+  const updatedAtDate = toDate(safeQuoteData?.updatedAt);
+  const reminderSentAtDate = toDate(safeQuoteData?.reminderSentAt);
+  const canSendReminder =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused' &&
+    updatedAtDate &&
+    Date.now() - updatedAtDate.getTime() > ONE_MONTH_MS;
+  const canMarkAbandoned =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused' &&
+    reminderSentAtDate &&
+    Date.now() - reminderSentAtDate.getTime() > ONE_MONTH_MS;
+  const canMarkRefused =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused';
+
+  const syncQuoteToBilan = useCallback(async () => {
+    if (!quote?.id) return;
+    try {
+      await authenticatedFetch(`/api/bilan/sync-quote/${quote.id}`, { method: 'POST' });
+    } catch {
+      /* ignoré */
+    }
+  }, [quote?.id]);
+
+  const handleMarkRefused = async (reason: 'refus_explicite' | 'pas_de_reponse') => {
+    if (!quote?.id) return;
+    setIsRefusingQuote(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/client-refused`, {
+        method: 'POST',
+        body: JSON.stringify({ reason }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success(reason === 'refus_explicite' ? 'Devis marqué refusé' : 'Devis marqué abandonné');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, clientRefusalStatus: 'client_refused', clientRefusalReason: reason, clientRefusalAt: new Date() } : prev));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
+    } finally {
+      setIsRefusingQuote(false);
+    }
+  };
+
+  const handleSendReminder = async () => {
+    if (!quote?.id) return;
+    setIsSendingReminder(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/send-reminder`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success('Relance enregistrée');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, reminderSentAt: new Date() } : prev));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
+    } finally {
+      setIsSendingReminder(false);
     }
   };
 
@@ -2809,6 +2897,48 @@ export default function QuoteDetail() {
                     Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
                   </Button>
                 ))}
+                {canSendReminder && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={handleSendReminder}
+                    disabled={isSendingReminder}
+                  >
+                    {isSendingReminder ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Envoyer une relance
+                  </Button>
+                )}
+                {canMarkAbandoned && (
+                  <>
+                    <Alert variant="default" className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
+                      <AlertTriangle className="h-4 w-4" />
+                      <AlertTitle>Peut être marqué abandonné</AlertTitle>
+                      <AlertDescription>
+                        Relance envoyée il y a plus d'un mois sans réponse du client.
+                      </AlertDescription>
+                    </Alert>
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start gap-2 text-amber-700 border-amber-300 hover:bg-amber-100"
+                      onClick={() => handleMarkRefused('pas_de_reponse')}
+                      disabled={isRefusingQuote}
+                    >
+                      {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                      Abandonné par le client
+                    </Button>
+                  </>
+                )}
+                {canMarkRefused && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={() => handleMarkRefused('refus_explicite')}
+                    disabled={isRefusingQuote}
+                  >
+                    {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                    Refusé par le client
+                  </Button>
+                )}
                 {showMbehubButton && (
                   <Button
                     variant="outline"
@@ -3037,6 +3167,7 @@ export default function QuoteDetail() {
                     setLastSaveTime(null);
                   }, 5000);
                   
+                  syncQuoteToBilan();
                   toast.success("Devis modifié avec succès");
                   setIsEditDialogOpen(false);
                 } catch (error) {

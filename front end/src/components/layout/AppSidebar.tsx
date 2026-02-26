@@ -13,6 +13,7 @@ import {
   HelpCircle,
   ChevronLeft,
   ChevronRight,
+  XCircle,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
@@ -20,6 +21,7 @@ import { useAuth } from '@/hooks/useAuth';
 const navigation = [
   { name: 'Tableau de bord', href: '/', icon: LayoutDashboard },
   { name: 'Nouveaux devis', href: '/quotes/new', icon: FileText },
+  { name: 'Refusés / abandonnés', href: '/quotes/refused', icon: XCircle },
   { name: 'Paiements', href: '/payments', icon: CreditCard },
   { name: 'Salles des ventes', href: '/auction-houses', icon: Building2 },
   { name: 'Collectes', href: '/collections', icon: Truck },
