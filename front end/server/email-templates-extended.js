@@ -138,8 +138,15 @@ export const DEFAULT_PAYMENT_RECEIVED_SECTIONS = [
   { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions encore de votre confiance.' },
 ];
 
+/** Sections par défaut pour lot collecté */
+export const DEFAULT_COLLECTED_SECTIONS = [
+  { id: 'intro', title: '', content: 'Bonjour,\n\nNous avons le plaisir de vous confirmer que votre ou vos lot(s) pour le bordereau d\'adjudication n° {{bordereauNum}} ont été collecté(s) avec soin à la salle des ventes.' },
+  { id: 's1', title: '', content: 'Nous allons maintenant préparer et emballer vos lot(s) afin qu\'ils voyagent en toute sécurité. Nous emballons et expédions dans un délai habituel d\'une semaine.\n\nDès que votre colis quittera notre centre, vous recevrez un lien de suivi par e-mail, pour pouvoir suivre son parcours en toute tranquillité.\n\nSi un souci survient à la livraison, merci de prendre des photos, conserver l\'emballage et nous prévenir rapidement, afin que nous puissions vous assister efficacement.' },
+  { id: 'closing', title: '', content: 'Nous restons à votre écoute pour toute question.' },
+];
+
 /** Types de templates utilisant l\'éditeur par sections (add/remove) */
-export const SECTION_BASED_TEMPLATES = ['quote_send', 'payment_received'];
+export const SECTION_BASED_TEMPLATES = ['quote_send', 'payment_received', 'collected'];
 
 /** Valeurs par défaut - templates étendus */
 export const DEFAULT_TEMPLATES_EXTENDED = {
@@ -193,15 +200,10 @@ Vous serez tenu au courant par email si votre lot pourra être récupéré aupr�
     bannerTitle: '📦 Demande de collecte',
   },
   collected: {
-    subject: 'Lot collecté - Devis {{reference}}',
-    bodyHtml: `Bonjour {{clientName}},
-
-Bonne nouvelle : votre lot a bien été récupéré auprès de la salle des ventes.
-
-Référence : {{reference}}
-
-Nous allons nous occuper de l'emballer le plus rapidement possible. Vous serez tenu au courant de son expédition par email.`,
-    signature: 'Cordialement,<br><strong>{{mbeName}}</strong>',
+    subject: '{{mbeName}} - Vos lot(s) ont été collecté(s)',
+    bodyHtml: `Bonjour {{clientName}}, Bonne nouvelle : votre lot a bien été récupéré. Référence : {{reference}}.`,
+    bodySections: DEFAULT_COLLECTED_SECTIONS,
+    signature: 'Merci de votre confiance,',
     bannerColor: '#2563eb',
     buttonColor: null,
     bannerTitle: '✅ Lot collecté',

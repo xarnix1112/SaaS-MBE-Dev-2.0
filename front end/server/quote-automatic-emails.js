@@ -190,7 +190,7 @@ async function sendAutoEmail(firestore, sendEmailFn, quote, subject, htmlContent
 }
 
 /** Types utilisant les templates étendus (bodySections) */
-const EXTENDED_BODY_TYPES = ['payment_received'];
+const EXTENDED_BODY_TYPES = ['payment_received', 'collected'];
 
 /**
  * Construit le sujet, corps et signature à partir des templates (personnalisés ou défauts).
@@ -201,8 +201,18 @@ async function buildEmailContent(firestore, quote, type, opts) {
   const clientName = quote?.client?.name || 'Client';
   const reference = quote?.reference || '';
   const amount = opts?.amount;
+  const bordereauNum = quote?.auctionSheet?.bordereauNumber || quote?.bordereauNumber || '';
+  const nomSalleVentes = quote?.auctionSheet?.auctionHouse || quote?.nomSalleVentes || '';
   const ctx = { reference, clientName, mbeName, amount: amount != null ? `${Number(amount).toFixed(2)}` : '' };
-  const templateValues = { ...ctx, clientName, mbeName, reference, amount: ctx.amount };
+  const templateValues = {
+    ...ctx,
+    clientName,
+    mbeName,
+    reference,
+    amount: ctx.amount,
+    bordereauNum,
+    nomSalleVentes,
+  };
 
   const customTemplates = await loadTemplates(firestore, quote.saasAccountId);
   const extendedTemplates = getTemplatesExtendedForAccount(customTemplates);
