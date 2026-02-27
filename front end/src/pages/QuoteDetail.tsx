@@ -2063,11 +2063,15 @@ export default function QuoteDetail() {
       }
 
       // Générer le lien de paiement après analyse réussie (emballage + expédition prêts)
+      // regenerate: true permet d'annuler les anciens liens en cas de réanalyse, puis de créer le nouveau
       const pkg = updatedQuote.options.packagingPrice ?? 0;
       const ship = finalShippingPrice;
-      const hasLink = updatedQuote.paymentLinks?.some((l: { status?: string }) => l?.status === 'active' || l?.status === 'pending');
-      if (pkg > 0 && ship > 0 && !hasLink) {
-        authenticatedFetch(`/api/devis/${updatedQuote.id}/try-auto-payment`, { method: 'POST' })
+      if (pkg > 0 && ship > 0) {
+        authenticatedFetch(`/api/devis/${updatedQuote.id}/try-auto-payment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ regenerate: true }),
+        })
           .then((res) => res.json().catch(() => ({})))
           .then((data) => {
             if (data?.generated) {

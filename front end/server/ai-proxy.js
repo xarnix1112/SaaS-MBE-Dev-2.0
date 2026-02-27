@@ -8548,6 +8548,17 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
       });
     }
 
+    // Si regenerate=true (réanalyse bordereau), annuler les anciens liens avant de créer le nouveau
+    const { regenerate } = req.body || {};
+    if (regenerate) {
+      await cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe);
+      // Recharger le devis pour avoir paymentLinks à jour
+      const freshDevisDoc = await firestore.collection('quotes').doc(devisId).get();
+      if (freshDevisDoc.exists) {
+        Object.assign(devis, freshDevisDoc.data());
+      }
+    }
+
     const existingPaiements = await firestore
       .collection('paiements')
       .where('devisId', '==', devisId)
