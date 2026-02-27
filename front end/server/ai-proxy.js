@@ -4887,21 +4887,41 @@ app.post('/api/send-quote-email', async (req, res) => {
       return new Date(link.createdAt);
     };
     
-    // Filtrer et trier les liens de paiement (accepter active, pending, ou sans status)
-    const activePaymentLink = paymentLinksToUse
-      .filter(link => {
-        if (!link) return false;
-        const status = link.status;
-        // Accepter active, pending, ou sans status (undefined/null)
-        return status === 'active' || status === 'pending' || !status;
-      })
-      .sort((a, b) => {
-        const dateA = getCreatedAtDate(a);
-        const dateB = getCreatedAtDate(b);
-        return dateB - dateA; // Plus récent en premier
-      })[0];
-    
+    // Filtrer les liens actifs (active, pending ou sans status)
+    const isActive = (link) => {
+      if (!link) return false;
+      const s = link.status;
+      return s === 'active' || s === 'pending' || !s;
+    };
+    const activeLinks = paymentLinksToUse.filter(isActive);
+
+    // Détecter mode 2 liens (Standard + Express) pour les plans Pro/Ultra
+    const standardLink = activeLinks.find((l) => l.type === 'PRINCIPAL_STANDARD');
+    const expressLink = activeLinks.find((l) => l.type === 'PRINCIPAL_EXPRESS');
+    const hasTwoLinks = standardLink && expressLink;
+
+    // Lien unique (fallback) : plus récent actif
+    const activePaymentLink = activeLinks.sort((a, b) => getCreatedAtDate(b) - getCreatedAtDate(a))[0];
     const paymentUrl = activePaymentLink?.url || null;
+
+    // Construire la section paiement pour le template (lien unique ou 2 liens)
+    // Texte brut pour compatibilité bodySections (escapeHtml) et bodyHtml
+    let sectionPaiement;
+    if (hasTwoLinks) {
+      const stdUrl = standardLink?.url || '';
+      const expUrl = expressLink?.url || '';
+      const stdPrice = (standardLink?.amount ?? 0).toFixed(2);
+      const expPrice = (expressLink?.amount ?? 0).toFixed(2);
+      sectionPaiement = `Choisissez votre mode d'expédition :
+
+• Standard (${stdPrice} €) : ${stdUrl}
+
+• Express (${expPrice} €) : ${expUrl}
+
+Dès qu'un des deux liens est payé, l'autre est automatiquement désactivé.`;
+    } else {
+      sectionPaiement = paymentUrl ? `👉 ${paymentUrl}` : '';
+    }
     
     console.log('[Email] Active payment link:', activePaymentLink ? 'Trouvé' : 'Non trouvé');
     if (activePaymentLink) {
@@ -4946,6 +4966,7 @@ app.post('/api/send-quote-email', async (req, res) => {
       prixTransport: shippingPrice.toFixed(2),
       prixAssurance: insuranceEnabled ? `${finalInsuranceAmount.toFixed(2)} €` : 'NON (Si vous souhaitez une assurance, merci de nous le signaler par retour de mail)',
       prixTotal: finalTotal.toFixed(2),
+      sectionPaiement,
       lienPaiementSecurise: paymentUrl || '',
       paymentUrl: paymentUrl || '',
       adresseDestinataire: [
@@ -5016,10 +5037,20 @@ Assurance : ${insuranceEnabled ? 'Oui' : 'Non'}${insuranceEnabled ? `
 💰 MONTANT TOTAL : ${finalTotal.toFixed(2)}€
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-${paymentUrl ? `🔗 LIEN DE PAIEMENT :
+${(hasTwoLinks && standardLink?.url && expressLink?.url)
+            ? `🔗 LIENS DE PAIEMENT (choisissez Standard ou Express) :
+
+• Standard (${(standardLink?.amount ?? 0).toFixed(2)} €) : ${standardLink?.url || ''}
+
+• Express (${(expressLink?.amount ?? 0).toFixed(2)} €) : ${expressLink?.url || ''}
+
+Dès qu'un des deux liens est payé, l'autre est désactivé.`
+            : paymentUrl
+              ? `🔗 LIEN DE PAIEMENT :
 ${paymentUrl}
 
-Cliquez sur le lien ci-dessus pour procéder au paiement.` : ''}
+Cliquez sur le lien ci-dessus pour procéder au paiement.`
+              : ''}
 
 Pour toute question, n'hésitez pas à nous contacter.
 
@@ -11158,6 +11189,265 @@ app.post('/api/mbehub/shipping-options', requireAuth, async (req, res) => {
     return res.json({ success: true, options });
   } catch (error) {
     console.error('[API] Erreur mbehub/shipping-options:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/quote-shipping-rates - Calcule tarifs Standard + Express pour un devis (Smart Choice, plans Pro/Ultra)
+app.post('/api/mbehub/quote-shipping-rates', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId && quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+    const lot = quote.lot || {};
+    const dims = lot.dimensions || lot.realDimensions || {};
+    const weight = quote.totalWeight ?? dims.weight ?? 1;
+    const dimensions = {
+      length: dims.length ?? 10,
+      width: dims.width ?? 10,
+      height: dims.height ?? 10,
+    };
+    const deliveryAddr = quote.delivery?.address || {};
+    const deliveryMode = quote.delivery?.mode || 'client';
+    const clientAddr = quote.client?.address || '';
+    let destination = {};
+    if (deliveryAddr.zip || deliveryAddr.country || deliveryAddr.city) {
+      destination = {
+        zipCode: String(deliveryAddr.zip || '').trim(),
+        city: String(deliveryAddr.city || '').trim(),
+        state: String(deliveryAddr.state || '').trim().slice(0, 2),
+        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+      };
+    } else if (clientAddr) {
+      const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
+      const zipMatch = parts.find((p) => /^\d{5}/.test(p));
+      const countryMatch = parts.find((p) => /^[A-Z]{2}$/i.test(p));
+      destination = {
+        zipCode: zipMatch || '',
+        city: parts.length >= 2 ? parts[parts.length - 2] : '',
+        state: '',
+        country: (countryMatch || 'FR').toString().toUpperCase().slice(0, 2),
+      };
+    }
+    if (!destination.country || (!destination.zipCode && !destination.city)) {
+      return res.status(400).json({
+        error: 'Adresse de destination incomplète (code postal, ville, pays). Renseignez la livraison dans le devis.',
+      });
+    }
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: {
+        zipCode: destination.zipCode || '',
+        city: destination.city || '',
+        state: destination.state || '',
+        country: destination.country || 'FR',
+      },
+      weight: Number(weight) || 1,
+      dimensions,
+      insurance: !!quote.options?.insurance,
+      insuranceValue: Number(quote.options?.insuranceAmount) || 0,
+    });
+    const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+    const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
+    const pickCheapest = (arr) => {
+      if (!arr.length) return null;
+      return arr.reduce((a, b) => {
+        const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+        const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+        return pa <= pb ? a : b;
+      });
+    };
+    const standard = pickCheapest(standardOpts);
+    const express = pickCheapest(expressOpts);
+    const standardPrice = standard ? Number(standard.GrossShipmentPrice ?? standard.NetShipmentPrice ?? 0) : null;
+    const expressPrice = express ? Number(express.GrossShipmentPrice ?? express.NetShipmentPrice ?? 0) : null;
+    return res.json({
+      success: true,
+      standard: standard ? { price: standardPrice, option: standard } : null,
+      express: express ? { price: expressPrice, option: express } : null,
+      options,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/quote-shipping-rates:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/prepare-quote-email - Calcule tarifs MBE + crée 2 liens Standard et Express (Phase 2)
+app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId && quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+
+    // Vérifier qu'aucun paiement principal n'existe déjà
+    const existingSnap = await firestore
+      .collection('paiements')
+      .where('devisId', '==', quoteId)
+      .where('status', '!=', 'CANCELLED')
+      .get();
+    const hasPrincipal = existingSnap.docs.some((d) => {
+      const t = d.data().type;
+      return t === 'PRINCIPAL' || t === 'PRINCIPAL_STANDARD' || t === 'PRINCIPAL_EXPRESS';
+    });
+    if (hasPrincipal) {
+      return res.status(400).json({ error: 'Un ou plusieurs liens de paiement existent déjà pour ce devis' });
+    }
+
+    // 1. Obtenir les tarifs Standard et Express via MBE Hub
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub' });
+
+    const lot = quote.lot || {};
+    const dims = lot.dimensions || lot.realDimensions || {};
+    const weight = quote.totalWeight ?? dims.weight ?? 1;
+    const dimensions = { length: dims.length ?? 10, width: dims.width ?? 10, height: dims.height ?? 10 };
+    const deliveryAddr = quote.delivery?.address || {};
+    const clientAddr = quote.client?.address || '';
+    let destination = {};
+    if (deliveryAddr.zip || deliveryAddr.country || deliveryAddr.city) {
+      destination = {
+        zipCode: String(deliveryAddr.zip || '').trim(),
+        city: String(deliveryAddr.city || '').trim(),
+        state: String(deliveryAddr.state || '').trim().slice(0, 2),
+        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+      };
+    } else if (clientAddr) {
+      const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
+      const zipMatch = parts.find((p) => /^\d{5}/.test(p));
+      destination = {
+        zipCode: zipMatch || '',
+        city: parts.length >= 2 ? parts[parts.length - 2] : '',
+        state: '',
+        country: 'FR',
+      };
+    }
+    if (!destination.country || (!destination.zipCode && !destination.city)) {
+      return res.status(400).json({ error: 'Adresse de destination incomplète' });
+    }
+
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: { zipCode: destination.zipCode || '', city: destination.city || '', state: destination.state || '', country: destination.country || 'FR' },
+      weight: Number(weight) || 1,
+      dimensions,
+      insurance: !!quote.options?.insurance,
+      insuranceValue: Number(quote.options?.insuranceAmount) || 0,
+    });
+
+    const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+    const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
+    const pickCheapest = (arr) => {
+      if (!arr.length) return null;
+      return arr.reduce((a, b) => {
+        const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+        const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+        return pa <= pb ? a : b;
+      });
+    };
+    const standardOpt = pickCheapest(standardOpts);
+    const expressOpt = pickCheapest(expressOpts);
+    const standardPrice = standardOpt ? Number(standardOpt.GrossShipmentPrice ?? standardOpt.NetShipmentPrice ?? 0) : null;
+    const expressPrice = expressOpt ? Number(expressOpt.GrossShipmentPrice ?? expressOpt.NetShipmentPrice ?? 0) : null;
+
+    if (standardPrice == null && expressPrice == null) {
+      return res.status(400).json({ error: 'Aucun tarif Standard ou Express trouvé pour cette destination' });
+    }
+
+    // 2. Calculer emballage + assurance
+    const carton = quote.auctionSheet?.recommendedCarton;
+    const packagingPrice = carton?.price ?? carton?.priceTTC ?? quote.options?.packagingPrice ?? 0;
+    const insuranceAmount = (() => {
+      if (!quote.options?.insurance) return 0;
+      const v = quote.lot?.value || 0;
+      const raw = Math.max(v * 0.025, v < 500 ? 12 : 0);
+      const d = raw % 1;
+      if (d >= 0.5) return Math.ceil(raw);
+      if (d > 0) return Math.floor(raw) + 0.5;
+      return raw;
+    })();
+    if (packagingPrice <= 0) {
+      return res.status(400).json({ error: 'Prix d\'emballage manquant. Renseignez un carton pour ce devis.' });
+    }
+
+    const totalStandard = packagingPrice + (standardPrice ?? expressPrice ?? 0) + insuranceAmount;
+    const totalExpress = packagingPrice + (expressPrice ?? standardPrice ?? 0) + insuranceAmount;
+    const ref = quote.reference || quoteId;
+
+    // 3. Créer les 2 paiements via handleCreatePaiement
+    const createRes = (code, body) => ({ statusCode: code, body });
+    const results = { standard: null, express: null };
+
+    if (standardPrice != null) {
+      const resState = createRes(200, null);
+      const fakeReq = { params: { id: quoteId }, body: { amount: totalStandard, type: 'PRINCIPAL_STANDARD', description: `Devis ${ref} - Standard` }, saasAccountId };
+      const fakeRes = {
+        status: (c) => { resState.statusCode = c; return fakeRes; },
+        json: (d) => { resState.body = d; return fakeRes; },
+      };
+      await handleCreatePaiement(fakeReq, fakeRes, firestore);
+      if (resState.statusCode >= 400) {
+        return res.status(500).json({ error: resState.body?.error || 'Erreur création lien Standard' });
+      }
+      results.standard = { url: resState.body?.url, amount: totalStandard, paiementId: resState.body?.paiementId };
+    }
+
+    if (expressPrice != null) {
+      const resState = createRes(200, null);
+      const fakeReq = { params: { id: quoteId }, body: { amount: totalExpress, type: 'PRINCIPAL_EXPRESS', description: `Devis ${ref} - Express` }, saasAccountId };
+      const fakeRes = {
+        status: (c) => { resState.statusCode = c; return fakeRes; },
+        json: (d) => { resState.body = d; return fakeRes; },
+      };
+      await handleCreatePaiement(fakeReq, fakeRes, firestore);
+      if (resState.statusCode >= 400) {
+        return res.status(500).json({ error: resState.body?.error || 'Erreur création lien Express' });
+      }
+      results.express = { url: resState.body?.url, amount: totalExpress, paiementId: resState.body?.paiementId };
+    }
+
+    return res.json({
+      success: true,
+      standard: results.standard ? { url: results.standard.url, price: results.standard.amount } : null,
+      express: results.express ? { url: results.express.url, price: results.express.amount } : null,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/prepare-quote-email:', error);
     return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
   }
 });

@@ -35,6 +35,11 @@ export const PLACEHOLDERS_EXTENDED = [
   { key: '{{prixAssurance}}', label: 'Prix assurance (€) ou "NON"', alt: '{insurancePrice}' },
   { key: '{{prixTotal}}', label: 'Prix total (€)', alt: '{total}' },
   { key: '{{lienPaiementSecurise}}', label: 'Lien paiement sécurisé', alt: '{paymentUrl}' },
+  { key: '{{sectionPaiement}}', label: 'Section paiement (lien unique OU 2 liens Standard/Express)', alt: '{paymentSection}' },
+  { key: '{{lienPaiementStandard}}', label: 'Lien paiement Standard (2 liens)', alt: '{standardPaymentUrl}' },
+  { key: '{{lienPaiementExpress}}', label: 'Lien paiement Express (2 liens)', alt: '{expressPaymentUrl}' },
+  { key: '{{prixStandard}}', label: 'Prix Standard (€)', alt: '{standardPrice}' },
+  { key: '{{prixExpress}}', label: 'Prix Express (€)', alt: '{expressPrice}' },
   { key: '{{adresseDestinataire}}', label: 'Adresse de livraison', alt: '{deliveryAddress}' },
   { key: '{{clientName}}', label: 'Nom du client', alt: '{clientName}' },
   { key: '{{date}}', label: 'Date du jour', alt: '{date}' },
@@ -72,7 +77,7 @@ export const DEFAULT_QUOTE_SEND_HTML = `<div style="margin-bottom:24px;">
 <div style="margin-bottom:24px;">
 <p style="margin:0 0 12px 0; line-height:1.6;"><strong>2 – Paiement (acceptation du devis)</strong></p>
 <p style="margin:0 0 8px 0; line-height:1.6;">Le règlement se fait par carte bancaire via notre lien sécurisé :</p>
-<p style="margin:0 0 16px 0; line-height:1.6;">👉 {{lienPaiementSecurise}}</p>
+<p style="margin:0 0 16px 0; line-height:1.6; white-space:pre-wrap;">{{sectionPaiement}}</p>
 <p style="margin:0 0 0; line-height:1.6;">En validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : <a href="https://linktr.ee/mbe026">https://linktr.ee/mbe026</a></p>
 </div>
 
@@ -120,7 +125,7 @@ export const DEFAULT_QUOTE_SEND_SECTIONS = [
   { id: 's1', title: '1 – Détail du devis', content: 'Retrait des lots + Emballage sur mesure (fournitures d\'emballage / carton + main-d\'œuvre) : {{prixEmballage}} €\nTransport + Gestion de dossier : {{prixTransport}} €\nAssurance (optionnelle) : {{prixAssurance}}\n\nLa couverture d\'expédition couvre la valeur d\'adjudication (hors frais de la salle des ventes) des lots en cas de perte, vol ou dégradation.\n\nPour les envois de tableaux, l\'assurance ne prend pas en compte la détérioration du cadre et/ou de la vitre durant le transport.' },
   { id: 's2', title: 'Total et validité', content: 'Total : {{prixTotal}} € TTC\n\nOffre valable 15 jours à compter de ce jour. Ce devis est exprimé en TTC si l\'expédition a lieu en Europe et H.T. pour des expéditions hors zone Euro.' },
   { id: 's3', title: 'Avertissement chiffrage', content: '⚠ Le chiffrage est approximatif, réalisé avec la description du bordereau, sans avoir les objets sous les yeux.\n\nSi dimensions/poids réels sont différents, un ajustement pourra être appliqué (nous vous préviendrons avant).' },
-  { id: 's4', title: '2 – Paiement (acceptation du devis)', content: 'Le règlement se fait par carte bancaire via notre lien sécurisé :\n\n👉 {{lienPaiementSecurise}}\n\nEn validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },
+  { id: 's4', title: '2 – Paiement (acceptation du devis)', content: 'Le règlement se fait par carte bancaire via notre lien sécurisé :\n\n{{sectionPaiement}}\n\nEn validant ce devis et en procédant au paiement, vous reconnaissez avoir pris connaissance et accepté nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },
   { id: 's5', title: '3 – Collecte – Emballage – Expédition', content: 'D\'une manière générale, nous collectons les lots 1 fois par semaine (sauf exception en fonction des disponibilités et du planning des salles des ventes). Une fois collectés, nous préparons les emballages sur mesure des lots pour l\'expédition des colis, dont vous êtes averti personnellement, par e-mail, par le transporteur avec le numéro de suivi.\n\n• Délais : Emballage + expédition : habituellement sous une semaine\n• Livraison en France métropolitaine : 48 h en moyenne (non garanti).\n\nMode EXPRESS possible sur simple demande (engendre une modification du devis).' },
   { id: 's6', title: '4 – Livraison', content: 'Votre colis sera expédié à l\'adresse suivante :\n\n{{adresseDestinataire}}\n\nSi vous souhaitez une livraison en point relais ou à une autre adresse que celle de votre bordereau, merci de nous l\'indiquer par retour de cet e-mail uniquement.\n\n⚠ Après envoi du colis, tout changement d\'adresse sera facturé 15 € TTC.\n\nEn cas de problème à la livraison, merci de :\n• prendre plusieurs photos du colis et de l\'emballage,\n• garder tous les matériaux d\'emballage,\n• nous prévenir immédiatement (sans dépasser les délais du transporteur).' },
   { id: 's7', title: '5 – CGV – Responsabilités – Informations utiles', content: 'La responsabilité de MBE ne peut être engagée si le transporteur refuse l\'indemnisation en raison de la nature, de la valeur ou de l\'emballage.\n\nLien vers nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },

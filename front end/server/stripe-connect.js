@@ -43,6 +43,9 @@ const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
 const STRIPE_SUCCESS_URL = process.env.STRIPE_SUCCESS_URL || `${APP_URL}/payment/success`;
 const STRIPE_CANCEL_URL = process.env.STRIPE_CANCEL_URL || `${APP_URL}/payment/cancel`;
 
+const PRINCIPAL_PAYMENT_TYPES = ["PRINCIPAL", "PRINCIPAL_STANDARD", "PRINCIPAL_EXPRESS"];
+const isPrincipalType = (type) => PRINCIPAL_PAYMENT_TYPES.includes(type);
+
 if (!STRIPE_SECRET_KEY) {
   console.warn("[stripe-connect] ⚠️  STRIPE_SECRET_KEY non définie");
 } else {
@@ -182,6 +185,51 @@ async function updatePaiement(firestore, paiementId, updates) {
 }
 
 /**
+ * Annule l'autre lien de paiement (Standard/Express) quand l'un des deux est payé.
+ * Quand PRINCIPAL_STANDARD ou PRINCIPAL_EXPRESS est payé, l'autre doit être désactivé.
+ */
+async function cancelOtherShippingLinksWhenPaid(firestore, devisId, paidPaiement) {
+  if (!["PRINCIPAL_STANDARD", "PRINCIPAL_EXPRESS"].includes(paidPaiement.type)) return;
+  const otherType = paidPaiement.type === "PRINCIPAL_STANDARD" ? "PRINCIPAL_EXPRESS" : "PRINCIPAL_STANDARD";
+  const othersSnap = await firestore
+    .collection("paiements")
+    .where("devisId", "==", devisId)
+    .where("type", "==", otherType)
+    .where("status", "==", "PENDING")
+    .get();
+  for (const d of othersSnap.docs) {
+    const other = { id: d.id, ...d.data() };
+    await updatePaiement(firestore, other.id, { status: "CANCELLED" });
+    if (other.stripeSessionId && stripe) {
+      try {
+        await stripe.checkout.sessions.expire(other.stripeSessionId, {
+          stripeAccount: other.stripeAccountId || undefined,
+        });
+        console.log(`[stripe-connect] ✅ Session Stripe expirée pour l'autre lien: ${other.stripeSessionId}`);
+      } catch (e) {
+        console.warn(`[stripe-connect] ⚠️ Impossible d'expirer la session Stripe ${other.stripeSessionId}:`, e?.message);
+      }
+    }
+    const quoteRef = firestore.collection("quotes").doc(devisId);
+    const qSnap = await quoteRef.get();
+    if (qSnap.exists) {
+      const links = (qSnap.data().paymentLinks || []).map((l) =>
+        l.id === other.id ? { ...l, status: "inactive" } : l
+      );
+      await quoteRef.update({ paymentLinks: links, updatedAt: Timestamp.now() });
+    }
+    await addTimelineEventToQuote(firestore, devisId, {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
+      date: Timestamp.now(),
+      status: qSnap.exists ? qSnap.data().status : "awaiting_payment",
+      description: `Lien ${otherType === "PRINCIPAL_EXPRESS" ? "Express" : "Standard"} annulé (l'autre mode de livraison a été payé)`,
+      user: "Système",
+    });
+    console.log(`[stripe-connect] ✅ Lien ${otherType} annulé car ${paidPaiement.type} payé`);
+  }
+}
+
+/**
  * Récupère un paiement par son stripeSessionId
  * Recherche aussi par devisId si le sessionId ne correspond pas exactement
  */
@@ -271,8 +319,8 @@ async function updateDevisStatus(firestore, devisId) {
   const allPaid = activePaiements.every((p) => p.status === "PAID");
   const somePaid = activePaiements.some((p) => p.status === "PAID");
   
-  // Vérifier si le paiement PRINCIPAL est payé
-  const principalPayment = activePaiements.find((p) => p.type === "PRINCIPAL");
+  // Vérifier si le paiement PRINCIPAL est payé (PRINCIPAL, PRINCIPAL_STANDARD ou PRINCIPAL_EXPRESS)
+  const principalPayment = activePaiements.find((p) => isPrincipalType(p.type));
   const principalIsPaid = principalPayment && principalPayment.status === "PAID";
 
   let paymentStatus;
@@ -448,9 +496,9 @@ export async function handleCreatePaiement(req, res, firestore) {
       return res.status(400).json({ error: "Montant invalide" });
     }
 
-    if (!["PRINCIPAL", "SURCOUT"].includes(type)) {
+    if (![...PRINCIPAL_PAYMENT_TYPES, "SURCOUT"].includes(type)) {
       console.error("[stripe-connect] ❌ Type invalide:", type);
-      return res.status(400).json({ error: "Type invalide (PRINCIPAL ou SURCOUT)" });
+      return res.status(400).json({ error: "Type invalide (PRINCIPAL, PRINCIPAL_STANDARD, PRINCIPAL_EXPRESS ou SURCOUT)" });
     }
 
     // Récupérer le devis (collection "quotes")
@@ -525,7 +573,7 @@ export async function handleCreatePaiement(req, res, firestore) {
           id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
           date: Timestamp.now(),
           status: devis.status || 'awaiting_payment',
-          description: type === 'PRINCIPAL' ? `Lien Paytweak généré (${amount.toFixed(2)}€)` : `Lien Paytweak surcoût (${amount.toFixed(2)}€)`,
+          description: isPrincipalType(type) ? `Lien Paytweak généré (${amount.toFixed(2)}€)` : `Lien Paytweak surcoût (${amount.toFixed(2)}€)`,
           user: 'Système',
         });
         const devisRef = firestore.collection("quotes").doc(devisId);
@@ -541,7 +589,7 @@ export async function handleCreatePaiement(req, res, firestore) {
         };
         await devisRef.update({
           paymentLinks: [...existingPaymentLinks, newPaymentLink],
-          status: type === 'PRINCIPAL' ? 'awaiting_payment' : devisDoc.data()?.status,
+          status: isPrincipalType(type) ? 'awaiting_payment' : devisDoc.data()?.status,
           updatedAt: Timestamp.now(),
         });
         console.log("[stripe-connect] ✅ Lien Paytweak créé:", paytweakResult.url);
@@ -664,7 +712,7 @@ export async function handleCreatePaiement(req, res, firestore) {
       id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
       date: Timestamp.now(),
       status: devis.status || 'awaiting_payment',
-      description: type === 'PRINCIPAL' 
+      description: isPrincipalType(type) 
         ? `Lien de paiement principal généré (${amount.toFixed(2)}€)`
         : `Lien de paiement pour surcoût généré (${amount.toFixed(2)}€)`,
       user: 'Système',
@@ -687,7 +735,7 @@ export async function handleCreatePaiement(req, res, firestore) {
     
     await devisRef.update({
       paymentLinks: [...existingPaymentLinks, newPaymentLink],
-      status: type === 'PRINCIPAL' ? 'awaiting_payment' : devisDoc.data()?.status,
+      status: isPrincipalType(type) ? 'awaiting_payment' : devisDoc.data()?.status,
       updatedAt: Timestamp.now(),
     });
     
@@ -973,7 +1021,7 @@ export async function handleCancelPaiement(req, res, firestore) {
         id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
         date: Timestamp.now(),
         status: 'awaiting_payment',
-        description: `Lien de paiement annulé (${paiement.amount.toFixed(2)}€) - ${paiement.type === 'PRINCIPAL' ? 'Principal' : 'Surcoût'}`,
+        description: `Lien de paiement annulé (${paiement.amount.toFixed(2)}€) - ${isPrincipalType(paiement.type) ? 'Principal' : 'Surcoût'}`,
         user: 'Système',
       });
     }
@@ -1252,14 +1300,14 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
                 const devisRef = firestore.collection("quotes").doc(devisId);
                 const devisDoc = await devisRef.get();
                 const currentStatus = devisDoc.exists ? devisDoc.data().status : 'awaiting_payment';
-                const timelineStatus = updatedPaiement.type === 'PRINCIPAL' ? 'awaiting_collection' : currentStatus;
+                const timelineStatus = isPrincipalType(updatedPaiement.type) ? 'awaiting_collection' : currentStatus;
 
                 // Ajouter un événement à l'historique du devis
                 await addTimelineEventToQuote(firestore, devisId, {
                   id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
                   date: Timestamp.now(),
                   status: timelineStatus,
-                  description: updatedPaiement.type === 'PRINCIPAL'
+                  description: isPrincipalType(updatedPaiement.type)
                     ? `Paiement principal reçu (${updatedPaiement.amount.toFixed(2)}€)`
                     : `Paiement de surcoût reçu (${updatedPaiement.amount.toFixed(2)}€)`,
                   user: 'Stripe Webhook',
@@ -1270,10 +1318,10 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
                 await createNotification(firestore, {
                   clientSaasId: saasAccountId,
                   devisId: devisId,
-                  type: updatedPaiement.type === 'PRINCIPAL' 
+                  type: isPrincipalType(updatedPaiement.type) 
                     ? NOTIFICATION_TYPES.PAYMENT_RECEIVED 
                     : NOTIFICATION_TYPES.SURCOUT_CREATED,
-                  title: updatedPaiement.type === 'PRINCIPAL' 
+                  title: isPrincipalType(updatedPaiement.type) 
                     ? 'Paiement reçu' 
                     : 'Paiement de surcoût reçu',
                   message: `Le devis ${devis.reference || devisId} a été payé (${updatedPaiement.amount.toFixed(2)}€)`,
@@ -1282,6 +1330,9 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
                 // Recalculer le statut du devis
                 await updateDevisStatus(firestore, devisId);
                 console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
+
+                // Annuler l'autre lien Standard/Express si celui-ci est payé
+                await cancelOtherShippingLinksWhenPaid(firestore, devisId, updatedPaiement);
                 
                 return res.status(200).send("ok");
               } else {
@@ -1357,14 +1408,14 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
         
         // Déterminer le statut pour l'événement timeline
         // Si c'est le paiement principal, le statut passera à awaiting_collection
-        const timelineStatus = paiement.type === 'PRINCIPAL' ? 'awaiting_collection' : currentStatus;
+        const timelineStatus = isPrincipalType(paiement.type) ? 'awaiting_collection' : currentStatus;
 
         // Ajouter un événement à l'historique du devis
         await addTimelineEventToQuote(firestore, devisId, {
           id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
           date: Timestamp.now(),
           status: timelineStatus,
-          description: paiement.type === 'PRINCIPAL'
+          description: isPrincipalType(paiement.type)
             ? `Paiement principal reçu (${paiement.amount.toFixed(2)}€)`
             : `Paiement de surcoût reçu (${paiement.amount.toFixed(2)}€)`,
           user: 'Stripe Webhook',
@@ -1375,10 +1426,10 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
         await createNotification(firestore, {
           clientSaasId: saasAccountId,
           devisId: devisId,
-          type: paiement.type === 'PRINCIPAL' 
+          type: isPrincipalType(paiement.type) 
             ? NOTIFICATION_TYPES.PAYMENT_RECEIVED 
             : NOTIFICATION_TYPES.SURCOUT_CREATED,
-          title: paiement.type === 'PRINCIPAL' 
+          title: isPrincipalType(paiement.type) 
             ? 'Paiement reçu' 
             : 'Paiement de surcoût reçu',
           message: `Le devis ${devis.reference || devisId} a été payé (${paiement.amount.toFixed(2)}€)`,
@@ -1389,6 +1440,9 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
         // Recalculer le statut du devis (va passer à awaiting_collection si paiement principal)
         await updateDevisStatus(firestore, devisId);
         console.log(`[stripe-connect] ✅ Statut du devis ${devisId} mis à jour`);
+
+        // Annuler l'autre lien Standard/Express si celui-ci est payé
+        await cancelOtherShippingLinksWhenPaid(firestore, devisId, paiement);
 
         // Email automatique au client (paiement reçu)
         const sendEmailFn = options?.sendEmail;
@@ -1407,7 +1461,7 @@ export async function handleStripeWebhook(req, res, firestore, options = {}) {
             };
             await sendPaymentReceivedEmail(firestore, sendEmailFn, quoteForEmail, {
               amount: paiement.amount,
-              isPrincipal: paiement.type === "PRINCIPAL",
+              isPrincipal: isPrincipalType(paiement.type),
             });
           } catch (emailErr) {
             console.error("[stripe-connect] ⚠️ Email paiement reçu non envoyé:", emailErr.message);
