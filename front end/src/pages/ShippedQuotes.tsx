@@ -16,6 +16,11 @@ function getShippedDate(quote: { sentToMbeHubAt?: unknown; shippedAt?: unknown }
   if (typeof date === 'object' && date !== null && 'toDate' in date) {
     return (date as { toDate: () => Date }).toDate();
   }
+  // Firestore Timestamp sérialisé { seconds, _seconds }
+  if (typeof date === 'object' && date !== null && ('seconds' in date || '_seconds' in date)) {
+    const sec = (date as { seconds?: number; _seconds?: number }).seconds ?? (date as { seconds?: number; _seconds?: number })._seconds;
+    return sec ? new Date(sec * 1000) : null;
+  }
   return new Date(date as string | number);
 }
 
@@ -28,7 +33,9 @@ export default function ShippedQuotes() {
   const visibleQuotes = shippedQuotes.filter((q) => {
     const d = getShippedDate(q);
     if (!d) return true;
-    return Date.now() - d.getTime() < SIX_MONTHS_MS;
+    const t = d.getTime();
+    if (Number.isNaN(t)) return true;
+    return Date.now() - t < SIX_MONTHS_MS;
   });
 
   return (

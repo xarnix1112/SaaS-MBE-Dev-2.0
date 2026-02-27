@@ -72,13 +72,10 @@ export default function Shipments() {
   const [insurance, setInsurance] = useState(false);
   const [insuranceValue, setInsuranceValue] = useState(0);
 
-  const shipmentQuotes = quotes.filter(q =>
-    ['awaiting_shipment', 'sent_to_mbe_hub', 'shipped', 'completed'].includes(q.status || '')
-  );
-
-  const awaitingShipment = shipmentQuotes.filter(q => q.status === 'awaiting_shipment');
-  const shipped = shipmentQuotes.filter(q => q.status === 'shipped');
-  const completed = shipmentQuotes.filter(q => q.status === 'completed');
+  const awaitingShipment = quotes.filter(q => q.status === 'awaiting_shipment');
+  const shipmentQuotesForTable = awaitingShipment;
+  const shipped = quotes.filter(q => q.status === 'shipped');
+  const completed = quotes.filter(q => q.status === 'completed');
 
   const loadMbehubStatus = useCallback(async () => {
     try {
@@ -324,9 +321,13 @@ export default function Shipments() {
             </CardTitle>
           </CardHeader>
           <CardContent>
-            {shipmentQuotes.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">Aucune expédition en cours</p>
+            {shipmentQuotesForTable.length === 0 ? (
+              <div className="text-center py-8 space-y-2">
+                <p className="text-muted-foreground">Aucun devis en attente d'envoi</p>
+                <p className="text-sm text-muted-foreground">
+                  Les devis envoyés vers MBE Hub sont visibles dans{' '}
+                  <Link to="/quotes/shipped" className="text-primary hover:underline">Expédiés</Link>.
+                </p>
               </div>
             ) : (
               <Table>
@@ -342,7 +343,7 @@ export default function Shipments() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {shipmentQuotes.map((quote) => (
+                  {shipmentQuotesForTable.map((quote) => (
                     <TableRow key={quote.id}>
                       <TableCell>
                         <Link to={`/quotes/${quote.id}`} className="font-medium text-primary hover:underline">

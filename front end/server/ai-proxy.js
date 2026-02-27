@@ -11949,6 +11949,8 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
         paymentLinks: allPaymentLinks,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
+        sentToMbeHubAt: toIso(data.sentToMbeHubAt),
+        shippedAt: toIso(data.shippedAt),
         clientRefusalAt: toIso(data.clientRefusalAt),
         reminderSentAt: toIso(data.reminderSentAt),
         manualPaymentDate: toIso(data.manualPaymentDate),
