@@ -191,6 +191,76 @@ export default function QuoteDetail() {
     setMbeShippingRates(null);
   }, [quote?.id]);
 
+  // Auto-fetch et auto-apply du prix Standard MBE Hub à l'ouverture du devis (quand MBE Hub est sélectionné)
+  const hasAutoAppliedMbeRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!useMbehubForShipping || !quote?.id || isSaving) return;
+    if (quote.paymentStatus === 'paid') return;
+    const dims = quote.lot?.dimensions || quote.lot?.realDimensions || {};
+    const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
+    const rawWeight = quote.totalWeight ?? dims.weight ?? 0;
+    const weight = rawWeight > 0 ? rawWeight : (hasDims ? calculateVolumetricWeight(dims.length, dims.width, dims.height) : 0);
+    const addr = quote.delivery?.address || {};
+    const clientAddr = quote.client?.address || '';
+    const hasAddr = !!(addr.zip || addr.city || addr.country || clientAddr);
+    if (!hasDims || !hasAddr) return;
+    if (hasAutoAppliedMbeRef.current[quote.id]) return;
+    hasAutoAppliedMbeRef.current[quote.id] = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authenticatedFetch('/api/mbehub/quote-shipping-rates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quoteId: quote.id }),
+        });
+        if (cancelled) return;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Erreur API');
+        const standardPrice = data.standard?.price;
+        if (standardPrice == null || standardPrice <= 0) return;
+        const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ??
+          (quote.auctionSheet?.recommendedCarton as { priceTTC?: number })?.priceTTC ??
+          quote.options?.packagingPrice ?? 0;
+        const insuranceAmount = computeInsuranceAmount(
+          quote.lot?.value || 0,
+          quote.options?.insurance,
+          quote.options?.insuranceAmount
+        );
+        const newTotal = packagingPrice + standardPrice + insuranceAmount;
+        setQuote((prev) => prev ? {
+          ...prev,
+          options: {
+            ...prev.options,
+            shippingPrice: standardPrice,
+            insuranceAmount,
+          },
+          totalAmount: newTotal,
+        } : prev);
+        await setDoc(
+          doc(db, 'quotes', quote.id),
+          {
+            options: {
+              ...(quote.options || {}),
+              shippingPrice: standardPrice,
+              insuranceAmount,
+            },
+            totalAmount: newTotal,
+            updatedAt: Timestamp.now(),
+          },
+          { merge: true }
+        );
+        queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      } catch (e) {
+        if (!cancelled) {
+          hasAutoAppliedMbeRef.current[quote.id] = false;
+          toast.error((e as Error)?.message || 'Impossible de récupérer les tarifs MBE');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [useMbehubForShipping, quote?.id, quote?.lot?.dimensions, quote?.delivery?.address, quote?.client?.address, quote?.paymentStatus, quote?.totalWeight, isSaving, queryClient]);
+
   const REFUSAL_REASONS: { value: ClientRefusalReason; label: string }[] = [
     { value: 'tarif_trop_eleve', label: 'Tarif trop élevé' },
     { value: 'client_a_paye_concurrent', label: 'Client a payé un concurrent' },
@@ -621,7 +691,10 @@ export default function QuoteDetail() {
         
         // 2. Recalculer le prix d'expédition (grille tarifaire uniquement - si MBE Hub, pas de recalcul auto)
         const useMbehub = mbehubStatus?.shippingCalculationMethod === 'mbehub';
-        if (!useMbehub && quote.lot.dimensions && quote.delivery?.address) {
+        const mbehubQueryEnabled = !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra');
+        const waitingForMbehub = mbehubQueryEnabled && mbehubStatus === undefined;
+        const shouldUseGrille = !useMbehub && !waitingForMbehub;
+        if (shouldUseGrille && quote.lot.dimensions && quote.delivery?.address) {
           const hasDimensions = quote.lot.dimensions.length > 0 && quote.lot.dimensions.width > 0 && quote.lot.dimensions.height > 0;
           if (hasDimensions) {
             // Extraire le code pays depuis plusieurs sources
@@ -815,6 +888,7 @@ export default function QuoteDetail() {
     quote?.options?.packagingPrice,
     quote?.options?.shippingPrice,
     mbehubStatus?.shippingCalculationMethod,
+    featuresData?.planId,
   ]);
 
   // Recalculer automatiquement le totalAmount quand les prix changent
@@ -1804,11 +1878,17 @@ export default function QuoteDetail() {
     } else {
       console.log(`[QuoteDetail] ✅ Code pays final: ${countryCode}`);
     }
-    
-    if (!useMbehubForShipping && countryCode && updatedQuote.lot.dimensions && 
-        updatedQuote.lot.dimensions.length > 0 && 
-        updatedQuote.lot.dimensions.width > 0 && 
-        updatedQuote.lot.dimensions.height > 0) {
+
+    const hasValidDimsForShipping = updatedQuote.lot.dimensions &&
+      updatedQuote.lot.dimensions.length > 0 &&
+      updatedQuote.lot.dimensions.width > 0 &&
+      updatedQuote.lot.dimensions.height > 0;
+    const shouldFetchMbeAfterSave = useMbehubForShipping && !!countryCode && hasValidDimsForShipping;
+
+    if (shouldFetchMbeAfterSave) {
+      // MBE Hub : shippingPrice sera récupéré après sauvegarde (quote-shipping-rates lit depuis Firestore)
+      console.log(`[QuoteDetail] MBE Hub sélectionné - tarif expédition sera calculé après sauvegarde`);
+    } else if (!useMbehubForShipping && countryCode && hasValidDimsForShipping) {
       try {
         const dimensions = updatedQuote.lot.dimensions;
         console.log(`[QuoteDetail] 📐 Dimensions du colis: L=${dimensions.length}cm × l=${dimensions.width}cm × H=${dimensions.height}cm`);
@@ -1950,9 +2030,41 @@ export default function QuoteDetail() {
         } : q));
       });
 
+      let finalShippingPrice = updatedQuote.options.shippingPrice ?? 0;
+      if (shouldFetchMbeAfterSave) {
+        try {
+          const res = await authenticatedFetch('/api/mbehub/quote-shipping-rates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quoteId: updatedQuote.id }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.standard?.price > 0) {
+            finalShippingPrice = data.standard.price;
+            const finalPackagingPrice = updatedQuote.options.packagingPrice ?? 0;
+            const insuranceAmount = computeInsuranceAmount(
+              updatedQuote.lot?.value || 0,
+              updatedQuote.options?.insurance,
+              updatedQuote.options?.insuranceAmount
+            );
+            const newTotal = finalPackagingPrice + finalShippingPrice + insuranceAmount;
+            updatedQuote.options.shippingPrice = finalShippingPrice;
+            updatedQuote.options.insuranceAmount = insuranceAmount;
+            updatedQuote.totalAmount = newTotal;
+            setQuote((q) => q ? { ...q, options: { ...q.options, shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal } : q);
+            await setDoc(doc(db, 'quotes', updatedQuote.id), { options: { shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal, updatedAt: Timestamp.now() }, { merge: true });
+            queryClient.setQueryData<Quote[]>(["quotes"], (prev) => prev ? prev.map((q) => q.id === updatedQuote.id ? { ...q, options: { ...q.options, shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal } : q) : prev);
+            console.log(`[QuoteDetail] Prix expédition MBE Standard appliqué: ${finalShippingPrice}€`);
+          }
+        } catch (e) {
+          console.error('[QuoteDetail] Erreur quote-shipping-rates:', e);
+          toast.error('Impossible de récupérer les tarifs MBE');
+        }
+      }
+
       // Générer le lien de paiement après analyse réussie (emballage + expédition prêts)
       const pkg = updatedQuote.options.packagingPrice ?? 0;
-      const ship = updatedQuote.options.shippingPrice ?? 0;
+      const ship = finalShippingPrice;
       const hasLink = updatedQuote.paymentLinks?.some((l: { status?: string }) => l?.status === 'active' || l?.status === 'pending');
       if (pkg > 0 && ship > 0 && !hasLink) {
         authenticatedFetch(`/api/devis/${updatedQuote.id}/try-auto-payment`, { method: 'POST' })
