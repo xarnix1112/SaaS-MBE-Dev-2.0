@@ -491,28 +491,8 @@ export default function QuoteDetail() {
     });
   }, [foundQuote?.id, foundQuote?.auctionSheet, foundQuote?.options?.packagingPrice, foundQuote?.options?.shippingPrice, foundQuote?.paymentLinks, foundQuote?.timeline, foundQuote?.client?.email, foundQuote?.client?.name, isSaving, lastSaveTime]);
 
-  // Tenter la génération auto du lien de paiement au chargement si emballage+expédition prêts et pas encore de lien
-  const hasAttemptedAutoPayment = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!quote?.id) return;
-    const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
-    const shippingPrice = quote.options?.shippingPrice ?? 0;
-    const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
-    if (packagingPrice > 0 && shippingPrice > 0 && !hasPaymentLink && !hasAttemptedAutoPayment.current.has(quote.id)) {
-      hasAttemptedAutoPayment.current.add(quote.id);
-      authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' })
-        .then((res) => res.json().catch(() => ({})))
-        .then((data) => {
-          if (data?.generated) {
-            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré au chargement');
-            queryClient.invalidateQueries({ queryKey: ['quotes'] });
-          } else {
-            hasAttemptedAutoPayment.current.delete(quote.id);
-          }
-        })
-        .catch(() => { hasAttemptedAutoPayment.current.delete(quote.id); });
-    }
-  }, [quote?.id, quote?.options?.packagingPrice, quote?.options?.shippingPrice, quote?.paymentLinks, quote?.auctionSheet?.recommendedCarton, queryClient]);
+  // NE PLUS générer de lien au simple chargement de la page.
+  // Le lien est généré uniquement : 1) après analyse OCR (backend), 2) après handleAuctionSheetAnalysis (upload manuel).
 
   // FORCER l'application des dimensions INTERNES du carton (dimensions du colis)
   // Ce useEffect garantit que les dimensions du carton sont TOUJOURS affichées
@@ -1969,6 +1949,21 @@ export default function QuoteDetail() {
           },
         } : q));
       });
+
+      // Générer le lien de paiement après analyse réussie (emballage + expédition prêts)
+      const pkg = updatedQuote.options.packagingPrice ?? 0;
+      const ship = updatedQuote.options.shippingPrice ?? 0;
+      const hasLink = updatedQuote.paymentLinks?.some((l: { status?: string }) => l?.status === 'active' || l?.status === 'pending');
+      if (pkg > 0 && ship > 0 && !hasLink) {
+        authenticatedFetch(`/api/devis/${updatedQuote.id}/try-auto-payment`, { method: 'POST' })
+          .then((res) => res.json().catch(() => ({})))
+          .then((data) => {
+            if (data?.generated) {
+              queryClient.invalidateQueries({ queryKey: ['quotes'] });
+            }
+          })
+          .catch(() => {});
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[firebase] sauvegarde bordereau impossible", e);

@@ -9997,6 +9997,58 @@ async function estimateDimensionsWithGroq(description, groqApiKey, context = {})
   }
 }
 
+const PRINCIPAL_PAYMENT_TYPES = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
+
+/**
+ * Annule tous les liens de paiement principaux (Standard unique ou Standard+Express) pour un devis.
+ * Utilisé avant : 1) création des 2 liens (prepare-quote-email), 2) régénération après réanalyse (calculateDevisFromOCR).
+ */
+async function cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe) {
+  const paiementsSnap = await firestore
+    .collection('paiements')
+    .where('devisId', '==', devisId)
+    .get();
+  const toCancel = paiementsSnap.docs.filter((d) => {
+    const data = d.data();
+    return data.status === 'PENDING' && PRINCIPAL_PAYMENT_TYPES.includes(data.type);
+  });
+  if (toCancel.length === 0) return;
+  const cancelledIds = new Set();
+  for (const d of toCancel) {
+    const p = { id: d.id, ...d.data() };
+    await firestore.collection('paiements').doc(p.id).update({
+      status: 'CANCELLED',
+      updatedAt: Timestamp.now(),
+    });
+    cancelledIds.add(p.id);
+    if (p.stripeSessionId && stripe) {
+      try {
+        await stripe.checkout.sessions.expire(p.stripeSessionId, {
+          stripeAccount: p.stripeAccountId || undefined,
+        });
+        console.log(`[API] ✅ Session Stripe expirée: ${p.stripeSessionId}`);
+      } catch (e) {
+        console.warn(`[API] ⚠️ Impossible d'expirer session ${p.stripeSessionId}:`, e?.message);
+      }
+    }
+  }
+  const quoteDoc = await firestore.collection('quotes').doc(devisId).get();
+  if (quoteDoc.exists) {
+    const quote = quoteDoc.data();
+    const links = quote.paymentLinks || [];
+    const updated = links.map((l) =>
+      cancelledIds.has(l.id) ? { ...l, status: 'expired' } : l
+    );
+    if (updated.some((l, i) => l.status !== (links[i]?.status))) {
+      await firestore.collection('quotes').doc(devisId).update({
+        paymentLinks: updated,
+        updatedAt: Timestamp.now(),
+      });
+    }
+  }
+  console.log(`[API] ✅ ${toCancel.length} lien(s) principal(aux) annulé(s) pour devis ${devisId}`);
+}
+
 /**
  * Calcule automatiquement le devis à partir du résultat OCR
  */
@@ -10151,12 +10203,62 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ⚖️ Poids réel: ${totalWeight.toFixed(2)}kg, Poids volumétrique: ${volumetricWeight.toFixed(2)}kg, Poids final: ${finalWeight.toFixed(2)}kg`);
     
     // Si une destination est renseignée, calculer le prix d'expédition
-    // Support: destination.country (legacy) ou delivery.address.country (quote Google Sheets)
+    // Support: grille tarifaire OU MBE Hub (selon settings.shippingCalculationMethod)
     const destCountry = devis.destination?.country || devis.delivery?.address?.country;
     if (destCountry) {
       try {
         const countryCode = (typeof destCountry === 'string' ? destCountry : String(destCountry)).toUpperCase();
-        console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
+        const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        const saasAccount = saasAccountDoc.exists ? saasAccountDoc.data() : null;
+        const useMbeHub = saasAccount && (saasAccount.planId === 'pro' || saasAccount.planId === 'ultra') && (saasAccount.settings?.shippingCalculationMethod === 'mbehub');
+
+        if (useMbeHub) {
+          const creds = await getMbeHubCredentials(firestore, saasAccountId);
+          if (creds) {
+            const deliveryAddr = devis.delivery?.address || devis.destination || {};
+            const dest = {
+              zipCode: String(deliveryAddr.zip || deliveryAddr.zipCode || '').trim(),
+              city: String(deliveryAddr.city || '').trim(),
+              state: String(deliveryAddr.state || '').trim().slice(0, 2),
+              country: countryCode,
+            };
+            const dims = cartonInfo
+              ? { length: cartonInfo.inner_length ?? 10, width: cartonInfo.inner_width ?? 10, height: cartonInfo.inner_height ?? 10 }
+              : { length: 10, width: 10, height: 10 };
+            try {
+              const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+              const options = await mbehubSoap.getShippingOptions({
+                username: creds.username,
+                password: creds.password,
+                env,
+                destination: dest,
+                weight: finalWeight,
+                dimensions: dims,
+                insurance: !!devis.options?.insurance,
+                insuranceValue: Number(devis.options?.insuranceAmount) || 0,
+              });
+              const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+              const pickCheapest = (arr) => {
+                if (!arr.length) return null;
+                return arr.reduce((a, b) => {
+                  const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+                  const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+                  return pa <= pb ? a : b;
+                });
+              };
+              const standardOpt = pickCheapest(standardOpts);
+              if (standardOpt) {
+                shippingPrice = Number(standardOpt.GrossShipmentPrice ?? standardOpt.NetShipmentPrice ?? 0);
+                console.log(`[Calcul] 🚚 Prix expédition MBE Hub (Standard): ${shippingPrice}€ pour ${countryCode}`);
+              }
+            } catch (mbeErr) {
+              console.warn('[Calcul] ⚠️ MBE Hub échec, fallback grille:', mbeErr.message);
+            }
+          }
+        }
+
+        if (shippingPrice === 0) {
+          console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
         
         // 1. Trouver la zone qui contient ce pays
         const zonesSnapshot = await firestore
@@ -10250,6 +10352,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
               }
             }
           }
+        }
         }
       } catch (error) {
         console.error('[Calcul] ❌ Erreur lors du calcul du prix d\'expédition:', error.message);
@@ -10355,7 +10458,10 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
       try {
         console.log(`[Calcul] 🔗 Conditions remplies pour auto-génération du lien de paiement`);
         
-        // Vérifier si un paiement PRINCIPAL existe déjà pour ce devis
+        // Réanalyse : annuler les anciens liens avant de régénérer
+        await cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe);
+        
+        // Vérifier qu'il n'en reste pas (sécurité, normalement vides après annulation)
         const existingPaiementsSnapshot = await firestore
           .collection('paiements')
           .where('devisId', '==', devisId)
@@ -10365,7 +10471,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
           .get();
         
         if (!existingPaiementsSnapshot.empty) {
-          console.log(`[Calcul] ⚠️  Un paiement PRINCIPAL existe déjà pour ce devis, pas de génération automatique`);
+          console.log(`[Calcul] ⚠️  Un paiement PRINCIPAL existe encore pour ce devis, pas de génération automatique`);
         } else {
           // Récupérer le compte SaaS pour obtenir le stripeAccountId
           const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
@@ -11346,20 +11452,8 @@ app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Devis non accessible' });
     }
 
-    // Vérifier qu'aucun paiement principal n'existe déjà (sans index composite status)
-    const existingSnap = await firestore
-      .collection('paiements')
-      .where('devisId', '==', quoteId)
-      .get();
-    const hasPrincipal = existingSnap.docs.some((d) => {
-      const data = d.data();
-      if (data.status === 'CANCELLED') return false;
-      const t = data.type;
-      return t === 'PRINCIPAL' || t === 'PRINCIPAL_STANDARD' || t === 'PRINCIPAL_EXPRESS';
-    });
-    if (hasPrincipal) {
-      return res.status(400).json({ error: 'Un ou plusieurs liens de paiement existent déjà pour ce devis' });
-    }
+    // Annuler le(s) lien(s) existant(s) (Standard unique ou Standard+Express) puis créer les 2 nouveaux
+    await cancelPrincipalPaymentLinksForDevis(firestore, quoteId, stripe);
 
     // 1. Obtenir les tarifs Standard et Express via MBE Hub
     const creds = await getMbeHubCredentials(firestore, saasAccountId);
