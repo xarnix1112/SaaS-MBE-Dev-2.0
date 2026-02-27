@@ -2,6 +2,7 @@
  * Service MBE eShip SOAP - Intégration API pour création d'expéditions en brouillon
  * Documentation: https://sites.google.com/fortidia.com/eship-api-documentation/
  * Auth: HTTP Basic (username:password)
+ * Fichier .cjs pour compatibilité avec "type": "module" du projet
  */
 
 const soap = require('soap');

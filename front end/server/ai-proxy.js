@@ -11051,7 +11051,7 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
 
 // ===== MBE HUB (plans Pro et Ultra) - API eShip SOAP - Expéditions en brouillon =====
 
-const mbehubSoap = require('./mbehub-soap.js');
+const mbehubSoap = require('./mbehub-soap.cjs');
 
 function hasMbeHubPlan(saasData) {
   const planId = saasData?.planId || saasData?.plan || 'starter';
