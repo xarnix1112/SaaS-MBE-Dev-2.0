@@ -191,7 +191,7 @@ async function createDraftShipment({
     COD: false,
     Insurance: !!insurance,
     ...(insurance && insuranceValue > 0 ? { InsuranceValue: insuranceValue } : {}),
-    Service,
+    Service: service,
     CourierService: courierService || undefined,
     CourierAccount: courierAccount || undefined,
     PackageType: 'GENERIC',

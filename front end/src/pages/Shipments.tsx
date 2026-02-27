@@ -49,6 +49,11 @@ interface MbeShippingOption {
   NetShipmentPrice?: number;
 }
 
+/** Clé unique par option (Service peut être commun à plusieurs transporteurs) */
+function getOptionId(o: MbeShippingOption) {
+  return `${o.Service}__${o.Courier || ''}__${o.CourierService || ''}`;
+}
+
 export default function Shipments() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
   const queryClient = useQueryClient();
@@ -191,7 +196,7 @@ export default function Shipments() {
       toast.error('Sélectionnez un service de livraison');
       return;
     }
-    const opt = shippingOptions.find((o) => o.Service === selectedService);
+    const opt = shippingOptions.find((o) => getOptionId(o) === selectedService);
     if (!opt) {
       toast.error('Service invalide');
       return;
@@ -590,7 +595,7 @@ export default function Shipments() {
                     </SelectTrigger>
                     <SelectContent>
                       {shippingOptions.map((o) => (
-                        <SelectItem key={o.Service} value={o.Service}>
+                        <SelectItem key={getOptionId(o)} value={getOptionId(o)}>
                           {o.ServiceDesc} ({o.Courier}) – {o.GrossShipmentPrice != null ? `${Number(o.GrossShipmentPrice).toFixed(2)} €` : '-'}
                         </SelectItem>
                       ))}
