@@ -233,6 +233,12 @@ export default function Shipments() {
       }
       const data = await res.json();
       queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      // Synchroniser le Bilan Google Sheet (suppression En cours, ajout Terminés)
+      try {
+        await authenticatedFetch(`/api/bilan/sync-quote/${selectedQuote.id}`, { method: 'POST' });
+      } catch {
+        // Non bloquant, le backend a déjà tenté la sync
+      }
       toast.success(`Expédition créée en brouillon. N° MBE : ${data.mbeTrackingId || '-'}`);
       setIsShipmentDialogOpen(false);
       setSelectedQuote(null);

@@ -189,16 +189,28 @@ export async function getPaymentInfoForQuote(firestore, quoteId) {
 }
 
 /**
- * Trouve la ligne d'un devis dans une feuille par référence
+ * Normalise une valeur pour comparaison (évite échec référence "123" vs 123)
  */
-async function findQuoteRowInSheet(sheets, spreadsheetId, sheetName, quoteRef) {
+function normalizeRef(val) {
+  return String(val ?? '').trim();
+}
+
+/**
+ * Trouve la ligne d'un devis dans une feuille par référence ou id
+ */
+async function findQuoteRowInSheet(sheets, spreadsheetId, sheetName, quoteRef, quoteId = null) {
   const range = `${sheetName}!A2:A`;
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
     range,
   });
   const rows = res.data.values || [];
-  const idx = rows.findIndex((r) => r[0] === quoteRef);
+  const refNorm = normalizeRef(quoteRef);
+  const idNorm = quoteId ? normalizeRef(quoteId) : null;
+  const idx = rows.findIndex((r) => {
+    const cellNorm = normalizeRef(r[0]);
+    return cellNorm === refNorm || (idNorm && cellNorm === idNorm);
+  });
   return idx >= 0 ? idx + 2 : -1; // +2 car 1-indexed et header ligne 1
 }
 
@@ -228,9 +240,41 @@ export async function syncQuoteToBilanSheet(firestore, auth, saasAccountId, quot
 
   const sheets = google.sheets({ version: 'v4', auth });
 
-  // Vérifier si le devis existe déjà dans une feuille (pour le déplacer ou mettre à jour)
+  // 1. Si le devis doit aller en Terminés : le supprimer d'abord de "En cours" s'il y est
+  if (sheetName === SHEET_NAMES.TERMINES) {
+    const rowInEnCours = await findQuoteRowInSheet(
+      sheets, bilanSheet.spreadsheetId, SHEET_NAMES.EN_COURS, quoteRef, quote.id
+    );
+    if (rowInEnCours > 0) {
+      const meta = await sheets.spreadsheets.get({
+        spreadsheetId: bilanSheet.spreadsheetId,
+        fields: 'sheets(properties(sheetId,title))',
+      });
+      const sheet = meta.data.sheets?.find((s) => s.properties?.title === SHEET_NAMES.EN_COURS);
+      const sheetId = sheet?.properties?.sheetId ?? 0;
+      await sheets.spreadsheets.batchUpdate({
+        spreadsheetId: bilanSheet.spreadsheetId,
+        requestBody: {
+          requests: [{
+            deleteDimension: {
+              range: {
+                sheetId,
+                dimension: 'ROWS',
+                startIndex: rowInEnCours - 1,
+                endIndex: rowInEnCours,
+              },
+            },
+          }],
+        },
+      });
+    }
+  }
+
+  // 2. Vérifier si le devis existe dans une feuille (mise à jour ou déplacement depuis Terminés/Refusés)
   for (const name of [SHEET_NAMES.EN_COURS, SHEET_NAMES.TERMINES, SHEET_NAMES.REFUSES]) {
-    const existingRow = await findQuoteRowInSheet(sheets, bilanSheet.spreadsheetId, name, quoteRef);
+    const existingRow = await findQuoteRowInSheet(
+      sheets, bilanSheet.spreadsheetId, name, quoteRef, quote.id
+    );
     if (existingRow > 0) {
       if (name === sheetName) {
         // Mise à jour sur place
