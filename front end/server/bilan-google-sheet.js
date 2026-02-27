@@ -41,6 +41,7 @@ const STATUS_LABELS = {
   collected: 'Collecté',
   preparation: 'Préparation',
   awaiting_shipment: 'Attente envoi',
+  sent_to_mbe_hub: 'Envoyé MBE Hub',
   shipped: 'Expédié',
   completed: 'Terminé',
   client_refused: 'Refusé/Abandonné',
@@ -50,7 +51,7 @@ function getSheetNameForQuote(quote) {
   if (quote.clientRefusalStatus === 'client_refused') {
     return SHEET_NAMES.REFUSES;
   }
-  if (['shipped', 'completed'].includes(quote.status)) {
+  if (['sent_to_mbe_hub', 'shipped', 'completed'].includes(quote.status)) {
     return SHEET_NAMES.TERMINES;
   }
   return SHEET_NAMES.EN_COURS;
@@ -98,9 +99,11 @@ export function buildQuoteRow(quote, paymentInfo = null) {
       : (paymentInfo.paymentMethod || '');
   }
 
-  const shippedAt = quote.status === 'shipped' || quote.status === 'completed'
-    ? toLocalDateString(quote.updatedAt) // Approximation si pas de champ dédié
-    : '';
+  const shippedAt = quote.status === 'sent_to_mbe_hub'
+    ? toLocalDateString(quote.sentToMbeHubAt || quote.updatedAt)
+    : (quote.status === 'shipped' || quote.status === 'completed'
+      ? toLocalDateString(quote.shippedAt || quote.updatedAt)
+      : '');
   const status = quote.clientRefusalStatus === 'client_refused'
     ? STATUS_LABELS.client_refused
     : (STATUS_LABELS[quote.status] || quote.status || '');

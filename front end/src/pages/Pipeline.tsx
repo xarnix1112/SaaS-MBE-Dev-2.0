@@ -37,10 +37,13 @@ export default function Pipeline() {
     return visibleQuotes.filter(q => {
       const s = q.status || 'new';
       if (status === 'new') {
-        return STATUS_NOUVEAUX.has(s) || s === '' || s == null;
+        return STATUS_NOUVEAUX.has(s) || s == null;
       }
       if (status === 'shipped') {
-        return s === 'shipped' || s === 'sent_to_mbe_hub';
+        return s === 'shipped';
+      }
+      if (status === 'completed') {
+        return s === 'completed' || s === 'sent_to_mbe_hub';
       }
       return s === status;
     });

@@ -11221,6 +11221,15 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
     });
 
     console.log(`[API] ✅ Expédition brouillon MBE créée: ${result.mbeTrackingId} pour devis ${quoteId}`);
+
+    // Synchroniser vers le Bilan devis MBE (feuille Terminés)
+    try {
+      const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+      if (auth) await syncQuoteToBilanSheet(firestore, auth, saasAccountId, quoteId);
+    } catch (bilanErr) {
+      console.warn('[Bilan] Sync après envoi MBE Hub:', bilanErr?.message);
+    }
+
     return res.json({ success: true, mbeTrackingId: result.mbeTrackingId });
   } catch (error) {
     console.error('[API] Erreur mbehub/create-draft:', error);
