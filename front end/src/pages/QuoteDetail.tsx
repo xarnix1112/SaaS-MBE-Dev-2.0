@@ -312,6 +312,8 @@ export default function QuoteDetail() {
   const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
   const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
   const [bordereauPollingTimedOut, setBordereauPollingTimedOut] = useState(false);
+  const [bordereauPollingIsRetry, setBordereauPollingIsRetry] = useState(false);
+  const bordereauPollingInitialTimelineRef = useRef<number>(0);
   const lastResyncTimeRef = useRef<number>(0);
   const RESYNC_COOLDOWN_MS = 5000; // Évite la boucle Resync quand le polling rafraîchit toutes les 5s
   
@@ -334,8 +336,8 @@ export default function QuoteDetail() {
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           return;
         }
-        if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0) {
-          // Vraiment déjà traité avec des lots → rafraîchir et ne pas relancer
+        if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0 && !forceRetry) {
+          // Vraiment déjà traité avec des lots (et pas une réanalyse) → rafraîchir et ne pas relancer
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         } else {
           // OCR en cours ou complété avec 0 lots → lancer le polling
@@ -345,6 +347,9 @@ export default function QuoteDetail() {
             toast.info('Relance de l\'analyse du bordereau...', { duration: 5000 });
           }
           setBordereauPollingActive(true);
+          setBordereauPollingIsRetry(forceRetry);
+          // Mémoriser la longueur du timeline pour détecter la fin de la réanalyse
+          bordereauPollingInitialTimelineRef.current = (foundQuote?.timeline?.length ?? 0);
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         }
       } else {
@@ -358,7 +363,7 @@ export default function QuoteDetail() {
       console.warn('[QuoteDetail] Échec déclenchement traitement bordereau:', e);
       toast.error('Connexion à l\'API impossible. Vérifiez votre connexion ou réessayez plus tard.');
     }
-  }, [id, queryClient]);
+  }, [id, queryClient, foundQuote]);
 
   useEffect(() => {
     const q = foundQuote || quote;
@@ -383,13 +388,19 @@ export default function QuoteDetail() {
   useEffect(() => {
     if (!bordereauPollingActive || !id) return;
     const q = foundQuote || quote;
+    const timelineLen = q?.timeline?.length ?? 0;
+    const initialLen = bordereauPollingInitialTimelineRef.current;
+    // Réanalyse : succès quand le timeline a une nouvelle entrée (Devis calculé, Lien généré)
+    const timelineGrew = bordereauPollingIsRetry && timelineLen > initialLen;
     // Considérer comme réussi seulement si au moins un lot a un numéro ou une description réelle (pas le lot par défaut)
     const hasRealLots = q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0 &&
       q.auctionSheet.lots.some((l: { lotNumber?: string | null; description?: string }) =>
         l.lotNumber !== null || (l.description && l.description !== 'Lot détecté' && l.description !== 'Description non disponible')
       );
-    if (hasRealLots) {
+    // En réanalyse, ne pas s'arrêter sur hasRealLots (le devis avait déjà des lots) — attendre que le timeline grandisse
+    if (bordereauPollingIsRetry ? timelineGrew : hasRealLots) {
       setBordereauPollingActive(false);
+      setBordereauPollingIsRetry(false);
       setBordereauPollingTimedOut(false);
       toast.success('Bordereau analysé avec succès !');
       return;
@@ -400,6 +411,7 @@ export default function QuoteDetail() {
     const timeout = setTimeout(() => {
       clearInterval(interval);
       setBordereauPollingActive(false);
+      setBordereauPollingIsRetry(false);
       setBordereauPollingTimedOut(true);
       toast.warning('L\'analyse a pris plus de temps que prévu. Cliquez sur « Relancer l\'analyse » pour réessayer.');
     }, 120000);
@@ -407,7 +419,7 @@ export default function QuoteDetail() {
       clearInterval(interval);
       clearTimeout(timeout);
     };
-  }, [bordereauPollingActive, id, foundQuote?.auctionSheet?.lots, quote?.auctionSheet?.lots, queryClient]);
+  }, [bordereauPollingActive, bordereauPollingIsRetry, id, foundQuote, quote, queryClient]);
 
   // Test de connectivité au backend au chargement
   useEffect(() => {

@@ -10249,6 +10249,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
                 insuranceValue: Number(devis.options?.insuranceAmount) || 0,
               });
               const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+              const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
               const pickCheapest = (arr) => {
                 if (!arr.length) return null;
                 return arr.reduce((a, b) => {
@@ -10257,10 +10258,11 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
                   return pa <= pb ? a : b;
                 });
               };
-              const standardOpt = pickCheapest(standardOpts);
-              if (standardOpt) {
-                shippingPrice = Number(standardOpt.GrossShipmentPrice ?? standardOpt.NetShipmentPrice ?? 0);
-                console.log(`[Calcul] 🚚 Prix expédition MBE Hub (Standard): ${shippingPrice}€ pour ${countryCode}`);
+              const useExpress = !!devis.options?.express;
+              const selectedOpt = useExpress ? pickCheapest(expressOpts) : pickCheapest(standardOpts);
+              if (selectedOpt) {
+                shippingPrice = Number(selectedOpt.GrossShipmentPrice ?? selectedOpt.NetShipmentPrice ?? 0);
+                console.log(`[Calcul] 🚚 Prix expédition MBE Hub (${useExpress ? 'Express' : 'Standard'}): ${shippingPrice}€ pour ${countryCode}`);
               }
             } catch (mbeErr) {
               console.warn('[Calcul] ⚠️ MBE Hub échec, fallback grille:', mbeErr.message);
