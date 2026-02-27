@@ -11113,9 +11113,43 @@ app.get('/api/account/mbehub-status', requireAuth, async (req, res) => {
       return res.json({ available: false, configured: false, message: 'Réservé aux plans Pro et Ultra' });
     }
     const creds = await getMbeHubCredentials(firestore, saasAccountId);
-    return res.json({ available: true, configured: Boolean(creds) });
+    const shippingCalculationMethod = saas?.settings?.shippingCalculationMethod || 'grille';
+    return res.json({
+      available: true,
+      configured: Boolean(creds),
+      shippingCalculationMethod,
+    });
   } catch (error) {
     console.error('[API] Erreur mbehub-status:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/shipping-calculation-method - Grille tarifaire ou MBE Hub
+app.put('/api/account/shipping-calculation-method', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { method } = req.body || {};
+  if (method !== 'grille' && method !== 'mbehub') {
+    return res.status(400).json({ error: 'Méthode invalide (grille ou mbehub)' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const current = saasDoc.data() || {};
+    await saasRef.update({
+      settings: { ...(current.settings || {}), shippingCalculationMethod: method },
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Méthode expédition: ${method} pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true, shippingCalculationMethod: method });
+  } catch (error) {
+    console.error('[API] Erreur shipping-calculation-method:', error);
     return res.status(500).json({ error: error.message || 'Erreur' });
   }
 });
@@ -11312,14 +11346,15 @@ app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Devis non accessible' });
     }
 
-    // Vérifier qu'aucun paiement principal n'existe déjà
+    // Vérifier qu'aucun paiement principal n'existe déjà (sans index composite status)
     const existingSnap = await firestore
       .collection('paiements')
       .where('devisId', '==', quoteId)
-      .where('status', '!=', 'CANCELLED')
       .get();
     const hasPrincipal = existingSnap.docs.some((d) => {
-      const t = d.data().type;
+      const data = d.data();
+      if (data.status === 'CANCELLED') return false;
+      const t = data.type;
       return t === 'PRINCIPAL' || t === 'PRINCIPAL_STANDARD' || t === 'PRINCIPAL_EXPRESS';
     });
     if (hasPrincipal) {

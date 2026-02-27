@@ -143,7 +143,8 @@ export default function QuoteDetail() {
     },
     enabled: !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra'),
   });
-  const showMbehubButton = mbehubStatus?.available && mbehubStatus?.configured;
+  const useMbehubForShipping = mbehubStatus?.available && mbehubStatus?.configured && mbehubStatus?.shippingCalculationMethod === 'mbehub';
+  const showMbehubButton = useMbehubForShipping;
   const foundQuote = quotes.find((q) => q.id === id);
   const [generatingLink, setGeneratingLink] = useState<boolean>(false);
   const [quote, setQuote] = useState<Quote | undefined>(foundQuote);
@@ -638,8 +639,9 @@ export default function QuoteDetail() {
           console.log(`[QuoteDetail] ✅ Prix emballage existant: ${quote.options.packagingPrice}€ pour "${searchRef}"`);
         }
         
-        // 2. Recalculer le prix d'expédition si dimensions et pays disponibles mais prix manquant
-        if (quote.lot.dimensions && quote.delivery?.address) {
+        // 2. Recalculer le prix d'expédition (grille tarifaire uniquement - si MBE Hub, pas de recalcul auto)
+        const useMbehub = mbehubStatus?.shippingCalculationMethod === 'mbehub';
+        if (!useMbehub && quote.lot.dimensions && quote.delivery?.address) {
           const hasDimensions = quote.lot.dimensions.length > 0 && quote.lot.dimensions.width > 0 && quote.lot.dimensions.height > 0;
           if (hasDimensions) {
             // Extraire le code pays depuis plusieurs sources
@@ -832,6 +834,7 @@ export default function QuoteDetail() {
     quote?.delivery?.address?.country,
     quote?.options?.packagingPrice,
     quote?.options?.shippingPrice,
+    mbehubStatus?.shippingCalculationMethod,
   ]);
 
   // Recalculer automatiquement le totalAmount quand les prix changent
@@ -1822,7 +1825,7 @@ export default function QuoteDetail() {
       console.log(`[QuoteDetail] ✅ Code pays final: ${countryCode}`);
     }
     
-    if (countryCode && updatedQuote.lot.dimensions && 
+    if (!useMbehubForShipping && countryCode && updatedQuote.lot.dimensions && 
         updatedQuote.lot.dimensions.length > 0 && 
         updatedQuote.lot.dimensions.width > 0 && 
         updatedQuote.lot.dimensions.height > 0) {
@@ -1839,7 +1842,7 @@ export default function QuoteDetail() {
         
         const isExpress = true; // TOUS les colis sont en EXPRESS
         
-        console.log(`[QuoteDetail] 🔄 Calcul prix expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+        console.log(`[QuoteDetail] 🔄 Calcul prix expédition (grille): pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
         shippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
         
         if (shippingPrice > 0) {
@@ -3313,6 +3316,7 @@ export default function QuoteDetail() {
             <EditQuoteForm
               quote={quote}
               isPrincipalPaid={isPrincipalPaidForEdit}
+              useMbehubForShipping={useMbehubForShipping}
               onPaymentLinkCreated={() => {
                 // Forcer le rechargement des paiements dans QuotePaiements
                 setPaiementsRefreshKey(prev => prev + 1);
@@ -3716,11 +3720,12 @@ interface EditQuoteFormProps {
   onSave: (updatedQuote: Quote) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
-  onPaymentLinkCreated?: () => void; // Callback appelé après la création d'un nouveau paiement
-  isPrincipalPaid?: boolean; // Si true, on ne peut plus modifier les prix (emballage, expédition)
+  onPaymentLinkCreated?: () => void;
+  isPrincipalPaid?: boolean;
+  useMbehubForShipping?: boolean; // Si true, ne pas recalculer l'expédition via la grille
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false, useMbehubForShipping = false }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
@@ -3871,17 +3876,19 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       }
     }
     
-    // Recalculer le prix d'expédition avec les nouvelles dimensions
-    let newShippingPrice = formData.shippingPrice; // Garder l'ancien prix par défaut
-    if (countryCode && volumetricWeight > 0) {
+    // Recalculer le prix d'expédition (grille uniquement - si MBE Hub, garder le prix actuel)
+    let newShippingPrice = formData.shippingPrice;
+    if (!useMbehubForShipping && countryCode && volumetricWeight > 0) {
       try {
-        const isExpress = true; // TOUS les colis sont en EXPRESS
-        console.log(`[EditQuote] 🔄 Recalcul prix expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+        const isExpress = true;
+        console.log(`[EditQuote] 🔄 Recalcul prix expédition (grille): pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
         newShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
         console.log(`[EditQuote] ✅ Nouveau prix expédition calculé: ${newShippingPrice}€`);
       } catch (error) {
         console.error('[EditQuote] ❌ Erreur lors du calcul du prix d\'expédition:', error);
       }
+    } else if (useMbehubForShipping) {
+      console.log(`[EditQuote] ℹ️ MBE Hub pour expédition: pas de recalcul grille`);
     } else {
       console.warn(`[EditQuote] ⚠️ Impossible de recalculer le prix d'expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
     }

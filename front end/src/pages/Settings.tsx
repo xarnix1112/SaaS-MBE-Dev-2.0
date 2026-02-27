@@ -13,8 +13,11 @@ import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettin
 import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
 import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
 import { useFeatures } from '@/hooks/use-features';
+import { useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Separator } from '@/components/ui/separator';
 
 interface EmailAccount {
   id: string;
@@ -24,6 +27,7 @@ interface EmailAccount {
 }
 
 export default function Settings() {
+  const queryClient = useQueryClient();
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
@@ -138,10 +142,12 @@ export default function Settings() {
   const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
 
   // MBE Hub (plans Pro/Ultra) - SOAP API username + password
-  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; message?: string } | null>(null);
+  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; shippingCalculationMethod?: 'grille' | 'mbehub'; message?: string } | null>(null);
   const [mbehubUsernameInput, setMbehubUsernameInput] = useState('');
   const [mbehubPasswordInput, setMbehubPasswordInput] = useState('');
   const [isSavingMbehubKey, setIsSavingMbehubKey] = useState(false);
+  const [shippingMethod, setShippingMethod] = useState<'grille' | 'mbehub'>('grille');
+  const [isSavingShippingMethod, setIsSavingShippingMethod] = useState(false);
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -240,8 +246,34 @@ export default function Settings() {
       }
       const data = await res.json();
       setMbehubStatus(data);
+      if (data?.shippingCalculationMethod) {
+        setShippingMethod(data.shippingCalculationMethod);
+      }
     } catch {
       setMbehubStatus(null);
+    }
+  };
+
+  const handleSaveShippingMethod = async (method: 'grille' | 'mbehub') => {
+    try {
+      setIsSavingShippingMethod(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/shipping-calculation-method', {
+        method: 'PUT',
+        body: JSON.stringify({ method }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      setShippingMethod(method);
+      setMbehubStatus((prev) => prev ? { ...prev, shippingCalculationMethod: method } : null);
+      queryClient.invalidateQueries({ queryKey: ['mbehub-status'] });
+      toast.success('Méthode de calcul enregistrée');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingShippingMethod(false);
     }
   };
 
@@ -1740,7 +1772,40 @@ export default function Settings() {
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <Label className="text-base font-semibold">Calcul du prix d&apos;expédition</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Choisissez une méthode. Une seule est utilisée à la fois pour éviter toute confusion.
+                      </p>
+                      <RadioGroup
+                        value={shippingMethod}
+                        onValueChange={(v) => (v === 'grille' || v === 'mbehub') && handleSaveShippingMethod(v)}
+                        className="grid gap-3"
+                      >
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="grille" id="shipping-grille" disabled={isSavingShippingMethod} />
+                          <Label htmlFor="shipping-grille" className="font-normal cursor-pointer flex-1">
+                            <strong>Grille tarifaire</strong> — Utiliser vos zones et tranches de poids (Google Sheets / paramètres).
+                          </Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="mbehub" id="shipping-mbehub" disabled={isSavingShippingMethod || !mbehubStatus.configured} />
+                          <Label htmlFor="shipping-mbehub" className="font-normal cursor-pointer flex-1">
+                            <strong>MBE Hub</strong> — Tarifs en temps réel + 2 liens Standard/Express dans le devis {!mbehubStatus.configured && '(configurez d&apos;abord les identifiants ci-dessous)'}
+                          </Label>
+                        </div>
+                      </RadioGroup>
+                      {isSavingShippingMethod && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Enregistrement...
+                        </p>
+                      )}
+                    </div>
+                    <Separator />
+                    <div className="space-y-2">
+                      <Label>Identifiants MBE Hub (pour la méthode MBE Hub)</Label>
+                    </div>
                     <div className="space-y-2">
                       <Label>Identifiant (username)</Label>
                       <Input
