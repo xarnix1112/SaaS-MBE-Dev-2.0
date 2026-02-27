@@ -137,9 +137,10 @@ export default function Settings() {
   const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
   const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
 
-  // MBE Hub (plans Pro/Ultra)
+  // MBE Hub (plans Pro/Ultra) - SOAP API username + password
   const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; message?: string } | null>(null);
-  const [mbehubApiKeyInput, setMbehubApiKeyInput] = useState('');
+  const [mbehubUsernameInput, setMbehubUsernameInput] = useState('');
+  const [mbehubPasswordInput, setMbehubPasswordInput] = useState('');
   const [isSavingMbehubKey, setIsSavingMbehubKey] = useState(false);
   
   // Charger les comptes email
@@ -245,8 +246,12 @@ export default function Settings() {
   };
 
   const handleSaveMbehubKey = async () => {
-    if (!mbehubApiKeyInput.trim()) {
-      toast.error('Saisissez votre clé API MBE Hub');
+    if (!mbehubUsernameInput.trim()) {
+      toast.error('Saisissez votre identifiant MBE Hub');
+      return;
+    }
+    if (!mbehubPasswordInput.trim()) {
+      toast.error('Saisissez votre mot de passe MBE Hub');
       return;
     }
     try {
@@ -254,14 +259,18 @@ export default function Settings() {
       const { authenticatedFetch } = await import('@/lib/api');
       const res = await authenticatedFetch('/api/account/mbehub-key', {
         method: 'PUT',
-        body: JSON.stringify({ apiKey: mbehubApiKeyInput.trim() }),
+        body: JSON.stringify({
+          username: mbehubUsernameInput.trim(),
+          password: mbehubPasswordInput.trim(),
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Erreur lors de la sauvegarde');
       }
-      toast.success('Clé MBE Hub enregistrée');
-      setMbehubApiKeyInput('');
+      toast.success('Identifiants MBE Hub enregistrés');
+      setMbehubUsernameInput('');
+      setMbehubPasswordInput('');
       await loadMbehubStatus();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Erreur');
@@ -1711,7 +1720,7 @@ export default function Settings() {
                   MBE Hub
                 </CardTitle>
                 <CardDescription>
-                  Connectez votre clé API MBE Hub pour envoyer les devis vers la zone expédition et créer les envois
+                  Identifiants SOAP (mbehub.fr) pour créer des expéditions en brouillon dans le Hub. Le Centre MBE finalise et imprime les étiquettes.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1733,18 +1742,28 @@ export default function Settings() {
                 ) : (
                   <div className="space-y-4">
                     <div className="space-y-2">
-                      <Label>Clé API MBE Hub</Label>
+                      <Label>Identifiant (username)</Label>
+                      <Input
+                        type="text"
+                        placeholder={mbehubStatus.configured ? '•••••••• (déjà configuré)' : 'Login mbehub.fr / ONLINEMBE_USER'}
+                        value={mbehubUsernameInput}
+                        onChange={(e) => setMbehubUsernameInput(e.target.value)}
+                        className="flex-1"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Mot de passe</Label>
                       <div className="flex gap-2">
                         <Input
                           type="password"
-                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configurée)' : 'Votre clé API MBE Hub'}
-                          value={mbehubApiKeyInput}
-                          onChange={(e) => setMbehubApiKeyInput(e.target.value)}
+                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configuré)' : 'Mot de passe API'}
+                          value={mbehubPasswordInput}
+                          onChange={(e) => setMbehubPasswordInput(e.target.value)}
                           className="flex-1"
                         />
                         <Button
                           onClick={handleSaveMbehubKey}
-                          disabled={isSavingMbehubKey || !mbehubApiKeyInput.trim()}
+                          disabled={isSavingMbehubKey || !mbehubUsernameInput.trim() || !mbehubPasswordInput.trim()}
                         >
                           {isSavingMbehubKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
                         </Button>
@@ -1757,7 +1776,7 @@ export default function Settings() {
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Une fois la clé configurée, le bouton « Envoyer vers MBE Hub » sera disponible sur chaque devis.
+                      Le bouton « Envoyer vers MBE Hub » sera disponible sur la page Expéditions (devis en attente d&apos;envoi).
                     </p>
                   </div>
                 )}

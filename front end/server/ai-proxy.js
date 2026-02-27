@@ -11049,17 +11049,24 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
   }
 });
 
-// ===== MBE HUB (plans Pro et Ultra) - Envoi devis vers zone expédition =====
+// ===== MBE HUB (plans Pro et Ultra) - API eShip SOAP - Expéditions en brouillon =====
+
+const mbehubSoap = require('./mbehub-soap.js');
 
 function hasMbeHubPlan(saasData) {
   const planId = saasData?.planId || saasData?.plan || 'starter';
   return planId === 'pro' || planId === 'ultra';
 }
 
-async function getMbeHubApiKey(firestore, saasAccountId) {
+async function getMbeHubCredentials(firestore, saasAccountId) {
   if (!firestore || !saasAccountId) return null;
   const doc = await firestore.collection('saasAccounts').doc(saasAccountId).collection('secrets').doc('mbehub').get();
-  return doc.exists ? (doc.data()?.apiKey || null) : null;
+  if (!doc.exists) return null;
+  const data = doc.data();
+  const username = data?.username || data?.apiKey; // rétrocompat: apiKey = username
+  const password = data?.password;
+  if (!username || !password) return null;
+  return { username: String(username).trim(), password: String(password) };
 }
 
 // GET /api/account/mbehub-status
@@ -11074,22 +11081,25 @@ app.get('/api/account/mbehub-status', requireAuth, async (req, res) => {
     if (!hasMbeHubPlan(saas)) {
       return res.json({ available: false, configured: false, message: 'Réservé aux plans Pro et Ultra' });
     }
-    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
-    return res.json({ available: true, configured: Boolean(apiKey) });
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    return res.json({ available: true, configured: Boolean(creds) });
   } catch (error) {
     console.error('[API] Erreur mbehub-status:', error);
     return res.status(500).json({ error: error.message || 'Erreur' });
   }
 });
 
-// PUT /api/account/mbehub-key
+// PUT /api/account/mbehub-key - Stocke username + password (SOAP Basic Auth)
 app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
   const saasAccountId = req.saasAccountId;
   if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
-  const { apiKey } = req.body;
-  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-    return res.status(400).json({ error: 'Clé API requise' });
+  const { username, password } = req.body || {};
+  if (!username || typeof username !== 'string' || !username.trim()) {
+    return res.status(400).json({ error: 'Identifiant (username) requis' });
+  }
+  if (!password || typeof password !== 'string' || !password.trim()) {
+    return res.status(400).json({ error: 'Mot de passe requis' });
   }
   try {
     const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
@@ -11099,10 +11109,11 @@ app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
     }
     await saasRef.collection('secrets').doc('mbehub').set({
-      apiKey: apiKey.trim(),
+      username: username.trim(),
+      password: password.trim(),
       updatedAt: Timestamp.now(),
     });
-    console.log(`[API] ✅ Clé MBE Hub enregistrée pour saasAccountId=${saasAccountId}`);
+    console.log(`[API] ✅ Identifiants MBE Hub enregistrés pour saasAccountId=${saasAccountId}`);
     return res.json({ success: true });
   } catch (error) {
     console.error('[API] Erreur mbehub-key:', error);
@@ -11110,7 +11121,114 @@ app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/mbehub/send-quote - Envoi devis vers MBE Hub (zone expédition)
+// POST /api/mbehub/shipping-options - Liste des services disponibles (ShippingOptionsRequest)
+app.post('/api/mbehub/shipping-options', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const { destination, weight, dimensions, insurance, insuranceValue } = req.body || {};
+    if (!destination?.country) {
+      return res.status(400).json({ error: 'Destination requise (country, zipCode, city)' });
+    }
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: {
+        zipCode: destination.zipCode || '',
+        city: destination.city || '',
+        state: destination.state || '',
+        country: destination.country || 'FR',
+      },
+      weight: Number(weight) || 1,
+      dimensions: dimensions || { length: 10, width: 10, height: 10 },
+      insurance: !!insurance,
+      insuranceValue: Number(insuranceValue) || 0,
+    });
+    return res.json({ success: true, options });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/shipping-options:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/create-draft - Crée une expédition en brouillon (ShipmentRequest IsDraft=true)
+app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId, recipient, service, courierService, courierAccount, weight, dimensions, reference, insurance, insuranceValue } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  if (!recipient?.name || !recipient?.address || !recipient?.city || !recipient?.zipCode || !recipient?.country) {
+    return res.status(400).json({ error: 'Destinataire incomplet (name, address, city, zipCode, country)' });
+  }
+  if (!service) return res.status(400).json({ error: 'Service requis (choisissez dans la liste)' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId !== saasAccountId) return res.status(403).json({ error: 'Devis non accessible' });
+
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const result = await mbehubSoap.createDraftShipment({
+      username: creds.username,
+      password: creds.password,
+      env,
+      recipient,
+      service,
+      courierService: courierService || null,
+      courierAccount: courierAccount || null,
+      weight: Number(weight) || 1,
+      dimensions: dimensions || { length: 10, width: 10, height: 10 },
+      reference: reference || quote.reference || quoteId,
+      insurance: !!insurance,
+      insuranceValue: Number(insuranceValue) || 0,
+    });
+
+    // Mettre à jour le devis: mbeTrackingId, status sent_to_mbe_hub, sentToMbeHubAt
+    const existingTimeline = quote.timeline || [];
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'sent_to_mbe_hub',
+      description: 'Envoyé vers MBE Hub (brouillon)',
+      user: 'Système',
+    };
+    await firestore.collection('quotes').doc(quoteId).update({
+      status: 'sent_to_mbe_hub',
+      mbeTrackingId: result.mbeTrackingId,
+      sentToMbeHubAt: Timestamp.now(),
+      timeline: [...existingTimeline, timelineEvent],
+      updatedAt: Timestamp.now(),
+    });
+
+    console.log(`[API] ✅ Expédition brouillon MBE créée: ${result.mbeTrackingId} pour devis ${quoteId}`);
+    return res.json({ success: true, mbeTrackingId: result.mbeTrackingId });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/create-draft:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/send-quote - (Legacy) Envoi devis vers MBE Hub - conservé pour compatibilité
 // TODO: Adapter l'URL et le payload dès que la documentation API MBE Hub sera disponible
 app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
@@ -11123,9 +11241,9 @@ app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
     if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
       return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
     }
-    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
-    if (!apiKey) {
-      return res.status(400).json({ error: 'Configurez votre clé API MBE Hub dans Paramètres' });
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub (username + mot de passe) dans Paramètres' });
     }
     const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
     if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });

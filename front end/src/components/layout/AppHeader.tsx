@@ -93,6 +93,7 @@ export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
       collected: 'Collecté',
       preparation: 'Préparation',
       awaiting_shipment: 'Attente expédition',
+      sent_to_mbe_hub: 'Envoyé MBE Hub',
       shipped: 'Expédié',
       completed: 'Terminé',
     };

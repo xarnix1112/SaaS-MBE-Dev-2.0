@@ -14,6 +14,7 @@ import {
   ChevronLeft,
   ChevronRight,
   XCircle,
+  CheckCircle2,
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
@@ -27,6 +28,7 @@ const navigation = [
   { name: 'Collectes', href: '/collections', icon: Truck },
   { name: 'Préparation', href: '/preparation', icon: Package },
   { name: 'Expéditions', href: '/shipments', icon: Send },
+  { name: 'Expédiés', href: '/quotes/shipped', icon: CheckCircle2 },
   { name: 'Pipeline', href: '/pipeline', icon: Kanban },
 ];
 

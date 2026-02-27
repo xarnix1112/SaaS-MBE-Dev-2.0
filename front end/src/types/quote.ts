@@ -12,6 +12,7 @@ export type QuoteStatus =
   | 'collected'
   | 'preparation'
   | 'awaiting_shipment'
+  | 'sent_to_mbe_hub'
   | 'shipped'
   | 'completed';
 
@@ -232,6 +233,10 @@ export interface Quote {
   totalWeight?: number; // Poids total en kg
   totalVolume?: number; // Volume total en m³
   shippingCost?: number; // Coût d'expédition
+  /** ID suivi MBE après envoi vers le Hub (brouillon) */
+  mbeTrackingId?: string;
+  /** Date d'envoi vers MBE Hub */
+  sentToMbeHubAt?: Date | { toDate: () => Date } | null;
 }
 
 export interface TimelineEvent {

@@ -39,6 +39,9 @@ export default function Pipeline() {
       if (status === 'new') {
         return STATUS_NOUVEAUX.has(s) || s === '' || s == null;
       }
+      if (status === 'shipped') {
+        return s === 'shipped' || s === 'sent_to_mbe_hub';
+      }
       return s === status;
     });
   };
