@@ -2,7 +2,7 @@
  * Types TypeScript pour Stripe Connect
  */
 
-export type PaiementType = "PRINCIPAL" | "SURCOUT";
+export type PaiementType = "PRINCIPAL" | "PRINCIPAL_STANDARD" | "PRINCIPAL_EXPRESS" | "SURCOUT";
 
 export type PaiementStatus = "PENDING" | "PAID" | "FAILED" | "CANCELLED";
 

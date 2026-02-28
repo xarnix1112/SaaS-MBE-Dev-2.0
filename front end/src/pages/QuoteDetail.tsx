@@ -2927,12 +2927,43 @@ export default function QuoteDetail() {
                                           variant="outline"
                                           size="sm"
                                           className="h-6 text-xs"
+                                          disabled={isCalculatingMbeShipping}
                                           onClick={async () => {
                                             const p = mbeShippingRates!.standard!.price;
-                                            setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
-                                            await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
-                                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
-                                            toast.success(`Prix Standard appliqué: ${p.toFixed(2)}€`);
+                                            setIsCalculatingMbeShipping(true);
+                                            try {
+                                              const pkg = quote.options?.packagingPrice ?? quote.auctionSheet?.recommendedCarton?.price ?? 0;
+                                              if (pkg <= 0) {
+                                                toast.error('Prix d\'emballage manquant. Renseignez un carton pour ce devis.');
+                                                return;
+                                              }
+                                              setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
+                                              await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
+                                              const insuranceAmount = computeInsuranceAmount(quote.lot?.value || 0, quote.options?.insurance, quote.options?.insuranceAmount);
+                                              const total = pkg + p + insuranceAmount;
+                                              const paiements = await getPaiements(quote.id);
+                                              const principalTypes = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
+                                              for (const paiement of paiements) {
+                                                if (principalTypes.includes((paiement as { type?: string }).type || '') && paiement.status !== 'PAID' && paiement.status !== 'CANCELLED') {
+                                                  await cancelPaiement(paiement.id);
+                                                }
+                                              }
+                                              await createPaiement(quote.id, {
+                                                amount: total,
+                                                type: 'PRINCIPAL_STANDARD',
+                                                description: `Devis ${quote.reference || quote.id} - Standard`,
+                                              });
+                                              await setDoc(doc(db, 'quotes', quote.id), { totalAmount: total, updatedAt: Timestamp.now() }, { merge: true });
+                                              setQuote(prev => prev ? { ...prev, totalAmount: total } : prev);
+                                              queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                                              setPaiementsRefreshKey((k) => k + 1);
+                                              toast.success(`Prix Standard appliqué et lien de paiement créé (${total.toFixed(2)}€)`);
+                                            } catch (e) {
+                                              console.error('[QuoteDetail] Erreur appliquer Standard + créer lien:', e);
+                                              toast.error((e as Error)?.message || 'Erreur lors de la création du lien');
+                                            } finally {
+                                              setIsCalculatingMbeShipping(false);
+                                            }
                                           }}
                                         >
                                           Appliquer
@@ -2949,12 +2980,43 @@ export default function QuoteDetail() {
                                           variant="outline"
                                           size="sm"
                                           className="h-6 text-xs"
+                                          disabled={isCalculatingMbeShipping}
                                           onClick={async () => {
                                             const p = mbeShippingRates!.express!.price;
-                                            setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
-                                            await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
-                                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
-                                            toast.success(`Prix Express appliqué: ${p.toFixed(2)}€`);
+                                            setIsCalculatingMbeShipping(true);
+                                            try {
+                                              const pkg = quote.options?.packagingPrice ?? quote.auctionSheet?.recommendedCarton?.price ?? 0;
+                                              if (pkg <= 0) {
+                                                toast.error('Prix d\'emballage manquant. Renseignez un carton pour ce devis.');
+                                                return;
+                                              }
+                                              setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
+                                              await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
+                                              const insuranceAmount = computeInsuranceAmount(quote.lot?.value || 0, quote.options?.insurance, quote.options?.insuranceAmount);
+                                              const total = pkg + p + insuranceAmount;
+                                              const paiements = await getPaiements(quote.id);
+                                              const principalTypes = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
+                                              for (const paiement of paiements) {
+                                                if (principalTypes.includes((paiement as { type?: string }).type || '') && paiement.status !== 'PAID' && paiement.status !== 'CANCELLED') {
+                                                  await cancelPaiement(paiement.id);
+                                                }
+                                              }
+                                              await createPaiement(quote.id, {
+                                                amount: total,
+                                                type: 'PRINCIPAL_EXPRESS',
+                                                description: `Devis ${quote.reference || quote.id} - Express`,
+                                              });
+                                              await setDoc(doc(db, 'quotes', quote.id), { totalAmount: total, updatedAt: Timestamp.now() }, { merge: true });
+                                              setQuote(prev => prev ? { ...prev, totalAmount: total } : prev);
+                                              queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                                              setPaiementsRefreshKey((k) => k + 1);
+                                              toast.success(`Prix Express appliqué et lien de paiement créé (${total.toFixed(2)}€)`);
+                                            } catch (e) {
+                                              console.error('[QuoteDetail] Erreur appliquer Express + créer lien:', e);
+                                              toast.error((e as Error)?.message || 'Erreur lors de la création du lien');
+                                            } finally {
+                                              setIsCalculatingMbeShipping(false);
+                                            }
                                           }}
                                         >
                                           Appliquer
