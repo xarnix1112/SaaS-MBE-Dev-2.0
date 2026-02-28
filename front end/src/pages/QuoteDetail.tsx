@@ -60,7 +60,6 @@ import {
   RefreshCw,
   CheckCircle2,
   Loader2,
-  Globe,
   Banknote,
   RotateCcw,
 } from 'lucide-react';
@@ -1461,32 +1460,6 @@ export default function QuoteDetail() {
     } catch (error) {
       console.error('[Surcharge Email] Erreur:', error);
       toast.error('Erreur lors de l\'envoi de l\'email surcoût');
-    }
-  };
-
-  const [isSendingToMbehub, setIsSendingToMbehub] = useState(false);
-  const handleSendToMbeHub = async () => {
-    if (!quote?.id) return;
-    setIsSendingToMbehub(true);
-    try {
-      const res = await authenticatedFetch('/api/mbehub/send-quote', {
-        method: 'POST',
-        body: JSON.stringify({ quoteId: quote.id }),
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) {
-        toast.error(data.error || data.message || 'Erreur lors de l\'envoi vers MBE Hub');
-        return;
-      }
-      if (data.success === false && data.message) {
-        toast.info(data.message);
-      } else {
-        toast.success('Devis envoyé vers MBE Hub');
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Erreur');
-    } finally {
-      setIsSendingToMbehub(false);
     }
   };
 
@@ -3310,21 +3283,6 @@ export default function QuoteDetail() {
                   >
                     {isUnmarkingPaid ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
                     Annuler paiement
-                  </Button>
-                )}
-                {showMbehubButton && (
-                  <Button
-                    variant="outline"
-                    className="w-full justify-start gap-2"
-                    onClick={handleSendToMbeHub}
-                    disabled={isSendingToMbehub}
-                  >
-                    {isSendingToMbehub ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Globe className="w-4 h-4" />
-                    )}
-                    Envoyer vers MBE Hub
                   </Button>
                 )}
               </CardContent>
