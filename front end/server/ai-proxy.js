@@ -5338,8 +5338,6 @@ L'équipe MBE
 
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email surcoût via Resend à:', clientEmail);
-    // Récupérer saasAccountId depuis le quote ou req.saasAccountId
-    const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
       subject: emailSubject,
