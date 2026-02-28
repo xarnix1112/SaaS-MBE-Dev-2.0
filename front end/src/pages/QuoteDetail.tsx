@@ -19,6 +19,13 @@ import {
   DialogDescription,
 } from '@/components/ui/dialog';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
@@ -170,6 +177,7 @@ export default function QuoteDetail() {
   const [lastSaveTime, setLastSaveTime] = useState<number | null>(null);
   const [surchargePaiements, setSurchargePaiements] = useState<Paiement[]>([]);
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
+  const [isSendingSurchargeEmail, setIsSendingSurchargeEmail] = useState(false);
   const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
   const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
   const [isRefusingQuote, setIsRefusingQuote] = useState(false);
@@ -185,6 +193,10 @@ export default function QuoteDetail() {
   } | null>(null);
   const [isCalculatingMbeShipping, setIsCalculatingMbeShipping] = useState(false);
   const [isSendQuoteDialogOpen, setIsSendQuoteDialogOpen] = useState(false);
+  const [isSurchargeDialogOpen, setIsSurchargeDialogOpen] = useState(false);
+  const [selectedSurchargeForDialog, setSelectedSurchargeForDialog] = useState<Paiement | null>(null);
+  const [surchargeReason, setSurchargeReason] = useState<string>('dimensions_reelles');
+  const [surchargeReasonOther, setSurchargeReasonOther] = useState('');
   const [isSendingQuote, setIsSendingQuote] = useState(false);
 
   // Réinitialiser les tarifs MBE quand on change de devis
@@ -267,6 +279,16 @@ export default function QuoteDetail() {
     { value: 'client_a_paye_concurrent', label: 'Client a payé un concurrent' },
     { value: 'plus_interesse', label: 'Plus intéressé' },
     { value: 'pas_de_reponse', label: 'Pas de réponse / Abandonné' },
+    { value: 'autre', label: 'Autre' },
+  ];
+
+  const SURCHARGE_REASONS: { value: string; label: string }[] = [
+    { value: 'dimensions_reelles', label: 'Dimensions réelles supérieures aux estimations' },
+    { value: 'poids_reel', label: 'Poids réel supérieur aux estimations' },
+    { value: 'emballage_supplementaire', label: 'Emballage supplémentaire' },
+    { value: 'frais_douane', label: 'Frais de douane / dédouanement' },
+    { value: 'assurance_complementaire', label: 'Assurance complémentaire' },
+    { value: 'livraison_express', label: 'Livraison express' },
     { value: 'autre', label: 'Autre' },
   ];
 
@@ -449,9 +471,10 @@ export default function QuoteDetail() {
       try {
         setIsLoadingSurcharges(true);
         const paiements = await getPaiements(id);
-        // Filtrer uniquement les surcoûts non payés
+        // Filtrer uniquement les surcoûts non payés avec lien de paiement valide
         const surcharges = paiements.filter(
           (p) => p.type === 'SURCOUT' && p.status === 'PENDING'
+            && !!((p as Record<string, unknown>).url || p.stripeCheckoutUrl)
         );
         setSurchargePaiements(surcharges);
       } catch (error) {
@@ -463,7 +486,7 @@ export default function QuoteDetail() {
     };
 
     loadSurchargePaiements();
-  }, [id]);
+  }, [id, paiementsRefreshKey]);
 
   // Charger si le paiement principal est payé quand on ouvre le popup de modification
   useEffect(() => {
@@ -1337,13 +1360,15 @@ export default function QuoteDetail() {
     }
   };
 
-  const handleSendSurchargeEmail = async (surchargePaiement: Paiement) => {
+  const handleSendSurchargeEmail = async (surchargePaiement: Paiement, reasonDescription?: string) => {
     if (!quote) return;
+    setIsSendingSurchargeEmail(true);
     
     // Validation de l'email client
     const clientEmailRaw = quote.client?.email || quote.delivery?.contact?.email;
     if (!clientEmailRaw) {
       toast.error('Email client manquant');
+      setIsSendingSurchargeEmail(false);
       return;
     }
 
@@ -1351,6 +1376,7 @@ export default function QuoteDetail() {
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(clientEmail)) {
       toast.error(`Format d'email invalide: ${clientEmail}`);
+      setIsSendingSurchargeEmail(false);
       return;
     }
 
@@ -1367,9 +1393,11 @@ export default function QuoteDetail() {
       
       if (!paymentUrl) {
         toast.error('URL de paiement manquante pour ce surcoût');
+        setIsSendingSurchargeEmail(false);
         return;
       }
       
+      const description = (reasonDescription && reasonDescription.trim()) || surchargePaiement.description || 'Surcoût supplémentaire';
       const response = await authenticatedFetch(apiUrl, {
         method: 'POST',
         body: JSON.stringify({ 
@@ -1377,7 +1405,7 @@ export default function QuoteDetail() {
           surchargePaiement: {
             id: surchargePaiement.id,
             amount: surchargePaiement.amount,
-            description: surchargePaiement.description || '',
+            description,
             url: paymentUrl,
           }
         }),
@@ -1412,6 +1440,7 @@ export default function QuoteDetail() {
           toast.error(error.error || `Erreur serveur (${response.status})`);
         }
         console.error('[Surcharge Email] Erreur serveur:', error);
+        setIsSendingSurchargeEmail(false);
         return;
       }
 
@@ -1462,6 +1491,8 @@ export default function QuoteDetail() {
     } catch (error) {
       console.error('[Surcharge Email] Erreur:', error);
       toast.error('Erreur lors de l\'envoi de l\'email surcoût');
+    } finally {
+      setIsSendingSurchargeEmail(false);
     }
   };
 
@@ -3281,7 +3312,12 @@ export default function QuoteDetail() {
                     key={surcharge.id}
                     variant="outline"
                     className="w-full justify-start gap-2"
-                    onClick={() => handleSendSurchargeEmail(surcharge)}
+                    onClick={() => {
+                      setSelectedSurchargeForDialog(surcharge);
+                      setSurchargeReason('dimensions_reelles');
+                      setSurchargeReasonOther('');
+                      setIsSurchargeDialogOpen(true);
+                    }}
                     disabled={isLoadingSurcharges}
                   >
                     <Send className="w-4 h-4" />
@@ -3536,6 +3572,79 @@ export default function QuoteDetail() {
               <Button onClick={handleRefusalDialogSubmit} disabled={isRefusingQuote}>
                 {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
                 Confirmer
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialogue envoyer surcoût - sélection de la raison */}
+      <Dialog open={isSurchargeDialogOpen} onOpenChange={(open) => {
+        setIsSurchargeDialogOpen(open);
+        if (!open) setSelectedSurchargeForDialog(null);
+      }}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Envoyer le surcoût</DialogTitle>
+            <DialogDescription>
+              {selectedSurchargeForDialog
+                ? `Surcoût de ${selectedSurchargeForDialog.amount.toFixed(2)} € – Indiquez la raison du surcoût pour l'email au client.`
+                : 'Sélectionnez la raison du surcoût.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm font-medium">Raison du surcoût</Label>
+              <Select value={surchargeReason} onValueChange={setSurchargeReason}>
+                <SelectTrigger className="mt-2">
+                  <SelectValue placeholder="Choisir une raison" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SURCHARGE_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {surchargeReason === 'autre' && (
+              <div>
+                <Label htmlFor="surcharge-reason-other" className="text-sm font-medium">
+                  Précisez la raison
+                </Label>
+                <Input
+                  id="surcharge-reason-other"
+                  placeholder="Ex. : modification d'adresse..."
+                  value={surchargeReasonOther}
+                  onChange={(e) => setSurchargeReasonOther(e.target.value)}
+                  className="mt-2"
+                />
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setIsSurchargeDialogOpen(false)}>
+                Annuler
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!selectedSurchargeForDialog) return;
+                  const description = surchargeReason === 'autre'
+                    ? surchargeReasonOther.trim()
+                    : SURCHARGE_REASONS.find((r) => r.value === surchargeReason)?.label ?? '';
+                  if (surchargeReason === 'autre' && !description) {
+                    toast.error('Veuillez préciser la raison du surcoût');
+                    return;
+                  }
+                  await handleSendSurchargeEmail(selectedSurchargeForDialog, description || undefined);
+                  setIsSurchargeDialogOpen(false);
+                  setSelectedSurchargeForDialog(null);
+                  setPaiementsRefreshKey((k) => k + 1);
+                }}
+                disabled={isSendingSurchargeEmail}
+              >
+                {isSendingSurchargeEmail ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                Envoyer
               </Button>
             </div>
           </div>

@@ -5263,31 +5263,51 @@ app.post('/api/send-surcharge-email', async (req, res) => {
     const reference = quote.reference || 'N/A';
     const surchargeAmount = surchargePaiement.amount;
     const surchargeUrl = surchargePaiement.url;
-    
-    // Améliorer la description du surcoût pour la rendre plus soutenue et compréhensible
-    let enhancedDescription = surchargePaiement.description || 'Surcoût supplémentaire';
-    
-    // Si la description est courte ou générique, l'améliorer
-    if (enhancedDescription.length < 20 || 
-        enhancedDescription.toLowerCase().includes('surcoût') || 
-        enhancedDescription.toLowerCase().includes('supplément')) {
-      // Créer une description plus professionnelle
-      enhancedDescription = `Surcoût supplémentaire pour le devis ${reference}`;
-      
-      // Si on a une description originale, essayer de l'enrichir
-      if (surchargePaiement.description && surchargePaiement.description.length > 0) {
-        const originalDesc = surchargePaiement.description.trim();
-        // Si la description originale contient des détails, les préserver
-        if (originalDesc.length > 10 && !originalDesc.toLowerCase().match(/^(surcoût|supplément|frais)/i)) {
-          enhancedDescription = `${originalDesc.charAt(0).toUpperCase() + originalDesc.slice(1)} - Surcoût pour le devis ${reference}`;
-        } else {
-          enhancedDescription = `Surcoût supplémentaire : ${originalDesc}`;
+    const rawDescription = surchargePaiement.description || 'Surcoût supplémentaire';
+    const enhancedDescription = rawDescription.trim().length > 0
+      ? rawDescription.trim().charAt(0).toUpperCase() + rawDescription.trim().slice(1)
+      : 'Surcoût supplémentaire';
+
+    const saasAccountId = quote.saasAccountId || req.saasAccountId;
+    let mbeName = quote._saasCommercialName || 'MBE';
+    if (firestore && saasAccountId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        if (saasDoc.exists && saasDoc.data().commercialName) {
+          mbeName = saasDoc.data().commercialName;
         }
+      } catch (e) {
+        console.warn('[Surcharge Email] Impossible de charger commercialName:', e.message);
       }
-    } else {
-      // Description déjà détaillée, capitaliser la première lettre
-      enhancedDescription = enhancedDescription.charAt(0).toUpperCase() + enhancedDescription.slice(1);
     }
+
+    const templateValues = {
+      clientName,
+      reference,
+      description: enhancedDescription,
+      amount: surchargeAmount.toFixed(2),
+      lienPaiementSecurise: surchargeUrl,
+      paymentUrl: surchargeUrl,
+      mbeName,
+    };
+    const emailTemplates = firestore && saasAccountId
+      ? (await firestore.collection('saasAccounts').doc(saasAccountId).get()).data()?.emailTemplates
+      : null;
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates.surcharge || {};
+    const defaultSurcharge = DEFAULT_TEMPLATES_EXTENDED.surcharge || {};
+    const bodyHtmlRaw = t.bodyHtml || defaultSurcharge.bodyHtml || '';
+    const renderedBody = replacePlaceholdersExtended(bodyHtmlRaw, templateValues);
+    const signatureRaw = t.signature || defaultSurcharge.signature || 'Cordialement,<br><strong>{{mbeName}}</strong>';
+    const renderedSignature = replacePlaceholdersExtended(signatureRaw, templateValues).replace(/\n/g, '<br>');
+    const htmlContent = buildEmailHtmlFromTemplate(
+      { ...t, bannerColor: t.bannerColor || '#2563eb', bannerTitle: t.bannerTitle || defaultSurcharge.bannerTitle },
+      renderedBody,
+      renderedSignature,
+      templateValues
+    );
+    const subjectRaw = t.subject || defaultSurcharge.subject || 'Surcoût supplémentaire - {{reference}}';
+    const emailSubject = replacePlaceholdersExtended(subjectRaw, templateValues);
 
     // Texte brut
     const textContent = `
@@ -5316,72 +5336,13 @@ Cordialement,
 L'équipe MBE
     `.trim();
 
-    // HTML (basé sur la structure du mail principal)
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .section { margin-bottom: 20px; }
-    .label { font-weight: bold; color: #6b7280; font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
-    .value { font-size: 16px; color: #111827; margin-bottom: 15px; }
-    .surcharge-box { background: #fef3c7; padding: 20px; border-radius: 8px; border: 2px solid #f59e0b; margin: 20px 0; }
-    .total { background: #fef3c7; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; color: #92400e; text-align: center; margin-top: 20px; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1 style="margin:0;">💳 Surcoût Supplémentaire</h1>
-  </div>
-  <div class="content">
-    <p>Bonjour <strong>${clientName}</strong>,</p>
-    <p>Nous vous contactons concernant votre devis de transport <strong>${reference}</strong>.</p>
-    
-    <div class="surcharge-box">
-      <div class="label" style="color: #92400e; font-size: 14px; margin-bottom: 10px;">SURCOÛT SUPPLÉMENTAIRE</div>
-      <div class="value" style="color: #111827; font-size: 15px; line-height: 1.8;">
-        ${enhancedDescription}
-      </div>
-    </div>
-
-    <div class="total" style="margin-top: 25px;">
-      💰 Montant du surcoût : ${surchargeAmount.toFixed(2)}€
-    </div>
-
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid #2563eb;">
-      <p style="margin: 0 0 15px 0; font-size: 14px; color: #1e40af; font-weight: 600;">💳 Procéder au paiement du surcoût</p>
-      <a href="${surchargeUrl}" 
-         style="display: inline-block; background: #2563eb; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); transition: background 0.2s; letter-spacing: 0.5px;">
-        Payer ${surchargeAmount.toFixed(2)}€ maintenant
-      </a>
-      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
-        Ou copiez ce lien dans votre navigateur :<br>
-        <a href="${surchargeUrl}" style="color: #2563eb; word-break: break-all; text-decoration: underline;">${surchargeUrl}</a>
-      </p>
-    </div>
-
-    <p style="margin-top: 30px; color: #6b7280;">Pour toute question concernant ce surcoût, n'hésitez pas à nous contacter.</p>
-  </div>
-  <div class="footer">
-    Cordialement,<br>
-    <strong>L'équipe MBE</strong>
-  </div>
-</body>
-</html>
-    `.trim();
-
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email surcoût via Resend à:', clientEmail);
     // Récupérer saasAccountId depuis le quote ou req.saasAccountId
     const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
-      subject: `Surcoût supplémentaire - Devis ${reference}`,
+      subject: emailSubject,
       text: textContent,
       html: htmlContent,
       saasAccountId,
@@ -5401,7 +5362,7 @@ L'équipe MBE
           source: result.source || 'RESEND',
           from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
-          subject: `Surcoût supplémentaire - Devis ${reference}`,
+          subject: emailSubject,
           bodyText: textContent,
           bodyHtml: htmlContent,
           messageId: result.id || result.messageId || null,

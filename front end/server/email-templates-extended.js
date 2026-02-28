@@ -174,7 +174,11 @@ Nous vous contactons concernant votre devis de transport {{reference}}.
 <strong>SURCOÛT SUPPLÉMENTAIRE</strong><br>
 {{description}}
 
-<strong>Montant du surcoût : {{amount}} €</strong>`,
+<strong>Montant du surcoût : {{amount}} €</strong>
+
+<p style="margin-top:20px;">Procéder au paiement du surcoût :</p>
+<p style="text-align:center;margin:20px 0;"><a href="{{lienPaiementSecurise}}" style="display:inline-block;background:#2563eb;color:white !important;padding:16px 40px;text-decoration:none;border-radius:8px;font-weight:700;">Payer {{amount}} € maintenant</a></p>
+<p style="font-size:12px;color:#6b7280;">Ou copiez ce lien dans votre navigateur : {{lienPaiementSecurise}}</p>`,
     signature: 'Cordialement,<br><strong>{{mbeName}}</strong>',
     bannerColor: '#2563eb',
     buttonColor: '#2563eb',
