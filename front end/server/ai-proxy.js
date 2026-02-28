@@ -84,6 +84,7 @@ import {
   getTemplatesExtendedForAccount,
   replacePlaceholdersExtended,
   buildBodyHtmlFromSections,
+  buildEmailHtmlFromTemplate as buildEmailHtmlSimple,
   EMAIL_TYPES_EXTENDED,
   EMAIL_TYPE_LABELS_EXTENDED,
   PLACEHOLDERS_EXTENDED,
@@ -5300,7 +5301,9 @@ app.post('/api/send-surcharge-email', async (req, res) => {
     const renderedBody = replacePlaceholdersExtended(bodyHtmlRaw, templateValues);
     const signatureRaw = t.signature || defaultSurcharge.signature || 'Cordialement,<br><strong>{{mbeName}}</strong>';
     const renderedSignature = replacePlaceholdersExtended(signatureRaw, templateValues).replace(/\n/g, '<br>');
-    const htmlContent = buildEmailHtmlFromTemplate(
+    // Utiliser buildEmailHtmlSimple (sans injection de bouton) car le bodyHtml du template
+    // contient déjà la section paiement (bouton + lien)
+    const htmlContent = buildEmailHtmlSimple(
       { ...t, bannerColor: t.bannerColor || '#2563eb', bannerTitle: t.bannerTitle || defaultSurcharge.bannerTitle },
       renderedBody,
       renderedSignature,
