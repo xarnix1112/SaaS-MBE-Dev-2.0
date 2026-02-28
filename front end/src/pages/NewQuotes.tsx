@@ -21,7 +21,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 
-// Statuts des devis considérés comme "ayant atteint ou dépassé en attente de paiement"
+// Statuts des devis exclus de la page "Nouveaux devis"
 // Tout ce qui n'est pas dans cette liste = nouveau devis (visible dans cet onglet)
 const STATUS_APRES_ATTENTE_PAIEMENT = [
   'awaiting_payment',
@@ -30,6 +30,7 @@ const STATUS_APRES_ATTENTE_PAIEMENT = [
   'collected',
   'preparation',
   'awaiting_shipment',
+  'sent_to_mbe_hub',  // Envoyé vers MBE Hub → visible dans Expéditions / Expédiés
   'shipped',
   'completed',
 ] as const;
