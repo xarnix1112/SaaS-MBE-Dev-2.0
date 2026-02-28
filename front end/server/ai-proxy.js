@@ -11382,7 +11382,7 @@ app.post('/api/mbehub/quote-shipping-rates', requireAuth, async (req, res) => {
         zipCode: String(deliveryAddr.zip || '').trim(),
         city: String(deliveryAddr.city || '').trim(),
         state: String(deliveryAddr.state || '').trim().slice(0, 2),
-        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+        country: mapCountryToCode(deliveryAddr.country || 'FR'),
       };
     } else if (clientAddr) {
       const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
@@ -11392,7 +11392,7 @@ app.post('/api/mbehub/quote-shipping-rates', requireAuth, async (req, res) => {
         zipCode: zipMatch || '',
         city: parts.length >= 2 ? parts[parts.length - 2] : '',
         state: '',
-        country: (countryMatch || 'FR').toString().toUpperCase().slice(0, 2),
+        country: mapCountryToCode(countryMatch || 'FR'),
       };
     }
     if (!destination.country || (!destination.zipCode && !destination.city)) {
@@ -11481,7 +11481,7 @@ app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
         zipCode: String(deliveryAddr.zip || '').trim(),
         city: String(deliveryAddr.city || '').trim(),
         state: String(deliveryAddr.state || '').trim().slice(0, 2),
-        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+        country: mapCountryToCode(deliveryAddr.country || 'FR'),
       };
     } else if (clientAddr) {
       const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
