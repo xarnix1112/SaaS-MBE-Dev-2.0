@@ -22,6 +22,7 @@ import { Resend } from "resend";
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
 import { getAuth } from "firebase-admin/auth";
+import { getStorage } from "firebase-admin/storage";
 import { google } from "googleapis";
 import * as Sentry from "@sentry/node";
 import {
@@ -79,6 +80,20 @@ import {
   PLACEHOLDERS,
   LIMITS,
 } from "./email-templates.js";
+import {
+  getTemplatesExtendedForAccount,
+  replacePlaceholdersExtended,
+  buildBodyHtmlFromSections,
+  EMAIL_TYPES_EXTENDED,
+  EMAIL_TYPE_LABELS_EXTENDED,
+  PLACEHOLDERS_EXTENDED,
+  DEFAULT_TEMPLATES_EXTENDED,
+} from "./email-templates-extended.js";
+import {
+  createBilanSpreadsheet,
+  exportAllQuotesToBilan,
+  syncQuoteToBilanSheet,
+} from "./bilan-google-sheet.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -144,9 +159,14 @@ const __dirname = dirname(__filename);
 // Charger les variables d'environnement depuis le répertoire parent (front end/)
 // car .env.local est dans front end/, pas dans front end/server/
 const envLocalPath = path.resolve(__dirname, '..', '.env.local');
+const envDevLocalPath = path.resolve(__dirname, '..', '.env.development.local');
 const envPath = path.resolve(__dirname, '..', '.env');
 dotenv.config({ path: envPath });
 dotenv.config({ path: envLocalPath, override: true });
+if ((!process.env.NODE_ENV || process.env.NODE_ENV === 'development') && fs.existsSync(envDevLocalPath)) {
+  dotenv.config({ path: envDevLocalPath, override: true });
+  console.log('[Config] .env.development.local chargé');
+}
 
 console.log('[Config] Chargement .env depuis:', { 
   env: envPath, 
@@ -771,17 +791,25 @@ try {
     }
   }
 
+  const effectiveProjectId = serviceAccount?.project_id || firebaseConfig.projectId;
+  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET
+    || process.env.VITE_FIREBASE_STORAGE_BUCKET
+    || `${effectiveProjectId}.firebasestorage.app`
+    || `${effectiveProjectId}.appspot.com`;
+
   if (serviceAccount) {
     console.log("[ai-proxy] 🔧 Initialisation de Firebase Admin avec credentials...");
     initializeApp({
       credential: cert(serviceAccount),
-      projectId: firebaseConfig.projectId,
+      projectId: effectiveProjectId,
+      storageBucket,
     });
-    console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials");
+    console.log("[ai-proxy] ✅ Firebase App initialisée avec credentials, storageBucket:", storageBucket);
   } else {
     console.warn("[ai-proxy] ⚠️  Aucun fichier ni variables FIREBASE_* trouvés, utilisation des Application Default Credentials");
     initializeApp({
       projectId: firebaseConfig.projectId,
+      storageBucket,
     });
   }
 
@@ -4856,21 +4884,41 @@ app.post('/api/send-quote-email', async (req, res) => {
       return new Date(link.createdAt);
     };
     
-    // Filtrer et trier les liens de paiement (accepter active, pending, ou sans status)
-    const activePaymentLink = paymentLinksToUse
-      .filter(link => {
-        if (!link) return false;
-        const status = link.status;
-        // Accepter active, pending, ou sans status (undefined/null)
-        return status === 'active' || status === 'pending' || !status;
-      })
-      .sort((a, b) => {
-        const dateA = getCreatedAtDate(a);
-        const dateB = getCreatedAtDate(b);
-        return dateB - dateA; // Plus récent en premier
-      })[0];
-    
+    // Filtrer les liens actifs (active, pending ou sans status)
+    const isActive = (link) => {
+      if (!link) return false;
+      const s = link.status;
+      return s === 'active' || s === 'pending' || !s;
+    };
+    const activeLinks = paymentLinksToUse.filter(isActive);
+
+    // Détecter mode 2 liens (Standard + Express) pour les plans Pro/Ultra
+    const standardLink = activeLinks.find((l) => l.type === 'PRINCIPAL_STANDARD');
+    const expressLink = activeLinks.find((l) => l.type === 'PRINCIPAL_EXPRESS');
+    const hasTwoLinks = standardLink && expressLink;
+
+    // Lien unique (fallback) : plus récent actif
+    const activePaymentLink = activeLinks.sort((a, b) => getCreatedAtDate(b) - getCreatedAtDate(a))[0];
     const paymentUrl = activePaymentLink?.url || null;
+
+    // Construire la section paiement pour le template (lien unique ou 2 liens)
+    // Texte brut pour compatibilité bodySections (escapeHtml) et bodyHtml
+    let sectionPaiement;
+    if (hasTwoLinks) {
+      const stdUrl = standardLink?.url || '';
+      const expUrl = expressLink?.url || '';
+      const stdPrice = (standardLink?.amount ?? 0).toFixed(2);
+      const expPrice = (expressLink?.amount ?? 0).toFixed(2);
+      sectionPaiement = `Choisissez votre mode d'expédition :
+
+• Standard (${stdPrice} €) : ${stdUrl}
+
+• Express (${expPrice} €) : ${expUrl}
+
+Dès qu'un des deux liens est payé, l'autre est automatiquement désactivé.`;
+    } else {
+      sectionPaiement = paymentUrl ? `👉 ${paymentUrl}` : '';
+    }
     
     console.log('[Email] Active payment link:', activePaymentLink ? 'Trouvé' : 'Non trouvé');
     if (activePaymentLink) {
@@ -4893,6 +4941,61 @@ app.post('/api/send-quote-email', async (req, res) => {
     // Utiliser le montant du lien de paiement s'il existe, sinon le calculatedTotal
     const finalTotal = activePaymentLink?.amount || calculatedTotal;
     console.log('[Email] Final total:', finalTotal, '(from:', activePaymentLink ? 'payment link' : 'calculated', ')');
+
+    // Charger le template personnalisable (quote_send)
+    const saasAccountId = quote.saasAccountId || req.saasAccountId;
+    let mbeName = quote._saasCommercialName || 'MBE';
+    if (firestore && saasAccountId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        if (saasDoc.exists && saasDoc.data().commercialName) {
+          mbeName = saasDoc.data().commercialName;
+        }
+      } catch (e) {
+        console.warn('[Email] Impossible de charger commercialName:', e.message);
+      }
+    }
+    const templateValues = {
+      bordereauNum: quote.auctionSheet?.bordereauNumber || 'N/A',
+      reference,
+      nomSalleVentes: auctionHouse,
+      prixEmballage: packagingPrice.toFixed(2),
+      prixTransport: shippingPrice.toFixed(2),
+      prixAssurance: insuranceEnabled ? `${finalInsuranceAmount.toFixed(2)} €` : 'NON (Si vous souhaitez une assurance, merci de nous le signaler par retour de mail)',
+      prixTotal: finalTotal.toFixed(2),
+      sectionPaiement,
+      lienPaiementSecurise: paymentUrl || '',
+      paymentUrl: paymentUrl || '',
+      adresseDestinataire: [
+        quote.delivery?.address?.line1,
+        quote.delivery?.address?.line2,
+        quote.delivery?.address?.zip,
+        quote.delivery?.address?.city,
+        quote.delivery?.address?.country,
+      ].filter(Boolean).join(', ') || deliveryAddress,
+      clientName,
+      date: new Date().toLocaleDateString('fr-FR'),
+      lotNumber,
+      lotDescription,
+      mbeName,
+      amount: finalTotal.toFixed(2),
+    };
+    const emailTemplates = firestore && saasAccountId
+      ? (await firestore.collection('saasAccounts').doc(saasAccountId).get()).data()?.emailTemplates
+      : null;
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates.quote_send || {};
+    const renderedBody = Array.isArray(t.bodySections) && t.bodySections.length > 0
+      ? buildBodyHtmlFromSections(t.bodySections, templateValues)
+      : replacePlaceholdersExtended(t.bodyHtml || DEFAULT_TEMPLATES_EXTENDED.quote_send.bodyHtml, templateValues);
+    const renderedSignature = replacePlaceholdersExtended(t.signature || DEFAULT_TEMPLATES_EXTENDED.quote_send.signature, templateValues).replace(/\n/g, '<br>');
+    const htmlContent = buildEmailHtmlFromTemplate(
+      { ...t, bannerColor: t.bannerColor || '#2563eb', buttonColor: t.buttonColor || '#2563eb', fontFamily: t.fontFamily || 'Arial, sans-serif', fontSize: t.fontSize || 14 },
+      renderedBody,
+      renderedSignature,
+      { ...templateValues, lienPaiementSecurise: paymentUrl || '' }
+    );
+    const emailSubject = replacePlaceholdersExtended(t.subject || DEFAULT_TEMPLATES_EXTENDED.quote_send.subject, templateValues);
 
     // Texte brut
     const textContent = `
@@ -4931,10 +5034,20 @@ Assurance : ${insuranceEnabled ? 'Oui' : 'Non'}${insuranceEnabled ? `
 💰 MONTANT TOTAL : ${finalTotal.toFixed(2)}€
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-${paymentUrl ? `🔗 LIEN DE PAIEMENT :
+${(hasTwoLinks && standardLink?.url && expressLink?.url)
+            ? `🔗 LIENS DE PAIEMENT (choisissez Standard ou Express) :
+
+• Standard (${(standardLink?.amount ?? 0).toFixed(2)} €) : ${standardLink?.url || ''}
+
+• Express (${(expressLink?.amount ?? 0).toFixed(2)} €) : ${expressLink?.url || ''}
+
+Dès qu'un des deux liens est payé, l'autre est désactivé.`
+            : paymentUrl
+              ? `🔗 LIEN DE PAIEMENT :
 ${paymentUrl}
 
-Cliquez sur le lien ci-dessus pour procéder au paiement.` : ''}
+Cliquez sur le lien ci-dessus pour procéder au paiement.`
+              : ''}
 
 Pour toute question, n'hésitez pas à nous contacter.
 
@@ -4942,127 +5055,11 @@ Cordialement,
 L'équipe MBE
     `.trim();
 
-    // HTML (optionnel, plus joli)
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <style>
-    body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px; }
-    .header { background: #2563eb; color: white; padding: 20px; border-radius: 8px 8px 0 0; text-align: center; }
-    .content { background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none; }
-    .section { margin-bottom: 20px; }
-    .label { font-weight: bold; color: #6b7280; font-size: 12px; text-transform: uppercase; margin-bottom: 5px; }
-    .value { font-size: 16px; color: #111827; margin-bottom: 15px; }
-    .total { background: #fef3c7; padding: 15px; border-radius: 8px; font-size: 20px; font-weight: bold; color: #92400e; text-align: center; margin-top: 20px; }
-    .footer { text-align: center; padding: 20px; color: #6b7280; font-size: 14px; }
-  </style>
-</head>
-<body>
-  <div class="header">
-    <h1 style="margin:0;">📦 Votre Devis de Transport</h1>
-  </div>
-  <div class="content">
-    <p>Bonjour <strong>${clientName}</strong>,</p>
-    <p>Voici votre devis de transport :</p>
-    
-    <div class="section">
-      <div class="label">Référence</div>
-      <div class="value">${reference}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">📦 Lot ${lotNumber}</div>
-      <div class="value">${lotDescription}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">🏛️ Salle des ventes</div>
-      <div class="value">${auctionHouse}</div>
-    </div>
-
-    <div class="section">
-      <div class="label">📍 Adresse de livraison</div>
-      <div class="value">${deliveryAddress}</div>
-    </div>
-
-    <div class="section" style="margin-top: 30px; padding-top: 20px; border-top: 2px solid #e5e7eb;">
-      <div class="label" style="font-size: 14px; margin-bottom: 15px;">DÉTAIL DES COÛTS</div>
-      <div style="background: white; padding: 15px; border-radius: 6px; border: 1px solid #e5e7eb;">
-        <div style="display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6;">
-          <span style="color: #6b7280;">Emballage${(() => {
-            const carton = quote.auctionSheet?.recommendedCarton;
-            if (!carton) return '';
-            const displayName = carton.label ? cleanCartonRef(carton.label) : (carton.ref ? cleanCartonRef(carton.ref) : '');
-            return displayName ? ` <span style="font-size: 11px;">(carton ${displayName})</span>` : '';
-          })()}</span>
-          <span style="font-weight: 600;">${packagingPrice.toFixed(2)}€</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: 10px; padding-bottom: 8px; border-bottom: 1px solid #f3f4f6;">
-          <span style="color: #6b7280;">Expédition (Express)${quote.delivery?.address?.country ? ` <span style="font-size: 11px;">(${quote.delivery.address.country})</span>` : ''}</span>
-          <span style="font-weight: 600;">${shippingPrice.toFixed(2)}€</span>
-        </div>
-        <div style="display: flex; justify-content: space-between; margin-bottom: ${insuranceEnabled ? '5px' : '0'};">
-          <span style="color: #6b7280;">Assurance</span>
-          <span style="font-weight: 600;">${insuranceEnabled ? '<span style="background: #10b981; color: white; padding: 2px 8px; border-radius: 4px; font-size: 11px;">Oui</span>' : '<span style="color: #9ca3af;">Non</span>'}</span>
-        </div>
-        ${insuranceEnabled ? `
-        <div style="padding-left: 15px; margin-top: 8px; padding-top: 8px; border-top: 1px solid #f3f4f6;">
-          <div style="display: flex; justify-content: space-between; margin-bottom: 5px; font-size: 13px;">
-            <span style="color: #9ca3af;">Valeur assurée</span>
-            <span style="font-weight: 500;">${lotValue.toFixed(2)}€</span>
-          </div>
-          <div style="display: flex; justify-content: space-between; font-size: 13px;">
-            <span style="color: #9ca3af;">Coût assurance (2.5%${lotValue < 500 ? ', min. 12€' : ''})</span>
-            <span style="font-weight: 500;">${finalInsuranceAmount.toFixed(2)}€</span>
-          </div>
-        </div>
-        ` : ''}
-      </div>
-    </div>
-
-    <div class="total" style="margin-top: 25px;">
-      💰 Montant total : ${finalTotal.toFixed(2)}€
-    </div>
-
-    ${paymentUrl ? `
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid #2563eb;">
-      <p style="margin: 0 0 15px 0; font-size: 14px; color: #1e40af; font-weight: 600;">💳 Procéder au paiement</p>
-      <a href="${paymentUrl}" 
-         style="display: inline-block; background: #2563eb; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px; box-shadow: 0 4px 12px rgba(37, 99, 235, 0.4); transition: background 0.2s; letter-spacing: 0.5px;">
-        Payer ${finalTotal.toFixed(2)}€ maintenant
-      </a>
-      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
-        Ou copiez ce lien dans votre navigateur :<br>
-        <a href="${paymentUrl}" style="color: #2563eb; word-break: break-all; text-decoration: underline;">${paymentUrl}</a>
-      </p>
-    </div>
-    ` : `
-    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 15px; background: #fef3c7; border-radius: 8px; border: 1px solid #f59e0b;">
-      <p style="margin: 0; font-size: 14px; color: #92400e;">
-        ⚠️ Le lien de paiement sera disponible prochainement. Vous recevrez un email avec le lien de paiement.
-      </p>
-    </div>
-    `}
-
-    <p style="margin-top: 30px; color: #6b7280;">Pour toute question, n'hésitez pas à nous contacter.</p>
-  </div>
-  <div class="footer">
-    Cordialement,<br>
-    <strong>L'équipe MBE</strong>
-  </div>
-</body>
-</html>
-    `.trim();
-
     // Envoi via Resend
     console.log('[AI Proxy] Envoi email via Resend à:', clientEmail);
-    // Récupérer saasAccountId depuis le quote ou req.saasAccountId
-    const saasAccountId = quote.saasAccountId || req.saasAccountId;
     const result = await sendEmail({
       to: clientEmail,
-      subject: `Votre devis de transport - ${reference}`,
+      subject: emailSubject,
       text: textContent,
       html: htmlContent,
       saasAccountId,
@@ -5082,7 +5079,7 @@ L'équipe MBE
           source: result.source || 'RESEND',
           from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
-          subject: `Votre devis de transport - ${reference}`,
+          subject: emailSubject,
           bodyText: textContent,
           bodyHtml: htmlContent,
           messageId: result.id || result.messageId || null,
@@ -5097,6 +5094,31 @@ L'équipe MBE
     } catch (firestoreError) {
       // Ne pas faire échouer l'envoi d'email si la sauvegarde Firestore échoue
       console.error('[emailMessages] ❌ Erreur lors de la sauvegarde de l\'email dans Firestore:', firestoreError);
+    }
+
+    // Enregistrer la date d'envoi du devis (pour Bilan)
+    if (firestore && quote.id) {
+      try {
+        await firestore.collection('quotes').doc(quote.id).update({
+          quoteSentAt: Timestamp.now(),
+          updatedAt: Timestamp.now(),
+        });
+      } catch (e) {
+        console.warn('[emailMessages] quoteSentAt non mis à jour:', e?.message);
+      }
+    }
+
+    // Synchroniser vers le Bilan Google Sheet si configuré (saasAccountId déjà défini plus haut)
+    if (firestore && quote.id && saasAccountId) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        if (saasDoc.exists) {
+          const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+          if (auth) await syncQuoteToBilanSheet(firestore, auth, saasAccountId, quote.id);
+        }
+      } catch (bilanErr) {
+        console.warn('[Bilan] Sync après envoi email:', bilanErr?.message);
+      }
     }
     
     res.json({ success: true, messageId: result.id, to: clientEmail });
@@ -6636,10 +6658,12 @@ app.get('/auth/google-sheets/start', requireAuth, (req, res) => {
     return res.status(400).json({ error: 'Compte SaaS non configuré. Veuillez compléter la configuration MBE.' });
   }
 
-  // Scopes nécessaires pour lire les Google Sheets ET Google Drive (bordereaux)
+  // Scopes: lecture pour bordereaux Typeform + écriture pour Bilan devis MBE
   const scopes = [
     'https://www.googleapis.com/auth/spreadsheets.readonly',
+    'https://www.googleapis.com/auth/spreadsheets', // Écriture pour Bilan devis MBE
     'https://www.googleapis.com/auth/drive.readonly', // CRITIQUE: Nécessaire pour accéder aux bordereaux dans Drive
+    'https://www.googleapis.com/auth/drive.file', // Création/écriture fichiers (Bilan)
     'https://www.googleapis.com/auth/drive.metadata.readonly' // Pour lister les dossiers
   ];
 
@@ -7046,6 +7070,333 @@ app.delete('/api/google-sheets/disconnect', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[API] Erreur lors de la déconnexion Google Sheets:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// BILAN DEVIS MBE - Google Sheet dédié (En cours, Terminés, Refusés)
+// ============================================================================
+
+/** Crée une instance OAuth2 pour un compte SaaS (tokens depuis Google Sheets) */
+function getGoogleAuthForSaasAccount(saasAccountData) {
+  const gs = saasAccountData.integrations?.googleSheets;
+  const tokens = gs?.oauthTokens || (gs?.accessToken ? {
+    accessToken: gs.accessToken,
+    refreshToken: gs.refreshToken,
+    expiresAt: gs.expiresAt,
+  } : null);
+  if (!tokens?.accessToken) return null;
+
+  let expiryDate = null;
+  if (tokens.expiresAt) {
+    if (tokens.expiresAt?.toDate) expiryDate = tokens.expiresAt.toDate().getTime();
+    else if (tokens.expiresAt instanceof Date) expiryDate = tokens.expiresAt.getTime();
+    else expiryDate = new Date(tokens.expiresAt).getTime();
+  }
+
+  const auth = new google.auth.OAuth2(
+    GOOGLE_SHEETS_CLIENT_ID,
+    GOOGLE_SHEETS_CLIENT_SECRET,
+    GOOGLE_SHEETS_REDIRECT_URI
+  );
+  auth.setCredentials({
+    access_token: tokens.accessToken,
+    refresh_token: tokens.refreshToken,
+    expiry_date: expiryDate,
+  });
+  return auth;
+}
+
+// Route: Créer le Bilan devis MBE (spreadsheet + 3 feuilles)
+app.post('/api/bilan/create', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const saasData = saasDoc.data();
+    if (saasData.integrations?.bilanSheet?.spreadsheetId) {
+      return res.status(400).json({ error: 'Le Bilan devis MBE existe déjà. Utilisez "Voir le bilan" pour l\'ouvrir.' });
+    }
+
+    const auth = getGoogleAuthForSaasAccount(saasData);
+    if (!auth) {
+      return res.status(400).json({ error: 'Connectez d\'abord Google Sheets dans Paramètres pour créer le Bilan.' });
+    }
+
+    const { spreadsheetId, spreadsheetUrl } = await createBilanSpreadsheet(auth, req.saasAccountId);
+
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).update({
+      'integrations.bilanSheet': {
+        spreadsheetId,
+        spreadsheetUrl,
+        createdAt: Timestamp.now(),
+      },
+    });
+
+    // Export initial de tous les devis
+    await exportAllQuotesToBilan(firestore, auth, req.saasAccountId);
+
+    console.log('[Bilan] ✅ Spreadsheet créé pour saasAccountId:', req.saasAccountId);
+    res.json({ success: true, spreadsheetId, spreadsheetUrl });
+  } catch (error) {
+    console.error('[Bilan] Erreur création:', error);
+    res.status(500).json({ error: error.message || 'Erreur lors de la création du Bilan' });
+  }
+});
+
+// Route: Récupérer le statut du Bilan
+app.get('/api/bilan/status', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const bilanSheet = saasDoc.data().integrations?.bilanSheet;
+    res.json({
+      exists: Boolean(bilanSheet?.spreadsheetId),
+      spreadsheetId: bilanSheet?.spreadsheetId || null,
+      spreadsheetUrl: bilanSheet?.spreadsheetUrl || null,
+    });
+  } catch (error) {
+    console.error('[Bilan] Erreur statut:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Route: Synchroniser un devis vers le Bilan (appelée après chaque mise à jour)
+app.post('/api/bilan/sync-quote/:quoteId', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+
+    const bilanSheet = saasDoc.data().integrations?.bilanSheet;
+    if (!bilanSheet?.spreadsheetId) {
+      return res.json({ success: true, skipped: true, reason: 'Bilan non créé' });
+    }
+
+    const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+    if (!auth) return res.json({ success: true, skipped: true, reason: 'OAuth non configuré' });
+
+    await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('[Bilan] Erreur sync devis:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// ============================================================================
+// REFUS / ABANDON CLIENT - Devis refusé ou abandonné par le client final
+// ============================================================================
+
+const REFUSAL_REASON_LABELS = {
+  tarif_trop_eleve: 'Tarif trop élevé',
+  client_a_paye_concurrent: 'Client a payé un concurrent',
+  plus_interesse: 'Plus intéressé',
+  autre: 'Autre',
+  pas_de_reponse: 'Pas de réponse / Abandonné',
+  refus_explicite: 'Refus explicite',
+};
+
+app.post('/api/quotes/:quoteId/client-refused', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  const { reason, reasonDetail } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  const validReasons = ['tarif_trop_eleve', 'client_a_paye_concurrent', 'plus_interesse', 'autre', 'pas_de_reponse', 'refus_explicite'];
+  const clientRefusalReason = validReasons.includes(reason) ? reason : 'autre';
+  const clientRefusalReasonDetail = typeof reasonDetail === 'string' ? reasonDetail.trim() : undefined;
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid') return res.status(400).json({ error: 'Un devis payé ne peut pas être marqué refusé' });
+
+    const desc = REFUSAL_REASON_LABELS[clientRefusalReason] || 'Devis refusé par le client';
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'client_refused',
+      description: clientRefusalReasonDetail ? `${desc} – ${clientRefusalReasonDetail}` : desc,
+      user: 'Utilisateur',
+    };
+
+    const updateData = {
+      clientRefusalStatus: 'client_refused',
+      clientRefusalReason,
+      clientRefusalAt: Timestamp.now(),
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    };
+    if (clientRefusalReasonDetail) updateData.clientRefusalReasonDetail = clientRefusalReasonDetail;
+    await ref.update(updateData);
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[client-refused]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/quotes/:quoteId/send-reminder', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid' || data.clientRefusalStatus === 'client_refused') {
+      return res.status(400).json({ error: 'Cette action n\'est pas possible pour ce devis' });
+    }
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: data.status || 'awaiting_payment',
+      description: 'Relance envoyée au client',
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      reminderSentAt: Timestamp.now(),
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[send-reminder]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// ============================================================================
+// PAIEMENT MANUEL - Virement / CB téléphone
+// ============================================================================
+
+app.post('/api/quotes/:quoteId/mark-paid-manually', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  const { method, paymentDate } = req.body;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  const validMethods = ['virement', 'cb_telephone'];
+  const paymentMethod = validMethods.includes(method) ? method : 'virement';
+
+  let paymentDateTimestamp;
+  if (paymentDate && typeof paymentDate === 'string') {
+    const d = new Date(paymentDate);
+    if (!isNaN(d.getTime())) paymentDateTimestamp = Timestamp.fromDate(d);
+  }
+  if (!paymentDateTimestamp) paymentDateTimestamp = Timestamp.now();
+
+  const desc = paymentMethod === 'virement' ? 'Payé par virement' : 'Payé par CB téléphone';
+  const dateStr = new Date(paymentDateTimestamp.toDate?.() || paymentDateTimestamp).toLocaleDateString('fr-FR', {
+    day: '2-digit', month: '2-digit', year: 'numeric',
+  });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus === 'paid') return res.status(400).json({ error: 'Ce devis est déjà marqué comme payé' });
+    if (data.clientRefusalStatus === 'client_refused') return res.status(400).json({ error: 'Un devis refusé ne peut pas être marqué payé' });
+
+    const totalAmount = (data.options?.packagingPrice ?? 0) + (data.options?.shippingPrice ?? 0) + (data.options?.insuranceAmount ?? 0)
+      || data.totalAmount || 0;
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: paymentDateTimestamp,
+      status: 'awaiting_collection',
+      description: `${desc} le ${dateStr}`,
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      paymentStatus: 'paid',
+      status: 'awaiting_collection',
+      manualPaymentMethod: paymentMethod,
+      manualPaymentDate: paymentDateTimestamp,
+      paidAmount: totalAmount,
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[mark-paid-manually]', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+app.post('/api/quotes/:quoteId/unmark-paid', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { quoteId } = req.params;
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const ref = firestore.collection('quotes').doc(quoteId);
+    const doc = await ref.get();
+    if (!doc.exists) return res.status(404).json({ error: 'Devis introuvable' });
+    const data = doc.data();
+    if (data.saasAccountId !== req.saasAccountId) return res.status(403).json({ error: 'Accès refusé' });
+    if (data.paymentStatus !== 'paid') return res.status(400).json({ error: 'Ce devis n\'est pas marqué comme payé' });
+    if (!data.manualPaymentMethod) return res.status(400).json({ error: 'Seuls les paiements manuels (virement/CB) peuvent être annulés' });
+
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'awaiting_payment',
+      description: 'Paiement annulé – retour en attente de paiement',
+      user: 'Utilisateur',
+    };
+
+    await ref.update({
+      paymentStatus: 'pending',
+      status: 'awaiting_payment',
+      manualPaymentMethod: FieldValue.delete(),
+      manualPaymentDate: FieldValue.delete(),
+      paidAmount: 0,
+      timeline: FieldValue.arrayUnion(timelineEvent),
+      updatedAt: Timestamp.now(),
+    });
+
+    const auth = getGoogleAuthForSaasAccount((await firestore.collection('saasAccounts').doc(req.saasAccountId).get()).data());
+    if (auth) await syncQuoteToBilanSheet(firestore, auth, req.saasAccountId, quoteId);
+
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[unmark-paid]', e);
+    res.status(500).json({ error: e.message });
   }
 });
 
@@ -8192,6 +8543,17 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
             ? 'assurance demandée mais non calculée'
             : 'total = 0',
       });
+    }
+
+    // Si regenerate=true (réanalyse bordereau), annuler les anciens liens avant de créer le nouveau
+    const { regenerate } = req.body || {};
+    if (regenerate) {
+      await cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe);
+      // Recharger le devis pour avoir paymentLinks à jour
+      const freshDevisDoc = await firestore.collection('quotes').doc(devisId).get();
+      if (freshDevisDoc.exists) {
+        Object.assign(devis, freshDevisDoc.data());
+      }
     }
 
     const existingPaiements = await firestore
@@ -9643,6 +10005,58 @@ async function estimateDimensionsWithGroq(description, groqApiKey, context = {})
   }
 }
 
+const PRINCIPAL_PAYMENT_TYPES = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
+
+/**
+ * Annule tous les liens de paiement principaux (Standard unique ou Standard+Express) pour un devis.
+ * Utilisé avant : 1) création des 2 liens (prepare-quote-email), 2) régénération après réanalyse (calculateDevisFromOCR).
+ */
+async function cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe) {
+  const paiementsSnap = await firestore
+    .collection('paiements')
+    .where('devisId', '==', devisId)
+    .get();
+  const toCancel = paiementsSnap.docs.filter((d) => {
+    const data = d.data();
+    return data.status === 'PENDING' && PRINCIPAL_PAYMENT_TYPES.includes(data.type);
+  });
+  if (toCancel.length === 0) return;
+  const cancelledIds = new Set();
+  for (const d of toCancel) {
+    const p = { id: d.id, ...d.data() };
+    await firestore.collection('paiements').doc(p.id).update({
+      status: 'CANCELLED',
+      updatedAt: Timestamp.now(),
+    });
+    cancelledIds.add(p.id);
+    if (p.stripeSessionId && stripe) {
+      try {
+        await stripe.checkout.sessions.expire(p.stripeSessionId, {
+          stripeAccount: p.stripeAccountId || undefined,
+        });
+        console.log(`[API] ✅ Session Stripe expirée: ${p.stripeSessionId}`);
+      } catch (e) {
+        console.warn(`[API] ⚠️ Impossible d'expirer session ${p.stripeSessionId}:`, e?.message);
+      }
+    }
+  }
+  const quoteDoc = await firestore.collection('quotes').doc(devisId).get();
+  if (quoteDoc.exists) {
+    const quote = quoteDoc.data();
+    const links = quote.paymentLinks || [];
+    const updated = links.map((l) =>
+      cancelledIds.has(l.id) ? { ...l, status: 'expired' } : l
+    );
+    if (updated.some((l, i) => l.status !== (links[i]?.status))) {
+      await firestore.collection('quotes').doc(devisId).update({
+        paymentLinks: updated,
+        updatedAt: Timestamp.now(),
+      });
+    }
+  }
+  console.log(`[API] ✅ ${toCancel.length} lien(s) principal(aux) annulé(s) pour devis ${devisId}`);
+}
+
 /**
  * Calcule automatiquement le devis à partir du résultat OCR
  */
@@ -9797,12 +10211,64 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
     console.log(`[Calcul] ⚖️ Poids réel: ${totalWeight.toFixed(2)}kg, Poids volumétrique: ${volumetricWeight.toFixed(2)}kg, Poids final: ${finalWeight.toFixed(2)}kg`);
     
     // Si une destination est renseignée, calculer le prix d'expédition
-    // Support: destination.country (legacy) ou delivery.address.country (quote Google Sheets)
+    // Support: grille tarifaire OU MBE Hub (selon settings.shippingCalculationMethod)
     const destCountry = devis.destination?.country || devis.delivery?.address?.country;
     if (destCountry) {
       try {
         const countryCode = (typeof destCountry === 'string' ? destCountry : String(destCountry)).toUpperCase();
-        console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
+        const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+        const saasAccount = saasAccountDoc.exists ? saasAccountDoc.data() : null;
+        const useMbeHub = saasAccount && (saasAccount.planId === 'pro' || saasAccount.planId === 'ultra') && (saasAccount.settings?.shippingCalculationMethod === 'mbehub');
+
+        if (useMbeHub) {
+          const creds = await getMbeHubCredentials(firestore, saasAccountId);
+          if (creds) {
+            const deliveryAddr = devis.delivery?.address || devis.destination || {};
+            const dest = {
+              zipCode: String(deliveryAddr.zip || deliveryAddr.zipCode || '').trim(),
+              city: String(deliveryAddr.city || '').trim(),
+              state: String(deliveryAddr.state || '').trim().slice(0, 2),
+              country: countryCode,
+            };
+            const dims = cartonInfo
+              ? { length: cartonInfo.inner_length ?? 10, width: cartonInfo.inner_width ?? 10, height: cartonInfo.inner_height ?? 10 }
+              : { length: 10, width: 10, height: 10 };
+            try {
+              const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+              const options = await mbehubSoap.getShippingOptions({
+                username: creds.username,
+                password: creds.password,
+                env,
+                destination: dest,
+                weight: finalWeight,
+                dimensions: dims,
+                insurance: !!devis.options?.insurance,
+                insuranceValue: Number(devis.options?.insuranceAmount) || 0,
+              });
+              const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+              const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
+              const pickCheapest = (arr) => {
+                if (!arr.length) return null;
+                return arr.reduce((a, b) => {
+                  const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+                  const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+                  return pa <= pb ? a : b;
+                });
+              };
+              const useExpress = !!devis.options?.express;
+              const selectedOpt = useExpress ? pickCheapest(expressOpts) : pickCheapest(standardOpts);
+              if (selectedOpt) {
+                shippingPrice = Number(selectedOpt.GrossShipmentPrice ?? selectedOpt.NetShipmentPrice ?? 0);
+                console.log(`[Calcul] 🚚 Prix expédition MBE Hub (${useExpress ? 'Express' : 'Standard'}): ${shippingPrice}€ pour ${countryCode}`);
+              }
+            } catch (mbeErr) {
+              console.warn('[Calcul] ⚠️ MBE Hub échec, fallback grille:', mbeErr.message);
+            }
+          }
+        }
+
+        if (shippingPrice === 0) {
+          console.log(`[Calcul] 🔍 Recherche de la zone pour ${countryCode} dans la grille tarifaire du compte ${saasAccountId}`);
         
         // 1. Trouver la zone qui contient ce pays
         const zonesSnapshot = await firestore
@@ -9896,6 +10362,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
               }
             }
           }
+        }
         }
       } catch (error) {
         console.error('[Calcul] ❌ Erreur lors du calcul du prix d\'expédition:', error.message);
@@ -10001,7 +10468,10 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
       try {
         console.log(`[Calcul] 🔗 Conditions remplies pour auto-génération du lien de paiement`);
         
-        // Vérifier si un paiement PRINCIPAL existe déjà pour ce devis
+        // Réanalyse : annuler les anciens liens avant de régénérer
+        await cancelPrincipalPaymentLinksForDevis(firestore, devisId, stripe);
+        
+        // Vérifier qu'il n'en reste pas (sécurité, normalement vides après annulation)
         const existingPaiementsSnapshot = await firestore
           .collection('paiements')
           .where('devisId', '==', devisId)
@@ -10011,7 +10481,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
           .get();
         
         if (!existingPaiementsSnapshot.empty) {
-          console.log(`[Calcul] ⚠️  Un paiement PRINCIPAL existe déjà pour ce devis, pas de génération automatique`);
+          console.log(`[Calcul] ⚠️  Un paiement PRINCIPAL existe encore pour ce devis, pas de génération automatique`);
         } else {
           // Récupérer le compte SaaS pour obtenir le stripeAccountId
           const saasAccountDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
@@ -10180,6 +10650,36 @@ if (firestore && googleSheetsOAuth2Client) {
   setTimeout(syncAllGoogleSheets, 30_000);
 } else {
   console.warn('[Google Sheets Sync] ⚠️  Polling Google Sheets désactivé (Firestore ou OAuth non configuré)');
+}
+
+// ============================================================================
+// NETTOYAGE DEVIS REFUSÉS > 6 MOIS (suppression Firestore, conservés dans Bilan Sheet)
+// ============================================================================
+const SIX_MONTHS_MS = 6 * 30 * 24 * 60 * 60 * 1000;
+async function cleanupOldRefusedQuotes() {
+  if (!firestore) return;
+  try {
+    const cutoff = Timestamp.fromMillis(Date.now() - SIX_MONTHS_MS);
+    const snap = await firestore.collection('quotes')
+      .where('clientRefusalStatus', '==', 'client_refused')
+      .where('clientRefusalAt', '<', cutoff)
+      .get();
+    if (snap.empty) return;
+    const batch = firestore.batch();
+    snap.docs.forEach((d) => batch.delete(d.ref));
+    await batch.commit();
+    console.log(`[Cleanup] ✅ ${snap.size} devis refusé(s) supprimé(s) (> 6 mois)`);
+  } catch (e) {
+    if (e.code === 9) {
+      console.warn('[Cleanup] Index Firestore manquant pour clientRefusalStatus/clientRefusalAt - ignorer');
+    } else {
+      console.error('[Cleanup] Erreur:', e?.message);
+    }
+  }
+}
+if (firestore) {
+  setInterval(cleanupOldRefusedQuotes, 24 * 60 * 60 * 1000);
+  setTimeout(cleanupOldRefusedQuotes, 60_000);
 }
 
 console.log('[AI Proxy] Routes /api/test et /api/health définies');
@@ -10696,17 +11196,24 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
   }
 });
 
-// ===== MBE HUB (plans Pro et Ultra) - Envoi devis vers zone expédition =====
+// ===== MBE HUB (plans Pro et Ultra) - API eShip SOAP - Expéditions en brouillon =====
+
+const mbehubSoap = require('./mbehub-soap.cjs');
 
 function hasMbeHubPlan(saasData) {
   const planId = saasData?.planId || saasData?.plan || 'starter';
   return planId === 'pro' || planId === 'ultra';
 }
 
-async function getMbeHubApiKey(firestore, saasAccountId) {
+async function getMbeHubCredentials(firestore, saasAccountId) {
   if (!firestore || !saasAccountId) return null;
   const doc = await firestore.collection('saasAccounts').doc(saasAccountId).collection('secrets').doc('mbehub').get();
-  return doc.exists ? (doc.data()?.apiKey || null) : null;
+  if (!doc.exists) return null;
+  const data = doc.data();
+  const username = data?.username || data?.apiKey; // rétrocompat: apiKey = username
+  const password = data?.password;
+  if (!username || !password) return null;
+  return { username: String(username).trim(), password: String(password) };
 }
 
 // GET /api/account/mbehub-status
@@ -10721,22 +11228,59 @@ app.get('/api/account/mbehub-status', requireAuth, async (req, res) => {
     if (!hasMbeHubPlan(saas)) {
       return res.json({ available: false, configured: false, message: 'Réservé aux plans Pro et Ultra' });
     }
-    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
-    return res.json({ available: true, configured: Boolean(apiKey) });
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    const shippingCalculationMethod = saas?.settings?.shippingCalculationMethod || 'grille';
+    return res.json({
+      available: true,
+      configured: Boolean(creds),
+      shippingCalculationMethod,
+    });
   } catch (error) {
     console.error('[API] Erreur mbehub-status:', error);
     return res.status(500).json({ error: error.message || 'Erreur' });
   }
 });
 
-// PUT /api/account/mbehub-key
+// PUT /api/account/shipping-calculation-method - Grille tarifaire ou MBE Hub
+app.put('/api/account/shipping-calculation-method', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { method } = req.body || {};
+  if (method !== 'grille' && method !== 'mbehub') {
+    return res.status(400).json({ error: 'Méthode invalide (grille ou mbehub)' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
+    const saasDoc = await saasRef.get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    if (!hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const current = saasDoc.data() || {};
+    await saasRef.update({
+      settings: { ...(current.settings || {}), shippingCalculationMethod: method },
+      updatedAt: Timestamp.now(),
+    });
+    console.log(`[API] ✅ Méthode expédition: ${method} pour saasAccountId=${saasAccountId}`);
+    return res.json({ success: true, shippingCalculationMethod: method });
+  } catch (error) {
+    console.error('[API] Erreur shipping-calculation-method:', error);
+    return res.status(500).json({ error: error.message || 'Erreur' });
+  }
+});
+
+// PUT /api/account/mbehub-key - Stocke username + password (SOAP Basic Auth)
 app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
   const saasAccountId = req.saasAccountId;
   if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
-  const { apiKey } = req.body;
-  if (!apiKey || typeof apiKey !== 'string' || !apiKey.trim()) {
-    return res.status(400).json({ error: 'Clé API requise' });
+  const { username, password } = req.body || {};
+  if (!username || typeof username !== 'string' || !username.trim()) {
+    return res.status(400).json({ error: 'Identifiant (username) requis' });
+  }
+  if (!password || typeof password !== 'string' || !password.trim()) {
+    return res.status(400).json({ error: 'Mot de passe requis' });
   }
   try {
     const saasRef = firestore.collection('saasAccounts').doc(saasAccountId);
@@ -10746,10 +11290,11 @@ app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
     }
     await saasRef.collection('secrets').doc('mbehub').set({
-      apiKey: apiKey.trim(),
+      username: username.trim(),
+      password: password.trim(),
       updatedAt: Timestamp.now(),
     });
-    console.log(`[API] ✅ Clé MBE Hub enregistrée pour saasAccountId=${saasAccountId}`);
+    console.log(`[API] ✅ Identifiants MBE Hub enregistrés pour saasAccountId=${saasAccountId}`);
     return res.json({ success: true });
   } catch (error) {
     console.error('[API] Erreur mbehub-key:', error);
@@ -10757,7 +11302,371 @@ app.put('/api/account/mbehub-key', requireAuth, async (req, res) => {
   }
 });
 
-// POST /api/mbehub/send-quote - Envoi devis vers MBE Hub (zone expédition)
+// POST /api/mbehub/shipping-options - Liste des services disponibles (ShippingOptionsRequest)
+app.post('/api/mbehub/shipping-options', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const { destination, weight, dimensions, insurance, insuranceValue } = req.body || {};
+    if (!destination?.country) {
+      return res.status(400).json({ error: 'Destination requise (country, zipCode, city)' });
+    }
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: {
+        zipCode: destination.zipCode || '',
+        city: destination.city || '',
+        state: destination.state || '',
+        country: destination.country || 'FR',
+      },
+      weight: Number(weight) || 1,
+      dimensions: dimensions || { length: 10, width: 10, height: 10 },
+      insurance: !!insurance,
+      insuranceValue: Number(insuranceValue) || 0,
+    });
+    return res.json({ success: true, options });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/shipping-options:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/quote-shipping-rates - Calcule tarifs Standard + Express pour un devis (Smart Choice, plans Pro/Ultra)
+app.post('/api/mbehub/quote-shipping-rates', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId && quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+    const lot = quote.lot || {};
+    const dims = lot.dimensions || lot.realDimensions || {};
+    const weight = quote.totalWeight ?? dims.weight ?? 1;
+    const dimensions = {
+      length: dims.length ?? 10,
+      width: dims.width ?? 10,
+      height: dims.height ?? 10,
+    };
+    const deliveryAddr = quote.delivery?.address || {};
+    const deliveryMode = quote.delivery?.mode || 'client';
+    const clientAddr = quote.client?.address || '';
+    let destination = {};
+    if (deliveryAddr.zip || deliveryAddr.country || deliveryAddr.city) {
+      destination = {
+        zipCode: String(deliveryAddr.zip || '').trim(),
+        city: String(deliveryAddr.city || '').trim(),
+        state: String(deliveryAddr.state || '').trim().slice(0, 2),
+        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+      };
+    } else if (clientAddr) {
+      const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
+      const zipMatch = parts.find((p) => /^\d{5}/.test(p));
+      const countryMatch = parts.find((p) => /^[A-Z]{2}$/i.test(p));
+      destination = {
+        zipCode: zipMatch || '',
+        city: parts.length >= 2 ? parts[parts.length - 2] : '',
+        state: '',
+        country: (countryMatch || 'FR').toString().toUpperCase().slice(0, 2),
+      };
+    }
+    if (!destination.country || (!destination.zipCode && !destination.city)) {
+      return res.status(400).json({
+        error: 'Adresse de destination incomplète (code postal, ville, pays). Renseignez la livraison dans le devis.',
+      });
+    }
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: {
+        zipCode: destination.zipCode || '',
+        city: destination.city || '',
+        state: destination.state || '',
+        country: destination.country || 'FR',
+      },
+      weight: Number(weight) || 1,
+      dimensions,
+      insurance: !!quote.options?.insurance,
+      insuranceValue: Number(quote.options?.insuranceAmount) || 0,
+    });
+    const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+    const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
+    const pickCheapest = (arr) => {
+      if (!arr.length) return null;
+      return arr.reduce((a, b) => {
+        const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+        const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+        return pa <= pb ? a : b;
+      });
+    };
+    const standard = pickCheapest(standardOpts);
+    const express = pickCheapest(expressOpts);
+    const standardPrice = standard ? Number(standard.GrossShipmentPrice ?? standard.NetShipmentPrice ?? 0) : null;
+    const expressPrice = express ? Number(express.GrossShipmentPrice ?? express.NetShipmentPrice ?? 0) : null;
+    return res.json({
+      success: true,
+      standard: standard ? { price: standardPrice, option: standard } : null,
+      express: express ? { price: expressPrice, option: express } : null,
+      options,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/quote-shipping-rates:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/prepare-quote-email - Calcule tarifs MBE + crée 2 liens Standard et Express (Phase 2)
+app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId && quote.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Devis non accessible' });
+    }
+
+    // Annuler le(s) lien(s) existant(s) (Standard unique ou Standard+Express) puis créer les 2 nouveaux
+    await cancelPrincipalPaymentLinksForDevis(firestore, quoteId, stripe);
+
+    // 1. Obtenir les tarifs Standard et Express via MBE Hub
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub' });
+
+    const lot = quote.lot || {};
+    const dims = lot.dimensions || lot.realDimensions || {};
+    const weight = quote.totalWeight ?? dims.weight ?? 1;
+    const dimensions = { length: dims.length ?? 10, width: dims.width ?? 10, height: dims.height ?? 10 };
+    const deliveryAddr = quote.delivery?.address || {};
+    const clientAddr = quote.client?.address || '';
+    let destination = {};
+    if (deliveryAddr.zip || deliveryAddr.country || deliveryAddr.city) {
+      destination = {
+        zipCode: String(deliveryAddr.zip || '').trim(),
+        city: String(deliveryAddr.city || '').trim(),
+        state: String(deliveryAddr.state || '').trim().slice(0, 2),
+        country: (deliveryAddr.country || 'FR').toString().trim().slice(0, 2).toUpperCase(),
+      };
+    } else if (clientAddr) {
+      const parts = String(clientAddr).split(/[\s,]+/).filter(Boolean);
+      const zipMatch = parts.find((p) => /^\d{5}/.test(p));
+      destination = {
+        zipCode: zipMatch || '',
+        city: parts.length >= 2 ? parts[parts.length - 2] : '',
+        state: '',
+        country: 'FR',
+      };
+    }
+    if (!destination.country || (!destination.zipCode && !destination.city)) {
+      return res.status(400).json({ error: 'Adresse de destination incomplète' });
+    }
+
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const options = await mbehubSoap.getShippingOptions({
+      username: creds.username,
+      password: creds.password,
+      env,
+      destination: { zipCode: destination.zipCode || '', city: destination.city || '', state: destination.state || '', country: destination.country || 'FR' },
+      weight: Number(weight) || 1,
+      dimensions,
+      insurance: !!quote.options?.insurance,
+      insuranceValue: Number(quote.options?.insuranceAmount) || 0,
+    });
+
+    const standardOpts = options.filter((o) => /standard/i.test(String(o.ServiceDesc || '')));
+    const expressOpts = options.filter((o) => /express/i.test(String(o.ServiceDesc || '')));
+    const pickCheapest = (arr) => {
+      if (!arr.length) return null;
+      return arr.reduce((a, b) => {
+        const pa = Number(a.GrossShipmentPrice ?? a.NetShipmentPrice ?? 9999);
+        const pb = Number(b.GrossShipmentPrice ?? b.NetShipmentPrice ?? 9999);
+        return pa <= pb ? a : b;
+      });
+    };
+    const standardOpt = pickCheapest(standardOpts);
+    const expressOpt = pickCheapest(expressOpts);
+    const standardPrice = standardOpt ? Number(standardOpt.GrossShipmentPrice ?? standardOpt.NetShipmentPrice ?? 0) : null;
+    const expressPrice = expressOpt ? Number(expressOpt.GrossShipmentPrice ?? expressOpt.NetShipmentPrice ?? 0) : null;
+
+    if (standardPrice == null && expressPrice == null) {
+      return res.status(400).json({ error: 'Aucun tarif Standard ou Express trouvé pour cette destination' });
+    }
+
+    // 2. Calculer emballage + assurance
+    const carton = quote.auctionSheet?.recommendedCarton;
+    const packagingPrice = carton?.price ?? carton?.priceTTC ?? quote.options?.packagingPrice ?? 0;
+    const insuranceAmount = (() => {
+      if (!quote.options?.insurance) return 0;
+      const v = quote.lot?.value || 0;
+      const raw = Math.max(v * 0.025, v < 500 ? 12 : 0);
+      const d = raw % 1;
+      if (d >= 0.5) return Math.ceil(raw);
+      if (d > 0) return Math.floor(raw) + 0.5;
+      return raw;
+    })();
+    if (packagingPrice <= 0) {
+      return res.status(400).json({ error: 'Prix d\'emballage manquant. Renseignez un carton pour ce devis.' });
+    }
+
+    const totalStandard = packagingPrice + (standardPrice ?? expressPrice ?? 0) + insuranceAmount;
+    const totalExpress = packagingPrice + (expressPrice ?? standardPrice ?? 0) + insuranceAmount;
+    const ref = quote.reference || quoteId;
+
+    // 3. Créer les 2 paiements via handleCreatePaiement
+    const createRes = (code, body) => ({ statusCode: code, body });
+    const results = { standard: null, express: null };
+
+    if (standardPrice != null) {
+      const resState = createRes(200, null);
+      const fakeReq = { params: { id: quoteId }, body: { amount: totalStandard, type: 'PRINCIPAL_STANDARD', description: `Devis ${ref} - Standard` }, saasAccountId };
+      const fakeRes = {
+        status: (c) => { resState.statusCode = c; return fakeRes; },
+        json: (d) => { resState.body = d; return fakeRes; },
+      };
+      await handleCreatePaiement(fakeReq, fakeRes, firestore);
+      if (resState.statusCode >= 400) {
+        return res.status(500).json({ error: resState.body?.error || 'Erreur création lien Standard' });
+      }
+      results.standard = { url: resState.body?.url, amount: totalStandard, paiementId: resState.body?.paiementId };
+    }
+
+    if (expressPrice != null) {
+      const resState = createRes(200, null);
+      const fakeReq = { params: { id: quoteId }, body: { amount: totalExpress, type: 'PRINCIPAL_EXPRESS', description: `Devis ${ref} - Express` }, saasAccountId };
+      const fakeRes = {
+        status: (c) => { resState.statusCode = c; return fakeRes; },
+        json: (d) => { resState.body = d; return fakeRes; },
+      };
+      await handleCreatePaiement(fakeReq, fakeRes, firestore);
+      if (resState.statusCode >= 400) {
+        return res.status(500).json({ error: resState.body?.error || 'Erreur création lien Express' });
+      }
+      results.express = { url: resState.body?.url, amount: totalExpress, paiementId: resState.body?.paiementId };
+    }
+
+    return res.json({
+      success: true,
+      standard: results.standard ? { url: results.standard.url, price: results.standard.amount } : null,
+      express: results.express ? { url: results.express.url, price: results.express.amount } : null,
+    });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/prepare-quote-email:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/create-draft - Crée une expédition en brouillon (ShipmentRequest IsDraft=true)
+app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  const { quoteId, recipient, service, courierService, courierAccount, weight, dimensions, reference, insurance, insuranceValue } = req.body || {};
+  if (!quoteId) return res.status(400).json({ error: 'quoteId requis' });
+  if (!recipient?.name || !recipient?.address || !recipient?.city || !recipient?.zipCode || !recipient?.country) {
+    return res.status(400).json({ error: 'Destinataire incomplet (name, address, city, zipCode, country)' });
+  }
+  if (!service) return res.status(400).json({ error: 'Service requis (choisissez dans la liste)' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+    if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
+      return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
+    }
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub dans Paramètres' });
+    }
+    const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
+    if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
+    const quote = quoteDoc.data();
+    if (quote.saasAccountId !== saasAccountId) return res.status(403).json({ error: 'Devis non accessible' });
+
+    const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+    const result = await mbehubSoap.createDraftShipment({
+      username: creds.username,
+      password: creds.password,
+      env,
+      recipient,
+      service,
+      courierService: courierService || null,
+      courierAccount: courierAccount || null,
+      weight: Number(weight) || 1,
+      dimensions: dimensions || { length: 10, width: 10, height: 10 },
+      reference: reference || quote.reference || quoteId,
+      insurance: !!insurance,
+      insuranceValue: Number(insuranceValue) || 0,
+    });
+
+    // Mettre à jour le devis: mbeTrackingId, status sent_to_mbe_hub, sentToMbeHubAt
+    const existingTimeline = quote.timeline || [];
+    const timelineEvent = {
+      id: `tl-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`,
+      date: Timestamp.now(),
+      status: 'sent_to_mbe_hub',
+      description: 'Envoyé vers MBE Hub (brouillon)',
+      user: 'Système',
+    };
+    await firestore.collection('quotes').doc(quoteId).update({
+      status: 'sent_to_mbe_hub',
+      mbeTrackingId: result.mbeTrackingId,
+      sentToMbeHubAt: Timestamp.now(),
+      timeline: [...existingTimeline, timelineEvent],
+      updatedAt: Timestamp.now(),
+    });
+
+    console.log(`[API] ✅ Expédition brouillon MBE créée: ${result.mbeTrackingId} pour devis ${quoteId}`);
+
+    // Synchroniser vers le Bilan devis MBE (feuille Terminés)
+    try {
+      const auth = getGoogleAuthForSaasAccount(saasDoc.data());
+      if (auth) await syncQuoteToBilanSheet(firestore, auth, saasAccountId, quoteId);
+    } catch (bilanErr) {
+      console.warn('[Bilan] Sync après envoi MBE Hub:', bilanErr?.message);
+    }
+
+    return res.json({ success: true, mbeTrackingId: result.mbeTrackingId });
+  } catch (error) {
+    console.error('[API] Erreur mbehub/create-draft:', error);
+    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+  }
+});
+
+// POST /api/mbehub/send-quote - (Legacy) Envoi devis vers MBE Hub - conservé pour compatibilité
 // TODO: Adapter l'URL et le payload dès que la documentation API MBE Hub sera disponible
 app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
   if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
@@ -10770,9 +11679,9 @@ app.post('/api/mbehub/send-quote', requireAuth, async (req, res) => {
     if (!saasDoc.exists || !hasMbeHubPlan(saasDoc.data())) {
       return res.status(403).json({ error: 'Réservé aux plans Pro et Ultra' });
     }
-    const apiKey = await getMbeHubApiKey(firestore, saasAccountId);
-    if (!apiKey) {
-      return res.status(400).json({ error: 'Configurez votre clé API MBE Hub dans Paramètres' });
+    const creds = await getMbeHubCredentials(firestore, saasAccountId);
+    if (!creds) {
+      return res.status(400).json({ error: 'Configurez vos identifiants MBE Hub (username + mot de passe) dans Paramètres' });
     }
     const quoteDoc = await firestore.collection('quotes').doc(quoteId).get();
     if (!quoteDoc.exists) return res.status(404).json({ error: 'Devis non trouvé' });
@@ -11134,6 +12043,212 @@ app.post('/api/email-templates/preview', requireAuth, checkCustomizeAutoEmails, 
   }
 });
 
+// ===== MODÈLES D'EMAILS ÉTENDUS (tous les types, couleurs, corps HTML) =====
+app.get('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    return res.json({
+      templates,
+      customTemplates: emailTemplates,
+      meta: {
+        EMAIL_TYPE_LABELS: EMAIL_TYPE_LABELS_EXTENDED,
+        PLACEHOLDERS: PLACEHOLDERS_EXTENDED,
+        DEFAULT_TEMPLATES: DEFAULT_TEMPLATES_EXTENDED,
+      },
+    });
+  } catch (err) {
+    console.error('[API] Erreur GET email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur récupération templates' });
+  }
+});
+
+app.put('/api/email-templates-extended', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type, subject, bodyHtml, bodySections, signature, bannerColor, buttonColor, bannerTitle, bannerLogoUrl, buttonLabel } = req.body || {};
+  if (!type || !EMAIL_TYPES_EXTENDED.includes(type)) {
+    return res.status(400).json({ error: 'Type d\'email invalide' });
+  }
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const prev = current[type] || {};
+    const def = DEFAULT_TEMPLATES_EXTENDED[type] || {};
+    const updated = {
+      ...current,
+      [type]: {
+        subject: subject !== undefined ? subject : (prev.subject ?? def.subject),
+        bodyHtml: bodyHtml !== undefined ? bodyHtml : (prev.bodyHtml ?? def.bodyHtml),
+        bodySections: bodySections !== undefined ? bodySections : (prev.bodySections ?? def.bodySections),
+        signature: signature !== undefined ? signature : (prev.signature ?? def.signature),
+        bannerColor: bannerColor !== undefined ? bannerColor : (prev.bannerColor ?? def.bannerColor ?? '#2563eb'),
+        buttonColor: buttonColor !== undefined ? buttonColor : (prev.buttonColor ?? def.buttonColor ?? '#2563eb'),
+        bannerTitle: bannerTitle !== undefined ? bannerTitle : (prev.bannerTitle ?? def.bannerTitle ?? ''),
+        bannerLogoUrl: bannerLogoUrl !== undefined ? bannerLogoUrl : (prev.bannerLogoUrl ?? def.bannerLogoUrl ?? ''),
+        buttonLabel: buttonLabel !== undefined ? buttonLabel : (prev.buttonLabel ?? def.buttonLabel ?? ''),
+        updatedAt: Timestamp.now(),
+      },
+    };
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesExtendedForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur PUT email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur sauvegarde templates' });
+  }
+});
+
+app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  if (!type || !EMAIL_TYPES_EXTENDED.includes(type)) return res.status(400).json({ error: 'Type invalide' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const emailTemplates = saasDoc.exists ? saasDoc.data().emailTemplates : null;
+    const commercialName = saasDoc.exists ? saasDoc.data().commercialName : 'Mon MBE';
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates[type];
+    const sampleValues = {
+      bordereauNum: '0260-25',
+      reference: 'GS-1771934590732-25',
+      nomSalleVentes: 'Millon Riviera',
+      prixEmballage: '18.00',
+      prixTransport: '3.00',
+      prixAssurance: 'NON (Si vous souhaitez une assurance, merci de nous le signaler par retour de mail)',
+      prixTotal: '21.00',
+      lienPaiementSecurise: 'https://checkout.stripe.com/example',
+      adresseDestinataire: '3 boulevard Delfino, 06000 Nice',
+      clientName: 'Jeanne Launey',
+      date: new Date().toLocaleDateString('fr-FR'),
+      lotNumber: '38',
+      lotDescription: 'Corbeille en argent - Maison Boin-Taburet',
+      mbeName: commercialName,
+      amount: '21.00',
+      description: 'Surcoût pour dimensions réelles',
+    };
+    const subject = replacePlaceholdersExtended(t.subject || '', sampleValues);
+    const bodyHtml = Array.isArray(t.bodySections) && t.bodySections.length > 0
+      ? buildBodyHtmlFromSections(t.bodySections, sampleValues)
+      : replacePlaceholdersExtended(t.bodyHtml || '', sampleValues);
+    const signature = replacePlaceholdersExtended(t.signature || '', sampleValues).replace(/\n/g, '<br>');
+    const fullHtml = buildEmailHtmlFromTemplate(t, bodyHtml, signature, sampleValues);
+    return res.json({
+      subject,
+      bodyHtml: fullHtml,
+      signature,
+      sampleValues,
+    });
+  } catch (err) {
+    console.error('[API] Erreur preview email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur prévisualisation' });
+  }
+});
+
+/** Upload logo pour le bandeau des emails - POST multipart avec fichier "logo" et champ "type" */
+app.post('/api/email-templates-extended/upload-logo', requireAuth, checkCustomizeAutoEmails, upload.single('logo'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  if (!req.file || !req.file.buffer) return res.status(400).json({ error: 'Aucun fichier envoyé' });
+  const templateType = req.body?.type || 'quote_send';
+  const ext = req.file.originalname?.match(/\.(jpe?g|png|gif|webp)$/i)?.[1]?.toLowerCase() || 'png';
+  const allowedTypes = ['image/jpeg', 'image/png', 'image/gif', 'image/webp'];
+  if (!allowedTypes.includes(req.file.mimetype)) return res.status(400).json({ error: 'Format non autorisé (jpg, png, gif, webp)' });
+  try {
+    const bucket = getStorage().bucket();
+    const fileName = `saasAccounts/${req.saasAccountId}/email-logo-${templateType}.${ext}`;
+    const storageFile = bucket.file(fileName);
+    await storageFile.save(req.file.buffer, { contentType: req.file.mimetype });
+    await storageFile.makePublic();
+    const publicUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    const target = current[templateType] || {};
+    const updated = { ...current, [templateType]: { ...target, bannerLogoUrl: publicUrl } };
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({ url: publicUrl, success: true });
+  } catch (err) {
+    console.error('[API] Erreur upload logo:', err);
+    return res.status(500).json({ error: err.message || 'Erreur upload' });
+  }
+});
+
+app.post('/api/email-templates-extended/reset', requireAuth, checkCustomizeAutoEmails, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { type } = req.body || {};
+  try {
+    const saasRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasDoc = await saasRef.get();
+    const current = saasDoc.exists ? saasDoc.data().emailTemplates || {} : {};
+    let updated;
+    if (type && EMAIL_TYPES_EXTENDED.includes(type)) {
+      const { [type]: _removed, ...rest } = current;
+      updated = rest;
+    } else {
+      updated = {};
+    }
+    await saasRef.set({ emailTemplates: updated, updatedAt: Timestamp.now() }, { merge: true });
+    return res.json({
+      success: true,
+      templates: getTemplatesExtendedForAccount(updated),
+      customTemplates: updated,
+    });
+  } catch (err) {
+    console.error('[API] Erreur reset email-templates-extended:', err);
+    return res.status(500).json({ error: 'Erreur réinitialisation' });
+  }
+});
+
+/** Helper: construit le HTML complet d'un email depuis un template (bandeau + corps + bouton + signature) */
+function buildEmailHtmlFromTemplate(template, bodyHtml, signatureHtml, values = {}) {
+  const bannerColor = template.bannerColor || '#2563eb';
+  const buttonColor = template.buttonColor || '#2563eb';
+  const bannerTitle = replacePlaceholdersExtended(template.bannerTitle || '', values);
+  const bannerLogoUrl = template.bannerLogoUrl || '';
+  const buttonLabel = template.buttonLabel ? replacePlaceholdersExtended(template.buttonLabel, values) : null;
+  const paymentUrl = values.lienPaiementSecurise || values.paymentUrl || '';
+
+  let buttonSection = '';
+  if (paymentUrl && buttonLabel) {
+    buttonSection = `
+    <div style="text-align: center; margin-top: 30px; margin-bottom: 20px; padding: 20px; background: #f0f9ff; border-radius: 8px; border: 2px solid ${buttonColor};">
+      <p style="margin: 0 0 15px 0; font-size: 14px; color: ${buttonColor}; font-weight: 600;">💳 Procéder au paiement</p>
+      <a href="${paymentUrl}" style="display: inline-block; background: ${buttonColor}; color: white !important; padding: 16px 40px; text-decoration: none; border-radius: 8px; font-weight: 700; font-size: 18px;">
+        ${buttonLabel}
+      </a>
+      <p style="margin-top: 15px; font-size: 12px; color: #6b7280;">
+        Ou copiez ce lien : <a href="${paymentUrl}" style="color: ${buttonColor}; word-break: break-all;">${paymentUrl}</a>
+      </p>
+    </div>`;
+  }
+
+  const logoHtml = bannerLogoUrl
+    ? `<img src="${bannerLogoUrl.replace(/"/g, '&quot;')}" alt="Logo" style="max-height:60px;max-width:200px;display:block;margin:0 auto 12px auto;" />`
+    : '';
+
+  return `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><style>body{font-family:${template.fontFamily || 'Arial, sans-serif'};font-size:${template.fontSize || 14}px;line-height:1.6;color:#333;max-width:600px;margin:0 auto;padding:20px;}</style></head>
+<body>
+  <div style="background:${bannerColor};color:white;padding:20px;border-radius:8px 8px 0 0;text-align:center;">
+    ${logoHtml}
+    <h1 style="margin:0;">${bannerTitle}</h1>
+  </div>
+  <div style="background:#f9fafb;padding:30px;border:1px solid #e5e7eb;border-top:none;border-radius:0 0 8px 8px;">
+    <div style="margin-bottom:20px;">${bodyHtml}</div>
+    ${buttonSection}
+    <p style="margin-top:30px;">${signatureHtml}</p>
+  </div>
+</body>
+</html>`.trim();
+}
+
 // ===== ROUTE RÉCUPÉRATION DEVIS (FILTRÉS PAR SAAS ACCOUNT) =====
 
 // Récupérer tous les devis pour le compte SaaS connecté
@@ -11264,6 +12379,7 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
       const allPaymentLinks = [...existingPaymentLinks, ...paymentLinksFromPaiements];
       
       // Convertir les Timestamps en Dates pour le frontend
+      const toIso = (v) => (v?.toDate ? v.toDate().toISOString() : v);
       return {
         id: doc.id,
         ...data,
@@ -11271,6 +12387,11 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
         paymentLinks: allPaymentLinks,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate().toISOString() : data.createdAt,
         updatedAt: data.updatedAt?.toDate ? data.updatedAt.toDate().toISOString() : data.updatedAt,
+        sentToMbeHubAt: toIso(data.sentToMbeHubAt),
+        shippedAt: toIso(data.shippedAt),
+        clientRefusalAt: toIso(data.clientRefusalAt),
+        reminderSentAt: toIso(data.reminderSentAt),
+        manualPaymentDate: toIso(data.manualPaymentDate),
         // Convertir timeline si présent
         timeline: data.timeline?.map((event) => ({
           ...event,

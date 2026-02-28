@@ -12,8 +12,18 @@ export type QuoteStatus =
   | 'collected'
   | 'preparation'
   | 'awaiting_shipment'
+  | 'sent_to_mbe_hub'
   | 'shipped'
   | 'completed';
+
+/** Refus ou abandon par le client final - raisons prédéfinies */
+export type ClientRefusalReason =
+  | 'tarif_trop_eleve'
+  | 'client_a_paye_concurrent'
+  | 'plus_interesse'
+  | 'autre'
+  | 'refus_explicite'   // legacy
+  | 'pas_de_reponse';   // abandon
 
 export type VerificationStatus = 
   | 'valid'
@@ -200,12 +210,33 @@ export interface Quote {
 
   /** Indique qu'une collecte a été planifiée (email envoyé à la SDV) */
   collectionPlannedAt?: Date | { toDate: () => Date } | null;
+
+  /** Date d'envoi du devis au client (email avec lien de paiement) */
+  quoteSentAt?: Date | { toDate: () => Date } | null;
+
+  /** Paiement manuel (virement / CB téléphone) - permet d'annuler */
+  manualPaymentMethod?: 'virement' | 'cb_telephone';
+  manualPaymentDate?: Date | { toDate: () => Date } | null;
+
+  /** Refus/abandon par le client : status + raison */
+  clientRefusalStatus?: 'client_refused';
+  clientRefusalReason?: ClientRefusalReason;
+  /** Détail libre (optionnel) quand raison = "Autre" ou pour préciser */
+  clientRefusalReasonDetail?: string;
+  clientRefusalAt?: Date | { toDate: () => Date } | null;
+
+  /** Date d'envoi de la relance (pour abandon après 1 mois sans réponse) */
+  reminderSentAt?: Date | { toDate: () => Date } | null;
   clientName?: string; // Nom du client
   clientEmail?: string; // Email du client
   recipientAddress?: string; // Adresse du destinataire
   totalWeight?: number; // Poids total en kg
   totalVolume?: number; // Volume total en m³
   shippingCost?: number; // Coût d'expédition
+  /** ID suivi MBE après envoi vers le Hub (brouillon) */
+  mbeTrackingId?: string;
+  /** Date d'envoi vers MBE Hub */
+  sentToMbeHubAt?: Date | { toDate: () => Date } | null;
 }
 
 export interface TimelineEvent {

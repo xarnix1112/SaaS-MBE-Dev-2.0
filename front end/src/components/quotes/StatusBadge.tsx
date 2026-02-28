@@ -39,6 +39,7 @@ const quoteStatusConfig: Record<QuoteStatus, { label: string; variant: 'new' | '
   collected: { label: 'Collecté', variant: 'info', icon: Truck },
   preparation: { label: 'Préparation', variant: 'info', icon: Package },
   awaiting_shipment: { label: 'Attente envoi', variant: 'pending', icon: Clock },
+  sent_to_mbe_hub: { label: 'Envoyé MBE Hub', variant: 'info', icon: Send },
   shipped: { label: 'Expédié', variant: 'success', icon: Send },
   completed: { label: 'Terminé', variant: 'verified', icon: CheckCircle2 },
 };

@@ -11,13 +11,14 @@ interface PipelineColumn {
   color: string;
 }
 
+// Statuts considérés comme "Nouveaux" (avant attente paiement)
+const STATUS_NOUVEAUX = new Set<QuoteStatus | string>([
+  'new', 'to_verify', 'verified', 'calculated', 'bordereau_linked', 'waiting_for_slip', 'payment_link_sent',
+]);
+
 const pipelineColumns: PipelineColumn[] = [
   { id: 'new', title: 'Nouveaux', color: 'bg-primary' },
-  { id: 'to_verify', title: 'À vérifier', color: 'bg-warning' },
-  { id: 'verified', title: 'Vérifiés', color: 'bg-success' },
-  { id: 'payment_link_sent', title: 'Lien envoyé', color: 'bg-info' },
   { id: 'awaiting_payment', title: 'Attente paiement', color: 'bg-warning' },
-  { id: 'paid', title: 'Payé', color: 'bg-success' },
   { id: 'awaiting_collection', title: 'Attente collecte', color: 'bg-warning' },
   { id: 'collected', title: 'Collecté', color: 'bg-info' },
   { id: 'preparation', title: 'Préparation', color: 'bg-info' },
@@ -29,8 +30,23 @@ const pipelineColumns: PipelineColumn[] = [
 export default function Pipeline() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
 
+  // Exclure les devis refusés par le client (visibles via page Refusés, recherche, lien direct)
+  const visibleQuotes = quotes.filter(q => q.clientRefusalStatus !== 'client_refused');
+
   const getQuotesForColumn = (status: QuoteStatus) => {
-    return quotes.filter(q => q.status === status);
+    return visibleQuotes.filter(q => {
+      const s = q.status || 'new';
+      if (status === 'new') {
+        return STATUS_NOUVEAUX.has(s) || s == null;
+      }
+      if (status === 'shipped') {
+        return s === 'shipped';
+      }
+      if (status === 'completed') {
+        return s === 'completed' || s === 'sent_to_mbe_hub';
+      }
+      return s === status;
+    });
   };
 
   return (

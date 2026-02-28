@@ -1,10 +1,17 @@
 /**
  * Emails automatiques envoyés au client selon les étapes du devis.
- * Supporte personnalisation (sujet, signature, ton) pour plan Ultra via saasAccount.emailTemplates.
+ * Supporte personnalisation via saasAccount.emailTemplates (étendus : bodySections, sujet, signature, bandeau).
  */
 
 import { Timestamp } from 'firebase-admin/firestore';
 import { getTemplatesForAccount } from './email-templates.js';
+import {
+  getTemplatesExtendedForAccount,
+  buildBodyHtmlFromSections,
+  buildEmailHtmlFromTemplate,
+  replacePlaceholdersExtended,
+  DEFAULT_TEMPLATES_EXTENDED,
+} from './email-templates-extended.js';
 
 /**
  * Charge les templates personnalisés pour un saasAccount
@@ -182,17 +189,52 @@ async function sendAutoEmail(firestore, sendEmailFn, quote, subject, htmlContent
   }
 }
 
+/** Types utilisant les templates étendus (bodySections) */
+const EXTENDED_BODY_TYPES = ['payment_received', 'collected'];
+
 /**
- * Construit le sujet, corps et signature à partir des templates (personnalisés ou défauts)
+ * Construit le sujet, corps et signature à partir des templates (personnalisés ou défauts).
+ * Pour payment_received : utilise les templates étendus (sections, bandeau, logo) si disponibles.
  */
 async function buildEmailContent(firestore, quote, type, opts) {
   const mbeName = quote._saasCommercialName || 'votre MBE';
   const clientName = quote?.client?.name || 'Client';
   const reference = quote?.reference || '';
   const amount = opts?.amount;
-  const ctx = { reference, clientName, mbeName, amount: amount != null ? amount : undefined };
+  const bordereauNum = quote?.auctionSheet?.bordereauNumber || quote?.bordereauNumber || '';
+  const nomSalleVentes = quote?.auctionSheet?.auctionHouse || quote?.nomSalleVentes || '';
+  const ctx = { reference, clientName, mbeName, amount: amount != null ? `${Number(amount).toFixed(2)}` : '' };
+  const templateValues = {
+    ...ctx,
+    clientName,
+    mbeName,
+    reference,
+    amount: ctx.amount,
+    bordereauNum,
+    nomSalleVentes,
+  };
 
   const customTemplates = await loadTemplates(firestore, quote.saasAccountId);
+  const extendedTemplates = getTemplatesExtendedForAccount(customTemplates);
+  const tExt = extendedTemplates[type];
+  const useExtended = EXTENDED_BODY_TYPES.includes(type) && (Array.isArray(tExt?.bodySections) ? tExt.bodySections.length > 0 : false);
+
+  if (useExtended && tExt) {
+    const renderedBody = Array.isArray(tExt.bodySections) && tExt.bodySections.length > 0
+      ? buildBodyHtmlFromSections(tExt.bodySections, templateValues)
+      : replacePlaceholdersExtended(tExt.bodyHtml || '', templateValues);
+    const def = DEFAULT_TEMPLATES_EXTENDED[type];
+    const renderedSignature = replacePlaceholdersExtended(tExt.signature || def?.signature || 'Bien à vous,', templateValues).replace(/\n/g, '<br>');
+    const subject = replacePlaceholdersExtended(tExt.subject || def?.subject || '', templateValues);
+    const html = buildEmailHtmlFromTemplate(
+      { ...tExt, bannerColor: tExt.bannerColor || '#2563eb' },
+      renderedBody,
+      renderedSignature,
+      templateValues
+    );
+    return { subject, html };
+  }
+
   const templates = getTemplatesForAccount(customTemplates);
   const t = templates[type] || {};
   const subject = t.subject || '';

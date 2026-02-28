@@ -5,29 +5,44 @@
 - **Plans concernés** : Pro et Ultra uniquement
 - **Paramètres** : Onglet « MBE Hub » dans Paramètres
 
-## Sécurité & RGPD (identique à Paytweak)
+## Sécurité & RGPD
 
-- **Stockage** : Firestore `saasAccounts/{id}/secrets/mbehub.apiKey`
-- **Pas de clé** dans .env, variables d'environnement ou fichiers locaux
-- **Règles Firestore** : `allow read, write: if false` sur `secrets/*` → aucun accès client
-- **Accès** : Uniquement le backend (Admin SDK) lit/écrit ; l'API vérifie que l'utilisateur est propriétaire du compte avant toute opération
+- **Stockage** : Firestore `saasAccounts/{id}/secrets/mbehub` (document avec `username` et `password`)
+- **Pas de credentials** dans .env ou fichiers locaux
+- **Accès** : Uniquement le backend (Admin SDK) lit/écrit
+
+## Configuration
+
+1. Renseignez vos **identifiants SOAP** dans Paramètres > MBE Hub :
+   - **Identifiant (username)** : Login mbehub.fr (rôle ONLINEMBE_USER)
+   - **Mot de passe** : Mot de passe API (créé une seule fois sur mbehub.fr)
+
+2. **Environnement** : Par défaut, l’API utilise le **DEMO** (staging).
+   - Pour la **production**, définissez `MBE_HUB_ENV=prod` dans les variables d’environnement du serveur.
 
 ## Fonctionnalité
 
-Une fois la clé API configurée, le bouton **« Envoyer vers MBE Hub »** apparaît sur chaque devis (page détail du devis, bloc Actions).
+- **Page Expéditions** : Les devis en « Attente d'envoi » affichent le bouton **« Envoyer vers MBE Hub »**.
+- Clic → modal pour vérifier/corriger les adresses client et destinataire (parsing automatique si adresse texte).
+- Choix du **service** (Standard, Express, etc.) via la liste dynamique `ShippingOptionsRequest`.
+- Validation → création d’une **expédition en brouillon** sur le Hub MBE.
+- Le **Centre MBE** finalise et imprime les étiquettes.
 
-Lors du clic, le backend envoie vers MBE Hub :
+## Données envoyées
+
+- Destinataire (nom, adresse complète, CP, ville, pays)
+- Poids (kg) et dimensions (L×l×h en cm)
 - Référence du devis
-- Client (nom, email, téléphone, adresse)
-- Destinataire (contact + adresse de livraison)
-- Cartons (référence, poids, dimensions volumétriques)
-- Poids total et poids volumétrique
+- Option assurance (si activée sur le devis)
 
-## Intégration API (à faire)
+## API SOAP utilisée
 
-L’appel vers l’API MBE Hub n’est pas encore en place. Dès que la documentation est disponible :
+- **WSDL DEMO** : `https://api.demo.mbehub.it/ws/e-link.wsdl`
+- **WSDL PROD FR** : `https://api.mbeonline.fr/ws/e-link.wsdl`
+- **Auth** : HTTP Basic (username:password)
 
-1. Mettre à jour `POST /api/mbehub/send-quote` dans `ai-proxy.js`
-2. Définir `MBE_HUB_API_URL` dans les variables d’environnement
-3. Adapter le payload au format attendu par l’API
-4. Remplacer le retour actuel (stub) par l’appel réel à l’API
+## Statuts après envoi
+
+- Le devis passe au statut **« Envoyé MBE Hub »** (`sent_to_mbe_hub`).
+- Le **MBE Tracking ID** est enregistré sur le devis.
+- Les devis envoyés sont visibles sur la page **Expédiés** (`/quotes/shipped`), conservés 6 mois puis masqués.

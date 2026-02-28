@@ -317,6 +317,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
     } | null; // Dimensions réelles depuis Firestore
     carrier?: string | null; // Transporteur depuis Firestore
     trackingNumber?: string | null; // Numéro de suivi depuis Firestore
+    mbeTrackingId?: string | null; // ID suivi MBE Hub
+    sentToMbeHubAt?: unknown; // Date envoi MBE Hub
     shippingOption?: string | null; // Option de transport depuis Firestore
     // Champs modifiés depuis l'interface (priorité sur Google Sheets)
     clientName?: string | null;
@@ -394,6 +396,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
       // Récupérer les informations d'expédition depuis Firestore
       const carrier = d?.carrier || null;
       const trackingNumber = d?.trackingNumber || null;
+      const mbeTrackingId = d?.mbeTrackingId || null;
+      const sentToMbeHubAt = d?.sentToMbeHubAt ?? null;
       const shippingOption = d?.shippingOption || null;
       
       // Récupérer les champs modifiés depuis Firestore (priorité sur Google Sheets)
@@ -473,6 +477,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         realDimensions, // Récupérer les dimensions réelles depuis Firestore
         carrier, // Récupérer le transporteur depuis Firestore
         trackingNumber, // Récupérer le numéro de suivi depuis Firestore
+        mbeTrackingId,
+        sentToMbeHubAt,
         shippingOption, // Récupérer l'option de transport depuis Firestore
         // Champs modifiés depuis l'interface (priorité sur Google Sheets)
         clientName,
@@ -545,6 +551,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         // Récupérer les informations d'expédition depuis Firestore
         const carrier = d?.carrier || null;
         const trackingNumber = d?.trackingNumber || null;
+        const mbeTrackingId = d?.mbeTrackingId || null;
+        const sentToMbeHubAt = d?.sentToMbeHubAt ?? null;
         const shippingOption = d?.shippingOption || null;
         
         // Récupérer les champs modifiés depuis Firestore (priorité sur Google Sheets)
@@ -591,10 +599,11 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
               paymentLinks,
                 internalNotes, // Récupérer les notes internes depuis Firestore
                 realDimensions, // Récupérer les dimensions réelles depuis Firestore
-                carrier, // Récupérer le transporteur depuis Firestore
-                trackingNumber, // Récupérer le numéro de suivi depuis Firestore
-                shippingOption, // Récupérer l'option de transport depuis Firestore
-                // Champs modifiés depuis l'interface (priorité sur Google Sheets)
+                carrier,
+                trackingNumber,
+                mbeTrackingId,
+                sentToMbeHubAt,
+                shippingOption,
                 clientName,
                 clientEmail,
                 clientPhone,
@@ -617,22 +626,24 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         } else {
           // Si le devis n'a pas de bordereau mais a un historique ou d'autres données, on l'associe quand même
           quotes.forEach((q) => {
-            if (q.reference === ref && !enhancements.has(q.id) && (timeline || paymentLinks || d?.status || d?.packagingPrice || d?.shippingPrice || realDimensions || carrier || trackingNumber)) {
+            if (q.reference === ref && !enhancements.has(q.id) && (timeline || paymentLinks || d?.status || d?.packagingPrice || d?.shippingPrice || realDimensions || carrier || trackingNumber || mbeTrackingId)) {
               enhancements.set(q.id, { 
                 auctionSheet: null, 
                 lotEnriched: null,
                 packagingPrice: d?.packagingPrice || null,
                 shippingPrice: d?.shippingPrice || null,
-                status: d?.status || null, // Récupérer le statut depuis Firestore
+                status: d?.status || null,
                 collectionPlannedAt: d?.collectionPlannedAt ?? null,
-                paymentStatus: d?.paymentStatus || null, // Récupérer le statut de paiement depuis Firestore
-                timeline, // Récupérer l'historique depuis Firestore (IMPORTANT)
+                paymentStatus: d?.paymentStatus || null,
+                timeline,
                 paymentLinks,
-                internalNotes, // Récupérer les notes internes depuis Firestore
-                realDimensions, // Récupérer les dimensions réelles depuis Firestore
-                carrier, // Récupérer le transporteur depuis Firestore
-                trackingNumber, // Récupérer le numéro de suivi depuis Firestore
-                shippingOption, // Récupérer l'option de transport depuis Firestore
+                internalNotes,
+                realDimensions,
+                carrier,
+                trackingNumber,
+                mbeTrackingId,
+                sentToMbeHubAt,
+                shippingOption,
                 // Champs modifiés depuis l'interface (priorité sur Google Sheets)
                 clientName,
                 clientEmail,
@@ -837,6 +848,8 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
         // Récupérer les informations d'expédition depuis Firestore
         const finalCarrier = firestoreData.carrier || q.carrier;
         const finalTrackingNumber = firestoreData.trackingNumber || q.trackingNumber;
+        const finalMbeTrackingId = firestoreData.mbeTrackingId || q.mbeTrackingId;
+        const finalSentToMbeHubAt = firestoreData.sentToMbeHubAt ?? q.sentToMbeHubAt;
         
         // Appliquer les champs modifiés depuis Firestore (priorité sur Google Sheets)
         // IMPORTANT: Utiliser !== undefined pour préserver les chaînes vides et null
@@ -885,8 +898,10 @@ export async function mergeEnhancementsIntoQuotes(quotes: Quote[]): Promise<Quot
             paymentStatus: finalPaymentStatus, // PRIORITÉ au statut de paiement depuis Firestore
             timeline: finalTimeline, // PRIORITÉ à l'historique depuis Firestore
             internalNotes: finalInternalNotes, // PRIORITÉ aux notes internes depuis Firestore
-            carrier: finalCarrier, // PRIORITÉ au transporteur depuis Firestore
-            trackingNumber: finalTrackingNumber, // PRIORITÉ au numéro de suivi depuis Firestore
+            carrier: finalCarrier,
+            trackingNumber: finalTrackingNumber,
+            mbeTrackingId: finalMbeTrackingId,
+            sentToMbeHubAt: finalSentToMbeHubAt,
             client: {
               ...q.client,
               name: finalClientName2,

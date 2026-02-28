@@ -4,16 +4,20 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send, ExternalLink } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
 import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
+import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
 import { useFeatures } from '@/hooks/use-features';
+import { useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { Separator } from '@/components/ui/separator';
 
 interface EmailAccount {
   id: string;
@@ -23,6 +27,7 @@ interface EmailAccount {
 }
 
 export default function Settings() {
+  const queryClient = useQueryClient();
   const [emailAccounts, setEmailAccounts] = useState<EmailAccount[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   
@@ -47,6 +52,8 @@ export default function Settings() {
   }
   const [googleSheetsStatus, setGoogleSheetsStatus] = useState<GoogleSheetsStatus | null>(null);
   const [isLoadingGoogleSheets, setIsLoadingGoogleSheets] = useState(false);
+  const [bilanStatus, setBilanStatus] = useState<{ exists: boolean; spreadsheetUrl?: string | null } | null>(null);
+  const [isLoadingBilan, setIsLoadingBilan] = useState(false);
   const [availableSheets, setAvailableSheets] = useState<GoogleSheet[]>([]);
   const [isLoadingSheetsList, setIsLoadingSheetsList] = useState(false);
   const [showSheetSelector, setShowSheetSelector] = useState(false);
@@ -79,6 +86,49 @@ export default function Settings() {
   const { data: featuresData } = useFeatures();
   const canCustomizeAutoEmails = featuresData?.features?.customizeAutoEmails === true;
 
+  // Groupes d'onglets pour une navigation plus ergonomique
+  const SETTINGS_GROUPS = {
+    emails: {
+      label: 'Emails',
+      icon: Mail,
+      tabs: canCustomizeAutoEmails
+        ? [
+            { id: 'emails', label: 'Comptes Email', icon: Mail },
+            { id: 'modeles-emails', label: "Modèles d'emails", icon: Send },
+            { id: 'auto-emails', label: 'Emails auto (ton)', icon: Send },
+          ]
+        : [{ id: 'emails', label: 'Comptes Email', icon: Mail }],
+    },
+    integrations: {
+      label: 'Intégrations',
+      icon: Globe,
+      tabs: [
+        { id: 'google-sheets', label: 'Google Sheets', icon: FileSpreadsheet },
+        { id: 'google-drive', label: 'Google Drive', icon: Folder },
+        { id: 'typeform', label: 'Typeform', icon: FormInput },
+        { id: 'paiements', label: 'Paiements', icon: CreditCard },
+        { id: 'mbehub', label: 'MBE Hub', icon: Globe },
+      ],
+    },
+    operations: {
+      label: 'Opérations',
+      icon: Package,
+      tabs: [
+        { id: 'cartons', label: 'Cartons', icon: Package },
+        { id: 'expedition', label: 'Expédition', icon: Truck },
+      ],
+    },
+  } as const;
+
+  const getGroupForTab = (tabId: string): keyof typeof SETTINGS_GROUPS => {
+    for (const [group, data] of Object.entries(SETTINGS_GROUPS)) {
+      if (data.tabs.some((t) => t.id === tabId)) return group as keyof typeof SETTINGS_GROUPS;
+    }
+    return 'emails';
+  };
+
+  const currentGroup = getGroupForTab(settingsTab);
+
   // État Paytweak / Payment Provider (feature customPaytweak)
   const [paymentSettings, setPaymentSettings] = useState<{
     hasCustomPaytweak: boolean;
@@ -91,10 +141,13 @@ export default function Settings() {
   const [isSavingPaytweakKey, setIsSavingPaytweakKey] = useState(false);
   const [isLoadingPaymentSettings, setIsLoadingPaymentSettings] = useState(false);
 
-  // MBE Hub (plans Pro/Ultra)
-  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; message?: string } | null>(null);
-  const [mbehubApiKeyInput, setMbehubApiKeyInput] = useState('');
+  // MBE Hub (plans Pro/Ultra) - SOAP API username + password
+  const [mbehubStatus, setMbehubStatus] = useState<{ available: boolean; configured: boolean; shippingCalculationMethod?: 'grille' | 'mbehub'; message?: string } | null>(null);
+  const [mbehubUsernameInput, setMbehubUsernameInput] = useState('');
+  const [mbehubPasswordInput, setMbehubPasswordInput] = useState('');
   const [isSavingMbehubKey, setIsSavingMbehubKey] = useState(false);
+  const [shippingMethod, setShippingMethod] = useState<'grille' | 'mbehub'>('grille');
+  const [isSavingShippingMethod, setIsSavingShippingMethod] = useState(false);
   
   // Charger les comptes email
   const loadEmailAccounts = async () => {
@@ -193,14 +246,44 @@ export default function Settings() {
       }
       const data = await res.json();
       setMbehubStatus(data);
+      if (data?.shippingCalculationMethod) {
+        setShippingMethod(data.shippingCalculationMethod);
+      }
     } catch {
       setMbehubStatus(null);
     }
   };
 
+  const handleSaveShippingMethod = async (method: 'grille' | 'mbehub') => {
+    try {
+      setIsSavingShippingMethod(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/account/shipping-calculation-method', {
+        method: 'PUT',
+        body: JSON.stringify({ method }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sauvegarde');
+      }
+      setShippingMethod(method);
+      setMbehubStatus((prev) => prev ? { ...prev, shippingCalculationMethod: method } : null);
+      queryClient.invalidateQueries({ queryKey: ['mbehub-status'] });
+      toast.success('Méthode de calcul enregistrée');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur');
+    } finally {
+      setIsSavingShippingMethod(false);
+    }
+  };
+
   const handleSaveMbehubKey = async () => {
-    if (!mbehubApiKeyInput.trim()) {
-      toast.error('Saisissez votre clé API MBE Hub');
+    if (!mbehubUsernameInput.trim()) {
+      toast.error('Saisissez votre identifiant MBE Hub');
+      return;
+    }
+    if (!mbehubPasswordInput.trim()) {
+      toast.error('Saisissez votre mot de passe MBE Hub');
       return;
     }
     try {
@@ -208,14 +291,18 @@ export default function Settings() {
       const { authenticatedFetch } = await import('@/lib/api');
       const res = await authenticatedFetch('/api/account/mbehub-key', {
         method: 'PUT',
-        body: JSON.stringify({ apiKey: mbehubApiKeyInput.trim() }),
+        body: JSON.stringify({
+          username: mbehubUsernameInput.trim(),
+          password: mbehubPasswordInput.trim(),
+        }),
       });
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || 'Erreur lors de la sauvegarde');
       }
-      toast.success('Clé MBE Hub enregistrée');
-      setMbehubApiKeyInput('');
+      toast.success('Identifiants MBE Hub enregistrés');
+      setMbehubUsernameInput('');
+      setMbehubPasswordInput('');
       await loadMbehubStatus();
     } catch (error) {
       toast.error(error instanceof Error ? error.message : 'Erreur');
@@ -348,6 +435,21 @@ export default function Settings() {
   }, [settingsTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Charger le statut Google Sheets
+  const loadBilanStatus = async () => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/bilan/status');
+      if (response.ok) {
+        const data = await response.json();
+        setBilanStatus(data);
+      } else {
+        setBilanStatus({ exists: false });
+      }
+    } catch {
+      setBilanStatus({ exists: false });
+    }
+  };
+
   const loadGoogleSheetsStatus = async () => {
     try {
       setIsLoadingGoogleSheets(true);
@@ -369,6 +471,7 @@ export default function Settings() {
       
       const status = await response.json();
       setGoogleSheetsStatus(status);
+      if (status.oauthAuthorized) loadBilanStatus();
       
       // Si OAuth autorisé mais pas de sheet sélectionné, afficher le sélecteur
       if (status.oauthAuthorized && !status.connected) {
@@ -550,6 +653,30 @@ export default function Settings() {
     } finally {
       setIsLoadingGoogleSheets(false);
     }
+  };
+
+  const handleCreateBilan = async () => {
+    try {
+      setIsLoadingBilan(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/bilan/create', { method: 'POST' });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la création');
+      }
+      const data = await response.json();
+      toast.success('Bilan devis MBE créé avec succès');
+      await loadBilanStatus();
+      if (data.spreadsheetUrl) window.open(data.spreadsheetUrl, '_blank');
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : 'Erreur lors de la création du Bilan');
+    } finally {
+      setIsLoadingBilan(false);
+    }
+  };
+
+  const handleViewBilan = () => {
+    if (bilanStatus?.spreadsheetUrl) window.open(bilanStatus.spreadsheetUrl, '_blank');
   };
 
   // ==========================================
@@ -759,34 +886,41 @@ export default function Settings() {
         </div>
 
         <Tabs value={settingsTab} onValueChange={setSettingsTab} className="space-y-6">
-          <TabsList>
-            <TabsTrigger value="emails">Comptes Email</TabsTrigger>
-            <TabsTrigger value="google-sheets">Google Sheets</TabsTrigger>
-            <TabsTrigger value="google-drive">Google Drive</TabsTrigger>
-            <TabsTrigger value="typeform" className="gap-2">
-              <FormInput className="w-4 h-4" />
-              Typeform
-            </TabsTrigger>
-            <TabsTrigger value="cartons">
-              <Package className="w-4 h-4 mr-2" />
-              Cartons
-            </TabsTrigger>
-            <TabsTrigger value="expedition">
-              <Truck className="w-4 h-4 mr-2" />
-              Expédition
-            </TabsTrigger>
-            <TabsTrigger value="paiements">Paiements</TabsTrigger>
-            <TabsTrigger value="mbehub" className="gap-2">
-              <Globe className="w-4 h-4" />
-              MBE Hub
-            </TabsTrigger>
-            {canCustomizeAutoEmails && (
-              <TabsTrigger value="auto-emails" className="gap-2">
-                <Send className="w-4 h-4" />
-                Emails automatiques
-              </TabsTrigger>
+          {/* Groupes principaux */}
+          <div className="flex flex-col gap-3">
+            <div className="flex gap-2 flex-wrap">
+              {(Object.entries(SETTINGS_GROUPS) as [keyof typeof SETTINGS_GROUPS, (typeof SETTINGS_GROUPS)['emails']][]).map(([groupKey, groupData]) => {
+                const Icon = groupData.icon;
+                const isActive = currentGroup === groupKey;
+                return (
+                  <Button
+                    key={groupKey}
+                    variant={isActive ? 'default' : 'outline'}
+                    size="sm"
+                    className="gap-2"
+                    onClick={() => setSettingsTab(groupData.tabs[0].id)}
+                  >
+                    <Icon className="w-4 h-4" />
+                    {groupData.label}
+                  </Button>
+                );
+              })}
+            </div>
+            {/* Sous-onglets du groupe actif (masqués si un seul onglet) */}
+            {SETTINGS_GROUPS[currentGroup].tabs.length > 1 && (
+              <TabsList className="w-fit">
+                {SETTINGS_GROUPS[currentGroup].tabs.map((tab) => {
+                  const Icon = tab.icon;
+                  return (
+                    <TabsTrigger key={tab.id} value={tab.id} className="gap-2">
+                      <Icon className="w-4 h-4" />
+                      {tab.label}
+                    </TabsTrigger>
+                  );
+                })}
+              </TabsList>
             )}
-          </TabsList>
+          </div>
 
           <TabsContent value="emails" className="space-y-6">
             <Card>
@@ -989,6 +1123,34 @@ export default function Settings() {
                           )}
                         </Card>
                       )}
+
+                      {/* Bilan devis MBE - visible dès que OAuth autorisé */}
+                      <Card className="mt-4">
+                        <CardHeader>
+                          <CardTitle className="flex items-center gap-2">Bilan devis MBE</CardTitle>
+                          <CardDescription>
+                            Feuille Google Sheet dédiée (En cours, Terminés, Refusés) – export en temps réel
+                          </CardDescription>
+                        </CardHeader>
+                        <CardContent>
+                          {isLoadingBilan ? (
+                            <div className="flex items-center gap-2">
+                              <Loader2 className="w-4 h-4 animate-spin" />
+                              Chargement...
+                            </div>
+                          ) : bilanStatus?.exists ? (
+                            <Button onClick={handleViewBilan} variant="outline" className="gap-2">
+                              <ExternalLink className="w-4 h-4" />
+                              Voir le bilan
+                            </Button>
+                          ) : (
+                            <Button onClick={handleCreateBilan} disabled={isLoadingBilan} className="gap-2">
+                              <FileSpreadsheet className="w-4 h-4" />
+                              Créer la page Google Sheet
+                            </Button>
+                          )}
+                        </CardContent>
+                      </Card>
                     </div>
                   </>
                 ) : (
@@ -1071,6 +1233,34 @@ export default function Settings() {
                           </Button>
                         </div>
                       </div>
+                    </Card>
+
+                    {/* Bilan devis MBE */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="flex items-center gap-2">Bilan devis MBE</CardTitle>
+                        <CardDescription>
+                          Feuille Google Sheet dédiée (En cours, Terminés, Refusés) – export en temps réel
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent>
+                        {isLoadingBilan ? (
+                          <div className="flex items-center gap-2">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Chargement...
+                          </div>
+                        ) : bilanStatus?.exists ? (
+                          <Button onClick={handleViewBilan} variant="outline" className="gap-2">
+                            <ExternalLink className="w-4 h-4" />
+                            Voir le bilan
+                          </Button>
+                        ) : (
+                          <Button onClick={handleCreateBilan} disabled={isLoadingBilan} className="gap-2">
+                            <FileSpreadsheet className="w-4 h-4" />
+                            Créer la page Google Sheet
+                          </Button>
+                        )}
+                      </CardContent>
                     </Card>
                   </>
                 )}
@@ -1545,9 +1735,14 @@ export default function Settings() {
 
           {/* MBE Hub - plans Pro et Ultra */}
           {canCustomizeAutoEmails && (
-            <TabsContent value="auto-emails" className="space-y-6">
-              <AutoEmailsSettings />
-            </TabsContent>
+            <>
+              <TabsContent value="modeles-emails" className="space-y-6">
+                <EmailTemplatesSettings />
+              </TabsContent>
+              <TabsContent value="auto-emails" className="space-y-6">
+                <AutoEmailsSettings />
+              </TabsContent>
+            </>
           )}
           <TabsContent value="mbehub" className="space-y-6">
             <Card>
@@ -1557,7 +1752,7 @@ export default function Settings() {
                   MBE Hub
                 </CardTitle>
                 <CardDescription>
-                  Connectez votre clé API MBE Hub pour envoyer les devis vers la zone expédition et créer les envois
+                  Identifiants SOAP (mbehub.fr) pour créer des expéditions en brouillon dans le Hub. Le Centre MBE finalise et imprime les étiquettes.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
@@ -1577,20 +1772,63 @@ export default function Settings() {
                     </p>
                   </div>
                 ) : (
-                  <div className="space-y-4">
+                  <div className="space-y-6">
+                    <div className="space-y-3">
+                      <Label className="text-base font-semibold">Calcul du prix d&apos;expédition</Label>
+                      <p className="text-sm text-muted-foreground">
+                        Choisissez une méthode. Une seule est utilisée à la fois pour éviter toute confusion.
+                      </p>
+                      <RadioGroup
+                        value={shippingMethod}
+                        onValueChange={(v) => (v === 'grille' || v === 'mbehub') && handleSaveShippingMethod(v)}
+                        className="grid gap-3"
+                      >
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="grille" id="shipping-grille" disabled={isSavingShippingMethod} />
+                          <Label htmlFor="shipping-grille" className="font-normal cursor-pointer flex-1">
+                            <strong>Grille tarifaire</strong> — Utiliser vos zones et tranches de poids (Google Sheets / paramètres).
+                          </Label>
+                        </div>
+                        <div className="flex items-center space-x-2">
+                          <RadioGroupItem value="mbehub" id="shipping-mbehub" disabled={isSavingShippingMethod || !mbehubStatus.configured} />
+                          <Label htmlFor="shipping-mbehub" className="font-normal cursor-pointer flex-1">
+                            <strong>MBE Hub</strong> — Tarifs en temps réel + 2 liens Standard/Express dans le devis {!mbehubStatus.configured && '(configurez d&apos;abord les identifiants ci-dessous)'}
+                          </Label>
+                        </div>
+                      </RadioGroup>
+                      {isSavingShippingMethod && (
+                        <p className="text-xs text-muted-foreground flex items-center gap-1">
+                          <Loader2 className="w-3 h-3 animate-spin" /> Enregistrement...
+                        </p>
+                      )}
+                    </div>
+                    <Separator />
                     <div className="space-y-2">
-                      <Label>Clé API MBE Hub</Label>
+                      <Label>Identifiants MBE Hub (pour la méthode MBE Hub)</Label>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Identifiant (username)</Label>
+                      <Input
+                        type="text"
+                        placeholder={mbehubStatus.configured ? '•••••••• (déjà configuré)' : 'Login mbehub.fr / ONLINEMBE_USER'}
+                        value={mbehubUsernameInput}
+                        onChange={(e) => setMbehubUsernameInput(e.target.value)}
+                        className="flex-1"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Mot de passe</Label>
                       <div className="flex gap-2">
                         <Input
                           type="password"
-                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configurée)' : 'Votre clé API MBE Hub'}
-                          value={mbehubApiKeyInput}
-                          onChange={(e) => setMbehubApiKeyInput(e.target.value)}
+                          placeholder={mbehubStatus.configured ? '•••••••• (déjà configuré)' : 'Mot de passe API'}
+                          value={mbehubPasswordInput}
+                          onChange={(e) => setMbehubPasswordInput(e.target.value)}
                           className="flex-1"
                         />
                         <Button
                           onClick={handleSaveMbehubKey}
-                          disabled={isSavingMbehubKey || !mbehubApiKeyInput.trim()}
+                          disabled={isSavingMbehubKey || !mbehubUsernameInput.trim() || !mbehubPasswordInput.trim()}
                         >
                           {isSavingMbehubKey ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Enregistrer'}
                         </Button>
@@ -1603,7 +1841,7 @@ export default function Settings() {
                       )}
                     </div>
                     <p className="text-sm text-muted-foreground">
-                      Une fois la clé configurée, le bouton « Envoyer vers MBE Hub » sera disponible sur chaque devis.
+                      Le bouton « Envoyer vers MBE Hub » sera disponible sur la page Expéditions (devis en attente d&apos;envoi).
                     </p>
                   </div>
                 )}

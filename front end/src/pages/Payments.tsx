@@ -38,8 +38,14 @@ import {
   Link as LinkIcon,
   Plus,
   ExternalLink,
+  Banknote,
+  RotateCcw,
+  Loader2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
+import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
+import { authenticatedFetch } from '@/lib/api';
+import { Quote } from '@/types/quote';
 
 type PaymentFilter = 'all' | 'pending' | 'link_sent' | 'partial' | 'paid' | 'cancelled';
 
@@ -50,6 +56,8 @@ export default function Payments() {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [generatingId, setGeneratingId] = useState<string | null>(null);
+  const [quoteForMarkPaid, setQuoteForMarkPaid] = useState<Quote | null>(null);
+  const [unmarkingId, setUnmarkingId] = useState<string | null>(null);
   
   // Debug: Log les quotes pour voir leur paymentStatus
   useEffect(() => {
@@ -68,8 +76,9 @@ export default function Payments() {
   }, [quotes]);
 
   // Afficher tous les devis qui ont au moins un lien de paiement créé
-  // (peu importe leur statut actuel - ils peuvent être paid, awaiting_collection, collected, etc.)
+  // Exclure les devis refusés par le client (visibles via page Refusés, recherche, lien direct)
   const quotesWithPayment = quotes.filter(q => 
+    q.clientRefusalStatus !== 'client_refused' &&
     q.paymentLinks && q.paymentLinks.length > 0
   );
 
@@ -318,8 +327,9 @@ export default function Payments() {
                       )}
                     </TableCell>
                     <TableCell>
-                      <div className="flex items-center gap-1">
+                      <div className="flex flex-wrap items-center gap-1">
                         {quote.paymentStatus !== 'paid' && (
+                          <>
                           <Button
                               variant="outline"
                               size="sm"
@@ -445,6 +455,48 @@ export default function Payments() {
                               <LinkIcon className="w-3 h-3" />
                               {generatingId === `${quote.id}-stripe` ? "Génération..." : "Générer un lien"}
                             </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1"
+                            onClick={() => setQuoteForMarkPaid(quote)}
+                          >
+                            <Banknote className="w-3 h-3" />
+                            Virement/CB
+                          </Button>
+                          </>
+                        )}
+                        {quote.paymentStatus === 'paid' && (quote.manualPaymentMethod === 'virement' || quote.manualPaymentMethod === 'cb_telephone') && (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="h-8 gap-1 text-amber-700 border-amber-300"
+                            onClick={async () => {
+                              if (!quote.id) return;
+                              setUnmarkingId(quote.id);
+                              try {
+                                const res = await authenticatedFetch(`/api/quotes/${quote.id}/unmark-paid`, { method: 'POST' });
+                                if (!res.ok) {
+                                  const err = await res.json().catch(() => ({}));
+                                  throw new Error(err.error || 'Erreur');
+                                }
+                                queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                                toast({ title: 'Paiement annulé', description: 'Retour en attente de paiement' });
+                              } catch (e) {
+                                toast({
+                                  title: 'Erreur',
+                                  description: e instanceof Error ? e.message : 'Erreur',
+                                  variant: 'destructive',
+                                });
+                              } finally {
+                                setUnmarkingId(null);
+                              }
+                            }}
+                            disabled={unmarkingId === quote.id}
+                          >
+                            {unmarkingId === quote.id ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                            Annuler
+                          </Button>
                         )}
                         {quote.paymentStatus === 'paid' && (
                           <Button variant="outline" size="sm" className="h-8 gap-1">
@@ -461,6 +513,18 @@ export default function Payments() {
           </CardContent>
         </Card>
       </div>
+
+      <MarkPaidManualDialog
+        open={!!quoteForMarkPaid}
+        onOpenChange={(open) => !open && setQuoteForMarkPaid(null)}
+        quoteId={quoteForMarkPaid?.id || ''}
+        quoteReference={quoteForMarkPaid?.reference}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          setQuoteForMarkPaid(null);
+          toast({ title: 'Devis marqué payé', description: 'En attente de collecte' });
+        }}
+      />
     </div>
   );
 }

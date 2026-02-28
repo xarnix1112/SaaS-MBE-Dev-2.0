@@ -79,7 +79,9 @@ export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
     navigate(`/quotes/${quoteId}`);
   };
 
-  const getStatusLabel = (status: string) => {
+  const getStatusLabel = (quote: Quote) => {
+    if (quote.clientRefusalStatus === 'client_refused') return 'Refusé par le client';
+    const status = quote.status || '';
     const statusMap: Record<string, string> = {
       new: 'Nouveau',
       to_verify: 'À vérifier',
@@ -91,6 +93,7 @@ export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
       collected: 'Collecté',
       preparation: 'Préparation',
       awaiting_shipment: 'Attente expédition',
+      sent_to_mbe_hub: 'Envoyé MBE Hub',
       shipped: 'Expédié',
       completed: 'Terminé',
     };
@@ -139,7 +142,7 @@ export function AppHeader({ title, subtitle, clientId }: AppHeaderProps) {
                             {quote.reference}
                           </span>
                           <span className="text-xs text-muted-foreground whitespace-nowrap">
-                            {getStatusLabel(quote.status)}
+                            {getStatusLabel(quote)}
                           </span>
                         </div>
                         <div className="text-xs text-muted-foreground space-y-0.5">

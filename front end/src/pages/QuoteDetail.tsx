@@ -18,10 +18,13 @@ import {
   DialogTitle,
   DialogDescription,
 } from '@/components/ui/dialog';
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
+import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
-import { Quote, DeliveryMode, DeliveryInfo, PaymentLink } from '@/types/quote';
+import { Quote, DeliveryMode, DeliveryInfo, PaymentLink, ClientRefusalReason } from '@/types/quote';
 import { toast } from 'sonner';
 import { useShipmentGrouping } from '@/hooks/useShipmentGrouping';
 import { GroupingSuggestion } from '@/components/shipment/GroupingSuggestion';
@@ -57,7 +60,8 @@ import {
   RefreshCw,
   CheckCircle2,
   Loader2,
-  Globe,
+  Banknote,
+  RotateCcw,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -138,7 +142,8 @@ export default function QuoteDetail() {
     },
     enabled: !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra'),
   });
-  const showMbehubButton = mbehubStatus?.available && mbehubStatus?.configured;
+  const useMbehubForShipping = mbehubStatus?.available && mbehubStatus?.configured && mbehubStatus?.shippingCalculationMethod === 'mbehub';
+  const showMbehubButton = useMbehubForShipping;
   const foundQuote = quotes.find((q) => q.id === id);
   const [generatingLink, setGeneratingLink] = useState<boolean>(false);
   const [quote, setQuote] = useState<Quote | undefined>(foundQuote);
@@ -167,6 +172,101 @@ export default function QuoteDetail() {
   const [isLoadingSurcharges, setIsLoadingSurcharges] = useState(false);
   const [paiementsRefreshKey, setPaiementsRefreshKey] = useState(0);
   const [isPrincipalPaidForEdit, setIsPrincipalPaidForEdit] = useState(false);
+  const [isRefusingQuote, setIsRefusingQuote] = useState(false);
+  const [isSendingReminder, setIsSendingReminder] = useState(false);
+  const [isRefusalDialogOpen, setIsRefusalDialogOpen] = useState(false);
+  const [refusalReason, setRefusalReason] = useState<ClientRefusalReason>('tarif_trop_eleve');
+  const [refusalReasonDetail, setRefusalReasonDetail] = useState('');
+  const [isMarkPaidManualDialogOpen, setIsMarkPaidManualDialogOpen] = useState(false);
+  const [isUnmarkingPaid, setIsUnmarkingPaid] = useState(false);
+  const [mbeShippingRates, setMbeShippingRates] = useState<{
+    standard?: { price: number; option?: unknown };
+    express?: { price: number; option?: unknown };
+  } | null>(null);
+  const [isCalculatingMbeShipping, setIsCalculatingMbeShipping] = useState(false);
+
+  // Réinitialiser les tarifs MBE quand on change de devis
+  useEffect(() => {
+    setMbeShippingRates(null);
+  }, [quote?.id]);
+
+  // Auto-fetch et auto-apply du prix Standard MBE Hub à l'ouverture du devis (quand MBE Hub est sélectionné)
+  const hasAutoAppliedMbeRef = useRef<Record<string, boolean>>({});
+  useEffect(() => {
+    if (!useMbehubForShipping || !quote?.id || isSaving) return;
+    if (quote.paymentStatus === 'paid') return;
+    const dims = quote.lot?.dimensions || quote.lot?.realDimensions || {};
+    const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
+    const rawWeight = quote.totalWeight ?? dims.weight ?? 0;
+    const weight = rawWeight > 0 ? rawWeight : (hasDims ? calculateVolumetricWeight(dims.length, dims.width, dims.height) : 0);
+    const addr = quote.delivery?.address || {};
+    const clientAddr = quote.client?.address || '';
+    const hasAddr = !!(addr.zip || addr.city || addr.country || clientAddr);
+    if (!hasDims || !hasAddr) return;
+    if (hasAutoAppliedMbeRef.current[quote.id]) return;
+    hasAutoAppliedMbeRef.current[quote.id] = true;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await authenticatedFetch('/api/mbehub/quote-shipping-rates', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ quoteId: quote.id }),
+        });
+        if (cancelled) return;
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(data.error || 'Erreur API');
+        const standardPrice = data.standard?.price;
+        if (standardPrice == null || standardPrice <= 0) return;
+        const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ??
+          (quote.auctionSheet?.recommendedCarton as { priceTTC?: number })?.priceTTC ??
+          quote.options?.packagingPrice ?? 0;
+        const insuranceAmount = computeInsuranceAmount(
+          quote.lot?.value || 0,
+          quote.options?.insurance,
+          quote.options?.insuranceAmount
+        );
+        const newTotal = packagingPrice + standardPrice + insuranceAmount;
+        setQuote((prev) => prev ? {
+          ...prev,
+          options: {
+            ...prev.options,
+            shippingPrice: standardPrice,
+            insuranceAmount,
+          },
+          totalAmount: newTotal,
+        } : prev);
+        await setDoc(
+          doc(db, 'quotes', quote.id),
+          {
+            options: {
+              ...(quote.options || {}),
+              shippingPrice: standardPrice,
+              insuranceAmount,
+            },
+            totalAmount: newTotal,
+            updatedAt: Timestamp.now(),
+          },
+          { merge: true }
+        );
+        queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      } catch (e) {
+        if (!cancelled) {
+          hasAutoAppliedMbeRef.current[quote.id] = false;
+          toast.error((e as Error)?.message || 'Impossible de récupérer les tarifs MBE');
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [useMbehubForShipping, quote?.id, quote?.lot?.dimensions, quote?.delivery?.address, quote?.client?.address, quote?.paymentStatus, quote?.totalWeight, isSaving, queryClient]);
+
+  const REFUSAL_REASONS: { value: ClientRefusalReason; label: string }[] = [
+    { value: 'tarif_trop_eleve', label: 'Tarif trop élevé' },
+    { value: 'client_a_paye_concurrent', label: 'Client a payé un concurrent' },
+    { value: 'plus_interesse', label: 'Plus intéressé' },
+    { value: 'pas_de_reponse', label: 'Pas de réponse / Abandonné' },
+    { value: 'autre', label: 'Autre' },
+  ];
 
   // Hook pour la gestion du groupement d'expédition
   const currentQuoteForGrouping = quote || foundQuote;
@@ -211,6 +311,8 @@ export default function QuoteDetail() {
   const [bordereauProcessingTriggered, setBordereauProcessingTriggered] = useState(false);
   const [bordereauPollingActive, setBordereauPollingActive] = useState(false);
   const [bordereauPollingTimedOut, setBordereauPollingTimedOut] = useState(false);
+  const [bordereauPollingIsRetry, setBordereauPollingIsRetry] = useState(false);
+  const bordereauPollingInitialTimelineRef = useRef<number>(0);
   const lastResyncTimeRef = useRef<number>(0);
   const RESYNC_COOLDOWN_MS = 5000; // Évite la boucle Resync quand le polling rafraîchit toutes les 5s
   
@@ -233,8 +335,8 @@ export default function QuoteDetail() {
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           return;
         }
-        if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0) {
-          // Vraiment déjà traité avec des lots → rafraîchir et ne pas relancer
+        if (data.alreadyProcessed && (data.lotsCount ?? 0) > 0 && !forceRetry) {
+          // Vraiment déjà traité avec des lots (et pas une réanalyse) → rafraîchir et ne pas relancer
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         } else {
           // OCR en cours ou complété avec 0 lots → lancer le polling
@@ -244,6 +346,9 @@ export default function QuoteDetail() {
             toast.info('Relance de l\'analyse du bordereau...', { duration: 5000 });
           }
           setBordereauPollingActive(true);
+          setBordereauPollingIsRetry(forceRetry);
+          // Mémoriser la longueur du timeline pour détecter la fin de la réanalyse
+          bordereauPollingInitialTimelineRef.current = (foundQuote?.timeline?.length ?? 0);
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
         }
       } else {
@@ -257,7 +362,7 @@ export default function QuoteDetail() {
       console.warn('[QuoteDetail] Échec déclenchement traitement bordereau:', e);
       toast.error('Connexion à l\'API impossible. Vérifiez votre connexion ou réessayez plus tard.');
     }
-  }, [id, queryClient]);
+  }, [id, queryClient, foundQuote]);
 
   useEffect(() => {
     const q = foundQuote || quote;
@@ -282,13 +387,19 @@ export default function QuoteDetail() {
   useEffect(() => {
     if (!bordereauPollingActive || !id) return;
     const q = foundQuote || quote;
+    const timelineLen = q?.timeline?.length ?? 0;
+    const initialLen = bordereauPollingInitialTimelineRef.current;
+    // Réanalyse : succès quand le timeline a une nouvelle entrée (Devis calculé, Lien généré)
+    const timelineGrew = bordereauPollingIsRetry && timelineLen > initialLen;
     // Considérer comme réussi seulement si au moins un lot a un numéro ou une description réelle (pas le lot par défaut)
     const hasRealLots = q?.auctionSheet?.lots && q.auctionSheet.lots.length > 0 &&
       q.auctionSheet.lots.some((l: { lotNumber?: string | null; description?: string }) =>
         l.lotNumber !== null || (l.description && l.description !== 'Lot détecté' && l.description !== 'Description non disponible')
       );
-    if (hasRealLots) {
+    // En réanalyse, ne pas s'arrêter sur hasRealLots (le devis avait déjà des lots) — attendre que le timeline grandisse
+    if (bordereauPollingIsRetry ? timelineGrew : hasRealLots) {
       setBordereauPollingActive(false);
+      setBordereauPollingIsRetry(false);
       setBordereauPollingTimedOut(false);
       toast.success('Bordereau analysé avec succès !');
       return;
@@ -299,6 +410,7 @@ export default function QuoteDetail() {
     const timeout = setTimeout(() => {
       clearInterval(interval);
       setBordereauPollingActive(false);
+      setBordereauPollingIsRetry(false);
       setBordereauPollingTimedOut(true);
       toast.warning('L\'analyse a pris plus de temps que prévu. Cliquez sur « Relancer l\'analyse » pour réessayer.');
     }, 120000);
@@ -306,7 +418,7 @@ export default function QuoteDetail() {
       clearInterval(interval);
       clearTimeout(timeout);
     };
-  }, [bordereauPollingActive, id, foundQuote?.auctionSheet?.lots, quote?.auctionSheet?.lots, queryClient]);
+  }, [bordereauPollingActive, bordereauPollingIsRetry, id, foundQuote, quote, queryClient]);
 
   // Test de connectivité au backend au chargement
   useEffect(() => {
@@ -460,28 +572,8 @@ export default function QuoteDetail() {
     });
   }, [foundQuote?.id, foundQuote?.auctionSheet, foundQuote?.options?.packagingPrice, foundQuote?.options?.shippingPrice, foundQuote?.paymentLinks, foundQuote?.timeline, foundQuote?.client?.email, foundQuote?.client?.name, isSaving, lastSaveTime]);
 
-  // Tenter la génération auto du lien de paiement au chargement si emballage+expédition prêts et pas encore de lien
-  const hasAttemptedAutoPayment = useRef<Set<string>>(new Set());
-  useEffect(() => {
-    if (!quote?.id) return;
-    const packagingPrice = quote.auctionSheet?.recommendedCarton?.price ?? (quote.auctionSheet?.recommendedCarton as any)?.priceTTC ?? quote.options?.packagingPrice ?? 0;
-    const shippingPrice = quote.options?.shippingPrice ?? 0;
-    const hasPaymentLink = quote.paymentLinks?.some((l: PaymentLink) => l?.status === 'active' || l?.status === 'pending') ?? false;
-    if (packagingPrice > 0 && shippingPrice > 0 && !hasPaymentLink && !hasAttemptedAutoPayment.current.has(quote.id)) {
-      hasAttemptedAutoPayment.current.add(quote.id);
-      authenticatedFetch(`/api/devis/${quote.id}/try-auto-payment`, { method: 'POST' })
-        .then((res) => res.json().catch(() => ({})))
-        .then((data) => {
-          if (data?.generated) {
-            console.log('[QuoteDetail] ✅ Lien de paiement auto-généré au chargement');
-            queryClient.invalidateQueries({ queryKey: ['quotes'] });
-          } else {
-            hasAttemptedAutoPayment.current.delete(quote.id);
-          }
-        })
-        .catch(() => { hasAttemptedAutoPayment.current.delete(quote.id); });
-    }
-  }, [quote?.id, quote?.options?.packagingPrice, quote?.options?.shippingPrice, quote?.paymentLinks, quote?.auctionSheet?.recommendedCarton, queryClient]);
+  // NE PLUS générer de lien au simple chargement de la page.
+  // Le lien est généré uniquement : 1) après analyse OCR (backend), 2) après handleAuctionSheetAnalysis (upload manuel).
 
   // FORCER l'application des dimensions INTERNES du carton (dimensions du colis)
   // Ce useEffect garantit que les dimensions du carton sont TOUJOURS affichées
@@ -608,8 +700,12 @@ export default function QuoteDetail() {
           console.log(`[QuoteDetail] ✅ Prix emballage existant: ${quote.options.packagingPrice}€ pour "${searchRef}"`);
         }
         
-        // 2. Recalculer le prix d'expédition si dimensions et pays disponibles mais prix manquant
-        if (quote.lot.dimensions && quote.delivery?.address) {
+        // 2. Recalculer le prix d'expédition (grille tarifaire uniquement - si MBE Hub, pas de recalcul auto)
+        const useMbehub = mbehubStatus?.shippingCalculationMethod === 'mbehub';
+        const mbehubQueryEnabled = !!featuresData?.planId && (featuresData.planId === 'pro' || featuresData.planId === 'ultra');
+        const waitingForMbehub = mbehubQueryEnabled && mbehubStatus === undefined;
+        const shouldUseGrille = !useMbehub && !waitingForMbehub;
+        if (shouldUseGrille && quote.lot.dimensions && quote.delivery?.address) {
           const hasDimensions = quote.lot.dimensions.length > 0 && quote.lot.dimensions.width > 0 && quote.lot.dimensions.height > 0;
           if (hasDimensions) {
             // Extraire le code pays depuis plusieurs sources
@@ -802,6 +898,8 @@ export default function QuoteDetail() {
     quote?.delivery?.address?.country,
     quote?.options?.packagingPrice,
     quote?.options?.shippingPrice,
+    mbehubStatus?.shippingCalculationMethod,
+    featuresData?.planId,
   ]);
 
   // Recalculer automatiquement le totalAmount quand les prix changent
@@ -989,6 +1087,54 @@ export default function QuoteDetail() {
     }
   };
 
+  const handleSendEmailWithTwoLinks = async () => {
+    if (!quote) return;
+    const clientEmailRaw = quote.client?.email || quote.delivery?.contact?.email;
+    if (!clientEmailRaw?.trim()) {
+      toast.error('Email client manquant');
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(clientEmailRaw.trim())) {
+      toast.error("Format d'email invalide");
+      return;
+    }
+    try {
+      toast.info('Création des 2 liens de paiement...');
+      const prepRes = await authenticatedFetch('/api/mbehub/prepare-quote-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ quoteId: quote.id }),
+      });
+      const prepData = await prepRes.json();
+      if (!prepRes.ok || !prepData.success) {
+        throw new Error(prepData.error || 'Erreur lors de la création des liens');
+      }
+      const newLinks: { url: string; amount: number; type: string; status: string }[] = [];
+      if (prepData.standard?.url) {
+        newLinks.push({ url: prepData.standard.url, amount: prepData.standard.price ?? 0, type: 'PRINCIPAL_STANDARD', status: 'pending' });
+      }
+      if (prepData.express?.url) {
+        newLinks.push({ url: prepData.express.url, amount: prepData.express.price ?? 0, type: 'PRINCIPAL_EXPRESS', status: 'pending' });
+      }
+      const quoteToSend = { ...quote, paymentLinks: [...(quote.paymentLinks || []), ...newLinks] };
+      const sendRes = await authenticatedFetch('/api/send-quote-email', {
+        method: 'POST',
+        body: JSON.stringify({ quote: quoteToSend }),
+      });
+      if (!sendRes.ok) {
+        const errData = await sendRes.json().catch(() => ({}));
+        throw new Error(errData.error || `Erreur ${sendRes.status}`);
+      }
+      toast.success('Devis envoyé avec 2 liens (Standard + Express)');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setPaiementsRefreshKey((k) => k + 1);
+    } catch (e: unknown) {
+      console.error('[Email] Erreur envoi 2 liens:', e);
+      toast.error((e as Error)?.message || 'Erreur');
+    }
+  };
+
   const handleSendEmail = async () => {
     if (!quote) return;
     
@@ -1115,6 +1261,7 @@ export default function QuoteDetail() {
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           
           console.log('[Email] ✅ Statut mis à jour: awaiting_payment / pending');
+          syncQuoteToBilan();
           toast.success(`Email envoyé avec succès à ${clientEmail}. Statut: En attente de paiement`);
         } catch (firestoreError) {
           console.error('[Email] Erreur lors de la mise à jour du statut:', firestoreError);
@@ -1167,7 +1314,7 @@ export default function QuoteDetail() {
           
           // Mettre à jour le state local
           setQuote(updatedQuote);
-          
+          syncQuoteToBilan();
           // Invalider le cache React Query pour forcer le rechargement
           queryClient.invalidateQueries({ queryKey: ['quotes'] });
           
@@ -1316,29 +1463,122 @@ export default function QuoteDetail() {
     }
   };
 
-  const [isSendingToMbehub, setIsSendingToMbehub] = useState(false);
-  const handleSendToMbeHub = async () => {
-    if (!quote?.id) return;
-    setIsSendingToMbehub(true);
+  const ONE_MONTH_MS = 30 * 24 * 60 * 60 * 1000;
+  const toDate = (v: unknown): Date | null => {
+    if (!v) return null;
+    if (v instanceof Date) return v;
+    if (typeof v === 'object' && v !== null && 'toDate' in v && typeof (v as { toDate: () => Date }).toDate === 'function') {
+      return (v as { toDate: () => Date }).toDate();
+    }
     try {
-      const res = await authenticatedFetch('/api/mbehub/send-quote', {
+      const d = new Date(v as string | number);
+      return isNaN(d.getTime()) ? null : d;
+    } catch {
+      return null;
+    }
+  };
+  const safeQuoteData = quote || foundQuote;
+  const updatedAtDate = toDate(safeQuoteData?.updatedAt);
+  const reminderSentAtDate = toDate(safeQuoteData?.reminderSentAt);
+  const canSendReminder =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused' &&
+    updatedAtDate &&
+    Date.now() - updatedAtDate.getTime() > ONE_MONTH_MS;
+  const canMarkAbandoned =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused' &&
+    reminderSentAtDate &&
+    Date.now() - reminderSentAtDate.getTime() > ONE_MONTH_MS;
+  const canMarkRefused =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused';
+
+  const canMarkPaidManually =
+    quote?.id &&
+    safeQuoteData?.paymentStatus !== 'paid' &&
+    safeQuoteData?.clientRefusalStatus !== 'client_refused';
+
+  const canUnmarkPaid =
+    quote?.id &&
+    safeQuoteData?.paymentStatus === 'paid' &&
+    (safeQuoteData?.manualPaymentMethod === 'virement' || safeQuoteData?.manualPaymentMethod === 'cb_telephone');
+
+  const syncQuoteToBilan = useCallback(async () => {
+    if (!quote?.id) return;
+    try {
+      await authenticatedFetch(`/api/bilan/sync-quote/${quote.id}`, { method: 'POST' });
+    } catch {
+      /* ignoré */
+    }
+  }, [quote?.id]);
+
+  const handleMarkRefused = async (reason: ClientRefusalReason, reasonDetail?: string) => {
+    if (!quote?.id) return;
+    setIsRefusingQuote(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/client-refused`, {
         method: 'POST',
-        body: JSON.stringify({ quoteId: quote.id }),
+        body: JSON.stringify({ reason, reasonDetail }),
       });
-      const data = await res.json().catch(() => ({}));
       if (!res.ok) {
-        toast.error(data.error || data.message || 'Erreur lors de l\'envoi vers MBE Hub');
-        return;
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
       }
-      if (data.success === false && data.message) {
-        toast.info(data.message);
-      } else {
-        toast.success('Devis envoyé vers MBE Hub');
-      }
-    } catch (error) {
-      toast.error(error instanceof Error ? error.message : 'Erreur');
+      toast.success('Devis marqué refusé par le client');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, clientRefusalStatus: 'client_refused', clientRefusalReason: reason, clientRefusalReasonDetail: reasonDetail, clientRefusalAt: new Date() } : prev));
+      setIsRefusalDialogOpen(false);
+      setRefusalReasonDetail('');
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
     } finally {
-      setIsSendingToMbehub(false);
+      setIsRefusingQuote(false);
+    }
+  };
+
+  const handleRefusalDialogSubmit = () => {
+    handleMarkRefused(refusalReason, refusalReasonDetail.trim() || undefined);
+  };
+
+  const handleUnmarkPaid = async () => {
+    if (!quote?.id) return;
+    setIsUnmarkingPaid(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/unmark-paid`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success('Paiement annulé – retour en attente de paiement');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, paymentStatus: 'pending', status: 'awaiting_payment', manualPaymentMethod: undefined, manualPaymentDate: undefined, paidAmount: 0 } : prev));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
+    } finally {
+      setIsUnmarkingPaid(false);
+    }
+  };
+
+  const handleSendReminder = async () => {
+    if (!quote?.id) return;
+    setIsSendingReminder(true);
+    try {
+      const res = await authenticatedFetch(`/api/quotes/${quote.id}/send-reminder`, { method: 'POST' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur');
+      }
+      toast.success('Relance enregistrée');
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      setQuote((prev) => (prev ? { ...prev, reminderSentAt: new Date() } : prev));
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur');
+    } finally {
+      setIsSendingReminder(false);
     }
   };
 
@@ -1623,11 +1863,17 @@ export default function QuoteDetail() {
     } else {
       console.log(`[QuoteDetail] ✅ Code pays final: ${countryCode}`);
     }
-    
-    if (countryCode && updatedQuote.lot.dimensions && 
-        updatedQuote.lot.dimensions.length > 0 && 
-        updatedQuote.lot.dimensions.width > 0 && 
-        updatedQuote.lot.dimensions.height > 0) {
+
+    const hasValidDimsForShipping = updatedQuote.lot.dimensions &&
+      updatedQuote.lot.dimensions.length > 0 &&
+      updatedQuote.lot.dimensions.width > 0 &&
+      updatedQuote.lot.dimensions.height > 0;
+    const shouldFetchMbeAfterSave = useMbehubForShipping && !!countryCode && hasValidDimsForShipping;
+
+    if (shouldFetchMbeAfterSave) {
+      // MBE Hub : shippingPrice sera récupéré après sauvegarde (quote-shipping-rates lit depuis Firestore)
+      console.log(`[QuoteDetail] MBE Hub sélectionné - tarif expédition sera calculé après sauvegarde`);
+    } else if (!useMbehubForShipping && countryCode && hasValidDimsForShipping) {
       try {
         const dimensions = updatedQuote.lot.dimensions;
         console.log(`[QuoteDetail] 📐 Dimensions du colis: L=${dimensions.length}cm × l=${dimensions.width}cm × H=${dimensions.height}cm`);
@@ -1641,7 +1887,7 @@ export default function QuoteDetail() {
         
         const isExpress = true; // TOUS les colis sont en EXPRESS
         
-        console.log(`[QuoteDetail] 🔄 Calcul prix expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+        console.log(`[QuoteDetail] 🔄 Calcul prix expédition (grille): pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
         shippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
         
         if (shippingPrice > 0) {
@@ -1768,6 +2014,57 @@ export default function QuoteDetail() {
           },
         } : q));
       });
+
+      let finalShippingPrice = updatedQuote.options.shippingPrice ?? 0;
+      if (shouldFetchMbeAfterSave) {
+        try {
+          const res = await authenticatedFetch('/api/mbehub/quote-shipping-rates', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ quoteId: updatedQuote.id }),
+          });
+          const data = await res.json().catch(() => ({}));
+          if (res.ok && data.standard?.price > 0) {
+            finalShippingPrice = data.standard.price;
+            const finalPackagingPrice = updatedQuote.options.packagingPrice ?? 0;
+            const insuranceAmount = computeInsuranceAmount(
+              updatedQuote.lot?.value || 0,
+              updatedQuote.options?.insurance,
+              updatedQuote.options?.insuranceAmount
+            );
+            const newTotal = finalPackagingPrice + finalShippingPrice + insuranceAmount;
+            updatedQuote.options.shippingPrice = finalShippingPrice;
+            updatedQuote.options.insuranceAmount = insuranceAmount;
+            updatedQuote.totalAmount = newTotal;
+            setQuote((q) => q ? { ...q, options: { ...q.options, shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal } : q);
+            await setDoc(doc(db, 'quotes', updatedQuote.id), { options: { shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal, updatedAt: Timestamp.now() }, { merge: true });
+            queryClient.setQueryData<Quote[]>(["quotes"], (prev) => prev ? prev.map((q) => q.id === updatedQuote.id ? { ...q, options: { ...q.options, shippingPrice: finalShippingPrice, insuranceAmount }, totalAmount: newTotal } : q) : prev);
+            console.log(`[QuoteDetail] Prix expédition MBE Standard appliqué: ${finalShippingPrice}€`);
+          }
+        } catch (e) {
+          console.error('[QuoteDetail] Erreur quote-shipping-rates:', e);
+          toast.error('Impossible de récupérer les tarifs MBE');
+        }
+      }
+
+      // Générer le lien de paiement après analyse réussie (emballage + expédition prêts)
+      // regenerate: true permet d'annuler les anciens liens en cas de réanalyse, puis de créer le nouveau
+      const pkg = updatedQuote.options.packagingPrice ?? 0;
+      const ship = finalShippingPrice;
+      if (pkg > 0 && ship > 0) {
+        authenticatedFetch(`/api/devis/${updatedQuote.id}/try-auto-payment`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ regenerate: true }),
+        })
+          .then((res) => res.json().catch(() => ({})))
+          .then((data) => {
+            if (data?.generated) {
+              queryClient.invalidateQueries({ queryKey: ['quotes'] });
+            }
+          })
+          .catch(() => {});
+      }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e);
       console.warn("[firebase] sauvegarde bordereau impossible", e);
@@ -1917,13 +2214,19 @@ export default function QuoteDetail() {
             </Button>
           </Link>
           <div className="flex items-center gap-2">
-            {/* N'afficher le badge de statut général que si le statut n'est pas "paid" 
-                (car le badge de paiement suffit pour indiquer que c'est payé) */}
-            {safeQuote.status !== 'paid' && (
-            <StatusBadge status={safeQuote.status} />
+            {safeQuote.clientRefusalStatus === 'client_refused' ? (
+              <Badge variant="destructive" className="gap-1">
+                <XCircle className="w-3 h-3" />
+                Refusé par le client
+              </Badge>
+            ) : (
+              <>
+                {safeQuote.status !== 'paid' && (
+                  <StatusBadge status={safeQuote.status} />
+                )}
+                <StatusBadge status={safeQuote.paymentStatus} type="payment" />
+              </>
             )}
-            {/* Toujours afficher le badge de paiement */}
-            <StatusBadge status={safeQuote.paymentStatus} type="payment" />
           </div>
         </div>
 
@@ -2546,24 +2849,124 @@ export default function QuoteDetail() {
                           </div>
                         </div>
                         
-                        {/* Prix d'expédition - toujours affiché (Express depuis Google Sheets) */}
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">
-                            Expédition (Express)
-                            {delivery.address?.country && (
-                              <span className="text-muted-foreground text-xs ml-1">
-                                ({delivery.address.country})
-                              </span>
-                            )}
-                          </span>
-                          <span className="font-medium">
-                            {(() => {
-                              const price = quote.options?.shippingPrice || 0;
-                              console.log('[QuoteDetail] Affichage prix expédition:', { price, options: quote.options });
-                              return price.toFixed(2);
-                            })()}€
-                          </span>
-                        </div>
+                        {/* Prix d'expédition */}
+                        {(() => {
+                          const dims = safeQuote.lot?.dimensions || safeQuote.lot?.realDimensions || {};
+                          const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
+                          const weight = safeQuote.totalWeight ?? dims.weight ?? 0;
+                          const addr = delivery.address || {};
+                          const clientAddr = safeQuote.client?.address || '';
+                          const hasAddr = !!(addr.zip || addr.city || addr.country || clientAddr);
+                          const canCalculateMbeShipping = showMbehubButton && hasDims && weight > 0 && hasAddr && !isPrincipalPaidForEdit;
+                          return (
+                            <div className="space-y-2">
+                              <div className="flex justify-between text-sm items-center">
+                                <span className="text-muted-foreground">
+                                  Expédition{mbeShippingRates ? ' (prix actuel)' : ' (Express)'}
+                                  {delivery.address?.country && (
+                                    <span className="text-muted-foreground text-xs ml-1">
+                                      ({delivery.address.country})
+                                    </span>
+                                  )}
+                                </span>
+                                <div className="flex items-center gap-2">
+                                  <span className="font-medium">
+                                    {(() => {
+                                      const price = quote.options?.shippingPrice || 0;
+                                      return price.toFixed(2);
+                                    })()}€
+                                  </span>
+                                  {canCalculateMbeShipping && (
+                                    <Button
+                                      variant="ghost"
+                                      size="sm"
+                                      className="h-7 text-xs"
+                                      disabled={isCalculatingMbeShipping}
+                                      onClick={async () => {
+                                        try {
+                                          setIsCalculatingMbeShipping(true);
+                                          setMbeShippingRates(null);
+                                          const res = await authenticatedFetch('/api/mbehub/quote-shipping-rates', {
+                                            method: 'POST',
+                                            headers: { 'Content-Type': 'application/json' },
+                                            body: JSON.stringify({ quoteId: quote.id }),
+                                          });
+                                          const data = await res.json();
+                                          if (!res.ok) throw new Error(data.error || 'Erreur API');
+                                          if (data.success) {
+                                            setMbeShippingRates({
+                                              standard: data.standard || undefined,
+                                              express: data.express || undefined,
+                                            });
+                                            toast.success('Tarifs MBE récupérés');
+                                          } else {
+                                            toast.error(data.error || 'Impossible de récupérer les tarifs');
+                                          }
+                                        } catch (e: unknown) {
+                                          console.error('[QuoteDetail] Erreur calcul expédition MBE:', e);
+                                          toast.error((e as Error)?.message || 'Erreur lors du calcul MBE');
+                                        } finally {
+                                          setIsCalculatingMbeShipping(false);
+                                        }
+                                      }}
+                                      title="Calculer les tarifs Standard et Express via MBE Hub"
+                                    >
+                                      {isCalculatingMbeShipping ? '...' : 'MBE'}
+                                    </Button>
+                                  )}
+                                </div>
+                              </div>
+                              {mbeShippingRates && (mbeShippingRates.standard || mbeShippingRates.express) && (
+                                <div className="grid grid-cols-2 gap-2 mt-1 pl-2 border-l-2 border-muted">
+                                  {mbeShippingRates.standard && (
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-xs text-muted-foreground">Standard</span>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-sm font-medium">{mbeShippingRates.standard.price.toFixed(2)}€</span>
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-6 text-xs"
+                                          onClick={async () => {
+                                            const p = mbeShippingRates!.standard!.price;
+                                            setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
+                                            await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
+                                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                                            toast.success(`Prix Standard appliqué: ${p.toFixed(2)}€`);
+                                          }}
+                                        >
+                                          Appliquer
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  )}
+                                  {mbeShippingRates.express && (
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="text-xs text-muted-foreground">Express</span>
+                                      <div className="flex items-center gap-1">
+                                        <span className="text-sm font-medium">{mbeShippingRates.express.price.toFixed(2)}€</span>
+                                        <Button
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-6 text-xs"
+                                          onClick={async () => {
+                                            const p = mbeShippingRates!.express!.price;
+                                            setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
+                                            await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
+                                            queryClient.invalidateQueries({ queryKey: ['quotes'] });
+                                            toast.success(`Prix Express appliqué: ${p.toFixed(2)}€`);
+                                          }}
+                                        >
+                                          Appliquer
+                                        </Button>
+                                      </div>
+                                    </div>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })()}
 
                         {/* Assurance - toujours affichée */}
                         <div className="flex justify-between text-sm">
@@ -2796,6 +3199,27 @@ export default function QuoteDetail() {
                   <Mail className="w-4 h-4" />
                   Envoyer le devis
                 </Button>
+                {showMbehubButton && (() => {
+                  const dims = safeQuote.lot?.dimensions || safeQuote.lot?.realDimensions || {};
+                  const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
+                  const weight = safeQuote.totalWeight ?? dims.weight ?? 0;
+                  const addr = safeQuote.delivery?.address || {};
+                  const hasAddr = !!(addr.zip || addr.city || addr.country || safeQuote.client?.address);
+                  const hasNoPrincipalLinks = !(safeQuote.paymentLinks || []).some(
+                    (l: { type?: string }) => l?.type === 'PRINCIPAL' || l?.type === 'PRINCIPAL_STANDARD' || l?.type === 'PRINCIPAL_EXPRESS'
+                  );
+                  const canSendTwoLinks = hasDims && weight > 0 && hasAddr && hasNoPrincipalLinks && !isPrincipalPaidForEdit;
+                  return canSendTwoLinks ? (
+                    <Button
+                      variant="default"
+                      className="w-full justify-start gap-2"
+                      onClick={handleSendEmailWithTwoLinks}
+                    >
+                      <Mail className="w-4 h-4" />
+                      Envoyer avec 2 liens (Standard + Express)
+                    </Button>
+                  ) : null;
+                })()}
                 {/* Bouton "Envoyer surcoût" - affiché uniquement s'il y a des surcoûts non payés */}
                 {surchargePaiements.length > 0 && surchargePaiements.map((surcharge) => (
                   <Button
@@ -2809,19 +3233,56 @@ export default function QuoteDetail() {
                     Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
                   </Button>
                 ))}
-                {showMbehubButton && (
+                {canSendReminder && (
                   <Button
                     variant="outline"
                     className="w-full justify-start gap-2"
-                    onClick={handleSendToMbeHub}
-                    disabled={isSendingToMbehub}
+                    onClick={handleSendReminder}
+                    disabled={isSendingReminder}
                   >
-                    {isSendingToMbehub ? (
-                      <Loader2 className="w-4 h-4 animate-spin" />
-                    ) : (
-                      <Globe className="w-4 h-4" />
-                    )}
-                    Envoyer vers MBE Hub
+                    {isSendingReminder ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
+                    Envoyer une relance
+                  </Button>
+                )}
+                {canMarkAbandoned && (
+                  <Alert variant="default" className="border-amber-500/50 bg-amber-50/50 dark:bg-amber-950/20">
+                    <AlertTriangle className="h-4 w-4" />
+                    <AlertTitle>Peut être marqué abandonné</AlertTitle>
+                    <AlertDescription>
+                      Relance envoyée il y a plus d'un mois sans réponse du client. Cliquez sur « Refusé par le client » et choisissez « Pas de réponse / Abandonné ».
+                    </AlertDescription>
+                  </Alert>
+                )}
+                {canMarkRefused && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={() => setIsRefusalDialogOpen(true)}
+                    disabled={isRefusingQuote}
+                  >
+                    {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <XCircle className="w-4 h-4" />}
+                    Refusé par le client
+                  </Button>
+                )}
+                {canMarkPaidManually && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2"
+                    onClick={() => setIsMarkPaidManualDialogOpen(true)}
+                  >
+                    <Banknote className="w-4 h-4" />
+                    Marquer payé (virement/CB)
+                  </Button>
+                )}
+                {canUnmarkPaid && (
+                  <Button
+                    variant="outline"
+                    className="w-full justify-start gap-2 text-amber-700 border-amber-300 hover:bg-amber-50"
+                    onClick={handleUnmarkPaid}
+                    disabled={isUnmarkingPaid}
+                  >
+                    {isUnmarkingPaid ? <Loader2 className="w-4 h-4 animate-spin" /> : <RotateCcw className="w-4 h-4" />}
+                    Annuler paiement
                   </Button>
                 )}
               </CardContent>
@@ -2858,6 +3319,71 @@ export default function QuoteDetail() {
         </DialogContent>
       </Dialog>
 
+      {/* Dialogue refus client */}
+      <Dialog open={isRefusalDialogOpen} onOpenChange={setIsRefusalDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Refusé par le client</DialogTitle>
+            <DialogDescription>
+              Indiquez la raison du refus pour ce devis.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm font-medium">Raison</Label>
+              <RadioGroup
+                value={refusalReason}
+                onValueChange={(v) => setRefusalReason(v as ClientRefusalReason)}
+                className="mt-2 space-y-2"
+              >
+                {REFUSAL_REASONS.map((r) => (
+                  <div key={r.value} className="flex items-center space-x-2">
+                    <RadioGroupItem value={r.value} id={`refusal-${r.value}`} />
+                    <Label htmlFor={`refusal-${r.value}`} className="font-normal cursor-pointer">
+                      {r.label}
+                    </Label>
+                  </div>
+                ))}
+              </RadioGroup>
+            </div>
+            <div>
+              <Label htmlFor="refusal-detail" className="text-sm font-medium">
+                Précisions (optionnel)
+              </Label>
+              <Textarea
+                id="refusal-detail"
+                placeholder="Ex. : délai trop long, changement de projet..."
+                value={refusalReasonDetail}
+                onChange={(e) => setRefusalReasonDetail(e.target.value)}
+                className="mt-2 min-h-[80px]"
+                rows={3}
+              />
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setIsRefusalDialogOpen(false)}>
+                Annuler
+              </Button>
+              <Button onClick={handleRefusalDialogSubmit} disabled={isRefusingQuote}>
+                {isRefusingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                Confirmer
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* Dialogue marquer payé (virement/CB) */}
+      <MarkPaidManualDialog
+        open={isMarkPaidManualDialogOpen}
+        onOpenChange={setIsMarkPaidManualDialogOpen}
+        quoteId={quote?.id || ''}
+        quoteReference={safeQuote.reference}
+        onSuccess={() => {
+          queryClient.invalidateQueries({ queryKey: ['quotes'] });
+          toast.success('Devis marqué payé – en attente de collecte');
+        }}
+      />
+
       {/* Dialogue pour modifier le devis */}
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
         <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
@@ -2871,6 +3397,7 @@ export default function QuoteDetail() {
             <EditQuoteForm
               quote={quote}
               isPrincipalPaid={isPrincipalPaidForEdit}
+              useMbehubForShipping={useMbehubForShipping}
               onPaymentLinkCreated={() => {
                 // Forcer le rechargement des paiements dans QuotePaiements
                 setPaiementsRefreshKey(prev => prev + 1);
@@ -3037,6 +3564,7 @@ export default function QuoteDetail() {
                     setLastSaveTime(null);
                   }, 5000);
                   
+                  syncQuoteToBilan();
                   toast.success("Devis modifié avec succès");
                   setIsEditDialogOpen(false);
                 } catch (error) {
@@ -3273,11 +3801,12 @@ interface EditQuoteFormProps {
   onSave: (updatedQuote: Quote) => Promise<void>;
   onCancel: () => void;
   isSaving: boolean;
-  onPaymentLinkCreated?: () => void; // Callback appelé après la création d'un nouveau paiement
-  isPrincipalPaid?: boolean; // Si true, on ne peut plus modifier les prix (emballage, expédition)
+  onPaymentLinkCreated?: () => void;
+  isPrincipalPaid?: boolean;
+  useMbehubForShipping?: boolean; // Si true, ne pas recalculer l'expédition via la grille
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false, useMbehubForShipping = false }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
@@ -3428,17 +3957,19 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       }
     }
     
-    // Recalculer le prix d'expédition avec les nouvelles dimensions
-    let newShippingPrice = formData.shippingPrice; // Garder l'ancien prix par défaut
-    if (countryCode && volumetricWeight > 0) {
+    // Recalculer le prix d'expédition (grille uniquement - si MBE Hub, garder le prix actuel)
+    let newShippingPrice = formData.shippingPrice;
+    if (!useMbehubForShipping && countryCode && volumetricWeight > 0) {
       try {
-        const isExpress = true; // TOUS les colis sont en EXPRESS
-        console.log(`[EditQuote] 🔄 Recalcul prix expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg, express=${isExpress}`);
+        const isExpress = true;
+        console.log(`[EditQuote] 🔄 Recalcul prix expédition (grille): pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
         newShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, isExpress);
         console.log(`[EditQuote] ✅ Nouveau prix expédition calculé: ${newShippingPrice}€`);
       } catch (error) {
         console.error('[EditQuote] ❌ Erreur lors du calcul du prix d\'expédition:', error);
       }
+    } else if (useMbehubForShipping) {
+      console.log(`[EditQuote] ℹ️ MBE Hub pour expédition: pas de recalcul grille`);
     } else {
       console.warn(`[EditQuote] ⚠️ Impossible de recalculer le prix d'expédition: pays=${countryCode}, poidsVol=${volumetricWeight}kg`);
     }

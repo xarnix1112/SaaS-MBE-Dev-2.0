@@ -24,8 +24,8 @@ function resolvePlanId(raw) {
 
 /** Valeurs par défaut si la collection plans n'est pas initialisée (ex: Firebase prod) */
 const DEFAULT_PLANS = {
-  starter: { name: "Starter", limits: { quotesPerYear: 2000 } },
-  pro: { name: "Pro", limits: { quotesPerYear: 5000 } },
+  starter: { name: "Starter", limits: { quotesPerYear: 2000 }, features: { customizeAutoEmails: true } },
+  pro: { name: "Pro", limits: { quotesPerYear: 5000 }, features: { customizeAutoEmails: true } },
   ultra: { name: "Ultra", limits: { quotesPerYear: 12000 }, features: { customizeAutoEmails: true } },
 };
 
@@ -53,7 +53,6 @@ async function getAccountFeatures(firestore, saasAccountId) {
     plan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
     console.warn("[featureFlags] Plan Firestore manquant pour", planId, "- utilisation des valeurs par défaut. Exécutez: npm run plans:init");
   }
-  // Fusionner avec les features par défaut pour garantir customizeAutoEmails etc. même si plan Firestore incomplet
   const defaultPlan = DEFAULT_PLANS[planId] || DEFAULT_PLANS.starter;
   const planFeatures = { ...(defaultPlan.features || {}), ...(plan?.features || {}) };
 
