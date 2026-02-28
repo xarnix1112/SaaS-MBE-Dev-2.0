@@ -12364,8 +12364,9 @@ app.get("/api/quotes", requireAuth, async (req, res) => {
           }
           paymentLinksFromPaiements.push({
             id: paiementDoc.id,
-            url: p.url || '',
+            url: p.url || p.stripeCheckoutUrl || '',
             amount: p.amount || 0,
+            type: p.type || 'PRINCIPAL',
             createdAt: p.createdAt?.toDate ? p.createdAt.toDate().toISOString() : p.createdAt,
             status: p.status === 'PAID' ? 'paid' : (p.status === 'CANCELLED' ? 'expired' : 'active')
           });

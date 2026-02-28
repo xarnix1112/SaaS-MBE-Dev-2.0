@@ -100,8 +100,9 @@ export interface PaymentLink {
   id: string;
   url: string;
   amount: number;
+  type?: 'PRINCIPAL' | 'PRINCIPAL_STANDARD' | 'PRINCIPAL_EXPRESS';
   createdAt: Date;
-  status: 'active' | 'paid' | 'expired';
+  status: 'active' | 'paid' | 'expired' | 'pending';
 }
 
 export interface Message {

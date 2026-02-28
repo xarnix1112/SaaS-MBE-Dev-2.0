@@ -184,6 +184,8 @@ export default function QuoteDetail() {
     express?: { price: number; option?: unknown };
   } | null>(null);
   const [isCalculatingMbeShipping, setIsCalculatingMbeShipping] = useState(false);
+  const [isSendQuoteDialogOpen, setIsSendQuoteDialogOpen] = useState(false);
+  const [isSendingQuote, setIsSendingQuote] = useState(false);
 
   // Réinitialiser les tarifs MBE quand on change de devis
   useEffect(() => {
@@ -3256,32 +3258,23 @@ export default function QuoteDetail() {
                 <Button 
                   variant="outline" 
                   className="w-full justify-start gap-2"
-                  onClick={handleSendEmail}
+                  onClick={() => {
+                    const clientEmailRaw = safeQuote.client?.email || safeQuote.delivery?.contact?.email;
+                    if (!clientEmailRaw?.trim()) {
+                      toast.error('Email client manquant');
+                      return;
+                    }
+                    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+                    if (!emailRegex.test(clientEmailRaw.trim())) {
+                      toast.error("Format d'email invalide");
+                      return;
+                    }
+                    setIsSendQuoteDialogOpen(true);
+                  }}
                 >
                   <Mail className="w-4 h-4" />
                   Envoyer le devis
                 </Button>
-                {showMbehubButton && (() => {
-                  const dims = safeQuote.lot?.dimensions || safeQuote.lot?.realDimensions || {};
-                  const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
-                  const weight = safeQuote.totalWeight ?? dims.weight ?? 0;
-                  const addr = safeQuote.delivery?.address || {};
-                  const hasAddr = !!(addr.zip || addr.city || addr.country || safeQuote.client?.address);
-                  const hasNoPrincipalLinks = !(safeQuote.paymentLinks || []).some(
-                    (l: { type?: string }) => l?.type === 'PRINCIPAL' || l?.type === 'PRINCIPAL_STANDARD' || l?.type === 'PRINCIPAL_EXPRESS'
-                  );
-                  const canSendTwoLinks = hasDims && weight > 0 && hasAddr && hasNoPrincipalLinks && !isPrincipalPaidForEdit;
-                  return canSendTwoLinks ? (
-                    <Button
-                      variant="default"
-                      className="w-full justify-start gap-2"
-                      onClick={handleSendEmailWithTwoLinks}
-                    >
-                      <Mail className="w-4 h-4" />
-                      Envoyer avec 2 liens (Standard + Express)
-                    </Button>
-                  ) : null;
-                })()}
                 {/* Bouton "Envoyer surcoût" - affiché uniquement s'il y a des surcoûts non payés */}
                 {surchargePaiements.length > 0 && surchargePaiements.map((surcharge) => (
                   <Button
@@ -3352,6 +3345,121 @@ export default function QuoteDetail() {
           </div>
         </div>
       </div>
+
+      {/* Dialogue Envoyer le devis - choix 1 lien ou 2 liens */}
+      <Dialog open={isSendQuoteDialogOpen} onOpenChange={setIsSendQuoteDialogOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Envoyer le devis</DialogTitle>
+            <DialogDescription>
+              Choisissez comment envoyer le devis au client
+            </DialogDescription>
+          </DialogHeader>
+          {(() => {
+            const principalTypes = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
+            const activePrincipalLink = (safeQuote.paymentLinks || []).find(
+              (l: { type?: string; status?: string }) =>
+                principalTypes.includes(l?.type || '') &&
+                (l?.status === 'active' || l?.status === 'pending')
+            ) as { type?: string; amount?: number } | undefined;
+            const hasPrincipalLink = !!activePrincipalLink;
+            const dims = safeQuote.lot?.dimensions || safeQuote.lot?.realDimensions || {};
+            const hasDims = (dims.length ?? 0) > 0 && (dims.width ?? 0) > 0 && (dims.height ?? 0) > 0;
+            const weight = safeQuote.totalWeight ?? dims.weight ?? 0;
+            const addr = safeQuote.delivery?.address || {};
+            const hasAddr = !!(addr.zip || addr.city || addr.country || safeQuote.client?.address);
+            const canSendTwoLinks = showMbehubButton && hasDims && weight > 0 && hasAddr && !isPrincipalPaidForEdit;
+
+            if (!hasPrincipalLink) {
+              return (
+                <div className="space-y-4">
+                  <p className="text-sm text-muted-foreground">
+                    {canSendTwoLinks
+                      ? "Créez d'abord un lien en cliquant sur Appliquer, ou envoyez avec 2 liens."
+                      : "Créez d'abord un lien en cliquant sur Appliquer."}
+                  </p>
+                  <div className="flex flex-col gap-2">
+                    {canSendTwoLinks && (
+                      <Button
+                        className="w-full"
+                        disabled={isSendingQuote}
+                        onClick={async () => {
+                          setIsSendingQuote(true);
+                          try {
+                            await handleSendEmailWithTwoLinks();
+                            setIsSendQuoteDialogOpen(false);
+                          } finally {
+                            setIsSendingQuote(false);
+                          }
+                        }}
+                      >
+                        {isSendingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                        Envoyer avec 2 liens (Standard + Express)
+                      </Button>
+                    )}
+                    <Button variant="outline" onClick={() => setIsSendQuoteDialogOpen(false)}>
+                      Fermer
+                    </Button>
+                  </div>
+                </div>
+              );
+            }
+
+            const linkLabel = activePrincipalLink.type === 'PRINCIPAL_EXPRESS' ? 'Express' : activePrincipalLink.type === 'PRINCIPAL_STANDARD' ? 'Standard' : 'Paiement';
+            const linkAmount = activePrincipalLink.amount ?? safeQuote.totalAmount ?? 0;
+
+            return (
+              <div className="space-y-4">
+                <div className="rounded-lg bg-muted/50 p-3 text-sm space-y-1">
+                  <p className="font-medium">Récapitulatif</p>
+                  <p>Total : {(safeQuote.totalAmount ?? 0).toFixed(2)}€</p>
+                  <p>Livraison : {linkLabel}</p>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Button
+                    className="w-full justify-start gap-2"
+                    disabled={isSendingQuote}
+                    onClick={async () => {
+                      setIsSendingQuote(true);
+                      try {
+                        await handleSendEmail();
+                        setIsSendQuoteDialogOpen(false);
+                      } finally {
+                        setIsSendingQuote(false);
+                      }
+                    }}
+                  >
+                    {isSendingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                    Envoyer le lien {linkLabel} ({linkAmount.toFixed(2)}€)
+                  </Button>
+                  {canSendTwoLinks && (
+                    <Button
+                      variant="outline"
+                      className="w-full justify-start gap-2"
+                      disabled={isSendingQuote}
+                      onClick={async () => {
+                        setIsSendingQuote(true);
+                        try {
+                          await handleSendEmailWithTwoLinks();
+                          setIsSendQuoteDialogOpen(false);
+                        } finally {
+                          setIsSendingQuote(false);
+                        }
+                      }}
+                    >
+                      {isSendingQuote ? <Loader2 className="w-4 h-4 animate-spin" /> : <Mail className="w-4 h-4" />}
+                      Envoyer avec 2 liens (Standard + Express)
+                    </Button>
+                  )}
+                  <Button variant="ghost" onClick={() => setIsSendQuoteDialogOpen(false)}>
+                    Annuler
+                  </Button>
+                </div>
+              </div>
+            );
+          })()}
+        </DialogContent>
+      </Dialog>
 
       {/* Dialogue pour attacher le bordereau */}
       <Dialog open={isAuctionSheetDialogOpen} onOpenChange={setIsAuctionSheetDialogOpen}>
