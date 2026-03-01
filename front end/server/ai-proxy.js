@@ -2152,6 +2152,7 @@ function extractFromOcrTextFallback(ocrText) {
   const sallePatterns = [
     { re: /millon\s+riviera/i, value: "Millon Riviera" },
     { re: /boisgirard\s*[-•]?\s*antonini/i, value: "Boisgirard Antonini" },
+    { re: /(?:nice\s+ench[eè]res?|sarl\s+nice\s+encheres?)/i, value: "Nice Enchères" },
     { re: /\bdrouot\b/i, value: "Drouot" },
     { re: /\bartcurial\b/i, value: "Artcurial" },
     { re: /\btajan\b/i, value: "Tajan" },
@@ -2177,6 +2178,11 @@ function extractFromOcrTextFallback(ocrText) {
       out.numero_bordereau = b[1];
       console.log(`[OCR][Bordereau] Numéro extrait depuis fallback: ${out.numero_bordereau}`);
     }
+  }
+  // TEMIS BORDEREAU D'ADJUDICATION N° (souvent en footer) — format "A - 4187 - 62"
+  if (!out.numero_bordereau) {
+    const temis = text.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z0-9][A-Z0-9\s\-]+)/i);
+    if (temis) out.numero_bordereau = temis[1].replace(/\s*-\s*/g, "-").replace(/\s+/g, "").trim();
   }
 
   // Vente / référence
@@ -2852,6 +2858,22 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     log(`[OCR]   → Validation lots: ${lotsAll.length} retenus (${beforeFilter - lotsAll.length} rejetés par score)`);
   }
 
+  // Filtrer les lots fantômes : descriptions contenant coordonnées/footer (SIRET, IBAN, email, etc.)
+  const FOOTER_LOT_RE = /\b(SIRET|IBAN|BIC|RIB|Capital\s*Social|ventes?\s*@|@[a-z0-9.-]+\.(?:com|fr)|04\s*\d{2}\s*\d{2}\s*\d{2}\s*\d{2}|commissaires-priseurs|TEMIS\s*BORDEREAU|virement|Fichier\s*TEMIS)/i;
+  const beforeFooterFilter = lotsAll.length;
+  lotsAll = lotsAll.filter((l) => {
+    const desc = (l.description || "").trim();
+    if (!desc) return true;
+    if (FOOTER_LOT_RE.test(desc)) {
+      log(`[OCR]   → Lot fantôme rejeté (footer/contact): ${l.numero_lot} — "${desc.slice(0, 60)}..."`);
+      return false;
+    }
+    return true;
+  });
+  if (beforeFooterFilter > lotsAll.length) {
+    log(`[OCR]   → Lots rejetés (contenu footer): ${lotsAll.length} retenus (${beforeFooterFilter - lotsAll.length} rejetés)`);
+  }
+
   // dédoublonnage et ajout de total (prix+frais ~20%) si manquant
   const seen = new Set();
   const lots = [];
@@ -2871,6 +2893,11 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     extractAuctionHouseFromOcrText(ocrRawText) ||
     (first ? extractSalleVenteFromHeader(first.lines) : null);
   const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
+  // Numéro bordereau TEMIS (souvent en footer) : "BORDEREAU D'ADJUDICATION N° A - 4187 - 62"
+  if (!headerFields.numero_bordereau && ocrRawText) {
+    const temisMatch = ocrRawText.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z0-9][A-Z0-9\s\-]+)/i);
+    if (temisMatch) headerFields.numero_bordereau = temisMatch[1].replace(/\s*-\s*/g, "-").replace(/\s+/g, "").trim();
+  }
 
   // Total: priorité footer (lines), fallback extraction depuis texte brut
   const last = pages[pages.length - 1];
@@ -2925,6 +2952,12 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   );
   if (docHasBoisgirard && (!result.salle_vente || salleBoisgirardWrong)) {
     result.salle_vente = "Boisgirard Antonini";
+  }
+
+  // Correction Nice Enchères — si doc mentionne "Nice Enchères" ou "SARL NICE ENCHERES" (souvent confondu avec Drouot)
+  const docHasNiceEncheres = ocrRawText && /(?:nice\s+ench[eè]res?|sarl\s+nice\s+encheres?|niceencheres)/i.test(ocrRawText);
+  if (docHasNiceEncheres) {
+    result.salle_vente = "Nice Enchères";
   }
 
   // Correction total — si total = numéro bordereau (ex: 32320), le rejeter
@@ -3555,10 +3588,11 @@ function extractAuctionHouseFromOcrText(ocrText) {
     .map((l) => l.replace(/\s+/g, " ").trim())
     .filter(Boolean);
 
-  // 1) Salles connues (retourner le nom canonique)
+  // 1) Salles connues (retourner le nom canonique) — priorité aux salles explicitement nommées
   const headText = head.toLowerCase();
   if (/millon/i.test(head) && /riviera/i.test(head)) return "Millon Riviera";
   if (/boisgirard\s*[-•]?\s*antonini|antonini\s*[-•]?\s*boisgirard/i.test(head)) return "Boisgirard Antonini";
+  if (/(?:nice\s+ench[eè]res?|sarl\s+nice\s+encheres?|nice\s+encheres?)/i.test(head)) return "Nice Enchères";
   if (/\bdrouot\b/i.test(head)) return "Drouot";
   if (/\bartcurial\b/i.test(head)) return "Artcurial";
   if (/\btajan\b/i.test(head)) return "Tajan";
@@ -3658,6 +3692,7 @@ function extractAuctionHouseFromOcrWords(words) {
   const knownHouses = [
     { re: /millon\s*(?:riviera)?|riviera\s*(?:millon)?/i, value: "Millon Riviera" },
     { re: /boisgirard\s*[-•]?\s*antonini|antonini\s*[-•]?\s*boisgirard/i, value: "Boisgirard Antonini" },
+    { re: /(?:nice\s+ench[eè]res?|sarl\s+nice\s+encheres?)/i, value: "Nice Enchères" },
     { re: /\bdrouot\b/i, value: "Drouot" },
     { re: /\bartcurial\b/i, value: "Artcurial" },
     { re: /\btajan\b/i, value: "Tajan" },
