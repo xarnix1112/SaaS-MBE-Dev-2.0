@@ -10,7 +10,6 @@ import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeCo
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
-import AutoEmailsSettings from '@/components/settings/AutoEmailsSettings';
 import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
 import { useFeatures } from '@/hooks/use-features';
 import { useQueryClient } from '@tanstack/react-query';
@@ -95,7 +94,6 @@ export default function Settings() {
         ? [
             { id: 'emails', label: 'Comptes Email', icon: Mail },
             { id: 'modeles-emails', label: "Modèles d'emails", icon: Send },
-            { id: 'auto-emails', label: 'Emails auto (ton)', icon: Send },
           ]
         : [{ id: 'emails', label: 'Comptes Email', icon: Mail }],
     },
@@ -380,6 +378,21 @@ export default function Settings() {
       setIsLoadingGoogleSheets(false);
     }
   };
+
+  // Redirection auto-emails → modeles-emails (onglet supprimé)
+  useEffect(() => {
+    if (settingsTab === 'auto-emails') {
+      setSettingsTab('modeles-emails');
+    }
+    const params = new URLSearchParams(window.location.search);
+    const tab = params.get('tab');
+    if (tab === 'auto-emails') {
+      const newParams = new URLSearchParams(window.location.search);
+      newParams.set('tab', 'modeles-emails');
+      window.history.replaceState({}, '', `${window.location.pathname}?${newParams.toString()}`);
+      setSettingsTab('modeles-emails');
+    }
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Vérifier les paramètres URL au montage
   useEffect(() => {
@@ -1735,14 +1748,9 @@ export default function Settings() {
 
           {/* MBE Hub - plans Pro et Ultra */}
           {canCustomizeAutoEmails && (
-            <>
-              <TabsContent value="modeles-emails" className="space-y-6">
-                <EmailTemplatesSettings />
-              </TabsContent>
-              <TabsContent value="auto-emails" className="space-y-6">
-                <AutoEmailsSettings />
-              </TabsContent>
-            </>
+            <TabsContent value="modeles-emails" className="space-y-6">
+              <EmailTemplatesSettings />
+            </TabsContent>
           )}
           <TabsContent value="mbehub" className="space-y-6">
             <Card>
