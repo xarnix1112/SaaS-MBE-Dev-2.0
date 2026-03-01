@@ -2597,16 +2597,67 @@ function extractLotsFromTable(lines, template = null) {
     });
 }
 
+/**
+ * Tente l'extraction hybride pdfplumber (extract_tables + extract_form_structure).
+ * Activé par USE_PDFPLUMBER_BORDEREAU=true. Retourne { lots } si succès, null sinon.
+ * Permet un fallback automatique vers l'extraction classique en cas d'échec.
+ */
+async function tryPdfplumberHybridExtraction(fileBuffer, log = () => {}) {
+  const projectRoot = path.resolve(__dirname, "..", "..");
+  const scriptPath = path.join(projectRoot, ".cursor", "skills", "pdf", "scripts", "extract_bordereau_hybrid.py");
+  const pythonPath = path.join(projectRoot, ".venv-pdf", "bin", "python");
+  const tempPath = path.join(__dirname, `.temp-pdf-hybrid-${Date.now()}.pdf`);
+  let stdout = "";
+  let stderr = "";
+  try {
+    if (!fs.existsSync(scriptPath)) {
+      log(`[OCR]   → Script pdfplumber hybride introuvable: ${scriptPath}`);
+      return null;
+    }
+    await fs.promises.writeFile(tempPath, fileBuffer);
+    const pythonCmd = fs.existsSync(pythonPath) ? pythonPath : "python3";
+    const child = spawn(pythonCmd, [scriptPath, tempPath], {
+      cwd: path.dirname(scriptPath),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    child.stdout.on("data", (d) => { stdout += d.toString(); });
+    child.stderr.on("data", (d) => { stderr += d.toString(); });
+    const result = await new Promise((resolve, reject) => {
+      child.on("close", (code) => {
+        try {
+          const out = JSON.parse(stdout || stderr || "{}");
+          resolve(out);
+        } catch {
+          resolve(null);
+        }
+      });
+      child.on("error", () => resolve(null));
+    });
+    if (!result || !result.success || !Array.isArray(result.lots)) {
+      if (result?.error) log(`[OCR]   → pdfplumber hybride: ${result.error}`);
+      return null;
+    }
+    return result;
+  } catch (err) {
+    log(`[OCR]   → pdfplumber hybride échec: ${err.message}`);
+    return null;
+  } finally {
+    try { await fs.promises.unlink(tempPath); } catch {}
+  }
+}
+
 async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   const pages = [];
   let ocrRawText = "";
   const log = (msg) => { console.log(msg); };
   const logVerbose = verbose ? log : () => {};
 
+  let hasNativePdf = false;
   if (mimeType === "application/pdf") {
     log(`[OCR]   → Format PDF détecté — analyse du type (natif vs scanné)...`);
     const nativeResult = await extractTextFromNativePdf(fileBuffer, log);
     if (nativeResult) {
+      hasNativePdf = true;
       pages.push(...nativeResult.pages);
       ocrRawText = nativeResult.ocrRawText;
     } else {
@@ -2655,9 +2706,24 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
   const tableWords = tableWordsByPage;
   log(`[OCR]   → Extraction des lots: ${tableWords.length} mots dans zone tableau (sur ${allWords.length} total)`);
 
-  // Lots: cascade d'extraction (priorité extraction bbox > texte brut > table)
+  // Lots: cascade d'extraction
+  // Option: extraction hybride pdfplumber (tables + form_structure) — activé par USE_PDFPLUMBER_BORDEREAU=true
+  // En cas d'échec ou si désactivé, fallback automatique vers l'extraction classique ci-dessous.
   let lotsAll = [];
-  if (tableWords.length > 0) {
+  const usePdfplumberHybrid = process.env.USE_PDFPLUMBER_BORDEREAU === "true" || process.env.USE_PDFPLUMBER_BORDEREAU === "1";
+  if (mimeType === "application/pdf" && hasNativePdf && usePdfplumberHybrid) {
+    const hybridResult = await tryPdfplumberHybridExtraction(fileBuffer, log);
+    if (hybridResult?.lots?.length > 0) {
+      lotsAll = hybridResult.lots.map((l) => ({
+        numero_lot: l.numero_lot != null ? String(l.numero_lot) : null,
+        description: (l.description || "").trim(),
+        prix_marteau: typeof l.prix_marteau === "number" ? l.prix_marteau : null,
+        total: l.total != null ? l.total : (l.prix_marteau != null ? Math.round(l.prix_marteau * 1.20 * 100) / 100 : null),
+      }));
+      log(`[OCR]   → Méthode: pdfplumber hybride (${hybridResult.method}) → ${lotsAll.length} lots`);
+    }
+  }
+  if (lotsAll.length === 0 && tableWords.length > 0) {
     const fromWords = extractLotsFromOcrWords(tableWords, detectedTemplate);
     if (fromWords.length > 0) {
       lotsAll = fromWords.map((l) => ({

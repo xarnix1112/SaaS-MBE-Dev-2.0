@@ -9,6 +9,7 @@ lerna-debug.log*
 
 # Build / deps
 node_modules/
+.venv-pdf/
 dist/
 dist-ssr
 bun.lockb

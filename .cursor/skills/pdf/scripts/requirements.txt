@@ -1,0 +1,10 @@
+# Dépendances pour les scripts PDF du skill
+# Installer avec: pip install -r requirements.txt
+
+pypdf>=4.0.0
+pdfplumber>=0.10.0
+pdf2image>=1.16.0
+Pillow>=10.0.0
+
+# Optionnel - pour OCR sur PDF scannés:
+# pytesseract>=0.3.10
