@@ -1,0 +1,4 @@
+# Dépendances minimales pour OCR PDF (conversion PDF→PNG via pdf2image)
+# Utilisé sur Railway quand le worker Node (pdfjs+canvas) échoue
+pdf2image>=1.16.0
+Pillow>=10.0.0

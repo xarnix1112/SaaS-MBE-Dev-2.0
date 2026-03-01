@@ -1629,23 +1629,101 @@ async function extractTextFromNativePdf(pdfBuffer, log = () => {}) {
 }
 
 /**
- * Rend les pages PDF en PNG via un worker séparé.
- * Isole pdfjs+canvas du process principal (sharp) pour éviter le segfault
- * dû au conflit GNotificationCenterDelegate entre sharp et canvas.
+ * Rend les pages PDF en PNG.
+ * 1. Essaie le worker Node (pdfjs+canvas) — peut échouer sur Linux/Railway
+ *    avec "Failed to unwrap exclusive reference of CanvasElement"
+ * 2. Si échec, fallback vers le script Python (pdf2image+poppler)
  */
 async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10 } = {}) {
   const tempPath = path.join(__dirname, `.temp-pdf-${Date.now()}.pdf`);
   let stdout = "";
   let stderr = "";
 
+  const readPngResult = (result) => {
+    const { pngPaths, pageCount, renderedPages } = result;
+    const buffers = [];
+    for (const p of pngPaths) {
+      buffers.push(fs.promises.readFile(p));
+    }
+    return Promise.all(buffers).then((bufs) => ({
+      buffers: bufs,
+      pageCount: pageCount ?? pngPaths.length,
+      renderedPages: renderedPages ?? pngPaths.length,
+    }));
+  };
+
+  const cleanupPngs = async (pngPaths) => {
+    for (const p of pngPaths || []) {
+      try { await fs.promises.unlink(p); } catch {}
+    }
+    if (pngPaths?.[0]) {
+      try { await fs.promises.rmdir(path.dirname(pngPaths[0])); } catch {}
+    }
+  };
+
   try {
     await fs.promises.writeFile(tempPath, pdfBuffer);
-    console.log('[PDF] Wrote temp file, spawning worker...');
+    console.log("[PDF] Wrote temp file, spawning worker...");
 
+    // 1. Essai worker Node (pdfjs+canvas)
     const workerPath = path.join(__dirname, "ocr-pdf-worker.mjs");
+    try {
+      const result = await new Promise((resolve, reject) => {
+        const child = spawn(process.execPath, [workerPath, tempPath], {
+          cwd: path.dirname(workerPath),
+          stdio: ["ignore", "pipe", "pipe"],
+        });
+        let out = "";
+        let err = "";
+        child.stdout.on("data", (d) => { out += d.toString(); });
+        child.stderr.on("data", (d) => { err += d.toString(); });
+        child.on("close", (code) => {
+          if (code !== 0) {
+            try {
+              const parsed = JSON.parse(err || out);
+              reject(new Error(parsed.error || `Worker exited ${code}`));
+            } catch {
+              reject(new Error((err || out).trim() || `Worker exited ${code}`));
+            }
+          } else {
+            try {
+              resolve(JSON.parse(out));
+            } catch {
+              reject(new Error("Worker output invalide: " + out.slice(0, 200)));
+            }
+          }
+        });
+        child.on("error", reject);
+      });
+
+      const { buffers, pageCount, renderedPages } = await readPngResult(result);
+      await cleanupPngs(result.pngPaths);
+      console.log("[PDF] Successfully rendered", renderedPages, "pages via Node worker");
+      return { buffers, pageCount, renderedPages };
+    } catch (nodeErr) {
+      const msg = (nodeErr?.message || "").toLowerCase();
+      const code = (nodeErr?.code || "").toLowerCase();
+      const isCanvasError =
+        msg.includes("unwrap") ||
+        msg.includes("canvas") ||
+        msg.includes("napi") ||
+        msg.includes("canvaselement") ||
+        code === "invalidarg";
+      if (!isCanvasError) throw nodeErr;
+      console.warn("[PDF] Node worker failed (canvas issue), trying Python fallback:", nodeErr.message);
+    }
+
+    // 2. Fallback: script Python (pdf2image+poppler)
+    const pythonScript = path.join(__dirname, "scripts", "pdf-to-png.py");
+    if (!fs.existsSync(pythonScript)) {
+      throw new Error("Python fallback script not found: " + pythonScript);
+    }
+    const py = process.platform === "win32" ? "python" : "python3";
     const result = await new Promise((resolve, reject) => {
-      const child = spawn(process.execPath, [workerPath, tempPath], {
-        cwd: path.dirname(workerPath),
+      stdout = "";
+      stderr = "";
+      const child = spawn(py, [pythonScript, tempPath, String(maxPages)], {
+        cwd: path.dirname(pythonScript),
         stdio: ["ignore", "pipe", "pipe"],
       });
       child.stdout.on("data", (d) => { stdout += d.toString(); });
@@ -1654,37 +1732,27 @@ async function renderPdfToPngBuffers(pdfBuffer, { maxPages = 10 } = {}) {
         if (code !== 0) {
           try {
             const err = JSON.parse(stderr || stdout);
-            reject(new Error(err.error || `Worker exited ${code}`));
+            reject(new Error(err.error || `Python script exited ${code}`));
           } catch {
-            reject(new Error((stderr || stdout).trim() || `Worker exited ${code}`));
+            reject(new Error((stderr || stdout).trim() || `Python exited ${code}`));
           }
         } else {
           try {
             resolve(JSON.parse(stdout));
           } catch {
-            reject(new Error("Worker output invalide: " + stdout.slice(0, 200)));
+            reject(new Error("Python output invalide: " + stdout.slice(0, 200)));
           }
         }
       });
-      child.on("error", reject);
+      child.on("error", (e) => reject(new Error(`Python not found: ${e.message}`)));
     });
 
-    const { pngPaths, pageCount, renderedPages } = result;
-    const buffers = [];
-    for (const p of pngPaths) {
-      buffers.push(await fs.promises.readFile(p));
-    }
-    // Nettoyer le répertoire PNG du worker
-    const outDir = path.dirname(pngPaths[0]);
-    for (const p of pngPaths) {
-      try { await fs.promises.unlink(p); } catch {}
-    }
-    try { await fs.promises.rmdir(outDir); } catch {}
-
-    console.log('[PDF] Successfully rendered', renderedPages, 'pages via worker');
+    const { buffers, pageCount, renderedPages } = await readPngResult(result);
+    await cleanupPngs(result.pngPaths);
+    console.log("[PDF] Successfully rendered", renderedPages, "pages via Python (pdf2image)");
     return { buffers, pageCount, renderedPages };
   } catch (err) {
-    console.error('[PDF] Error:', err.message);
+    console.error("[PDF] Error:", err.message);
     throw err;
   } finally {
     try { await fs.promises.unlink(tempPath); } catch {}
