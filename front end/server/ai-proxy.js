@@ -2179,9 +2179,9 @@ function extractFromOcrTextFallback(ocrText) {
       console.log(`[OCR][Bordereau] Numéro extrait depuis fallback: ${out.numero_bordereau}`);
     }
   }
-  // TEMIS BORDEREAU D'ADJUDICATION N° (souvent en footer) — format "A - 4187 - 62"
+  // TEMIS BORDEREAU D'ADJUDICATION N° (souvent en footer) — format "A - 4187 - 62" (éviter capture "Vente n°")
   if (!out.numero_bordereau) {
-    const temis = text.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z0-9][A-Z0-9\s\-]+)/i);
+    const temis = text.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z]\s*-\s*\d+\s*-\s*\d+)/i);
     if (temis) out.numero_bordereau = temis[1].replace(/\s*-\s*/g, "-").replace(/\s+/g, "").trim();
   }
 
@@ -2893,9 +2893,9 @@ async function extractBordereauFromFile(fileBuffer, mimeType, verbose = false) {
     extractAuctionHouseFromOcrText(ocrRawText) ||
     (first ? extractSalleVenteFromHeader(first.lines) : null);
   const headerFields = first ? extractHeaderFields(first.lines) : { numero_bordereau: null, vente: null, date: null };
-  // Numéro bordereau TEMIS (souvent en footer) : "BORDEREAU D'ADJUDICATION N° A - 4187 - 62"
+  // Numéro bordereau TEMIS (souvent en footer) : "A - 4187 - 62" — format strict pour éviter "Vente n°"
   if (!headerFields.numero_bordereau && ocrRawText) {
-    const temisMatch = ocrRawText.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z0-9][A-Z0-9\s\-]+)/i);
+    const temisMatch = ocrRawText.match(/(?:TEMIS\s+)?BORDEREAU\s+D'?ADJUDICATION\s+N[°ºo]?\s*([A-Z]\s*-\s*\d+\s*-\s*\d+)/i);
     if (temisMatch) headerFields.numero_bordereau = temisMatch[1].replace(/\s*-\s*/g, "-").replace(/\s+/g, "").trim();
   }
 
