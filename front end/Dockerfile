@@ -16,8 +16,9 @@ COPY package.json package-lock.json* ./
 RUN npm ci
 
 # Installer les dépendances Python pour OCR (pdf2image)
+# --break-system-packages: requis sur Debian 12+ (PEP 668) pour pip en container
 COPY requirements-ocr.txt ./
-RUN pip3 install --no-cache-dir -r requirements-ocr.txt
+RUN pip3 install --no-cache-dir --break-system-packages -r requirements-ocr.txt
 
 # Copier le reste du code
 COPY . .
