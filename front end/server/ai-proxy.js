@@ -11382,7 +11382,7 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: {
-        trial_period_days: 30,
+        // trial_period_days: 30, // Désactivé pour test paiement immédiat
         metadata: { saasAccountId, planId },
       },
       metadata,
