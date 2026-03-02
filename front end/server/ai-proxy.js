@@ -698,6 +698,7 @@ const STRIPE_SUCCESS_URL =
 const STRIPE_CANCEL_URL =
   process.env.STRIPE_CANCEL_URL || `${FRONTEND_URL}/payment/cancel`;
 const STRIPE_WEBHOOK_SECRET = process.env.STRIPE_WEBHOOK_SECRET;
+const STRIPE_SUBSCRIPTION_WEBHOOK_SECRET = process.env.STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
 
 if (!STRIPE_SECRET_KEY) {
   console.warn("[ai-proxy] STRIPE_SECRET_KEY not set. Stripe calls will fail.");
@@ -987,10 +988,12 @@ app.post("/api/stripe/webhook", async (req, res) => {
     'content-length': req.headers['content-length'],
   });
   
-  if (!stripe || !STRIPE_WEBHOOK_SECRET) {
+  const hasAnySecret = STRIPE_WEBHOOK_SECRET || STRIPE_SUBSCRIPTION_WEBHOOK_SECRET;
+  if (!stripe || !hasAnySecret) {
     console.error("[ai-proxy] ❌ Webhook non configuré:", {
       stripe: Boolean(stripe),
       webhookSecret: Boolean(STRIPE_WEBHOOK_SECRET),
+      subscriptionWebhookSecret: Boolean(STRIPE_SUBSCRIPTION_WEBHOOK_SECRET),
     });
     return res.status(400).send("Stripe webhook not configured");
   }
@@ -1000,14 +1003,24 @@ app.post("/api/stripe/webhook", async (req, res) => {
     console.error("[ai-proxy] ❌ Signature Stripe manquante dans les headers");
     return res.status(400).send("Missing stripe-signature header");
   }
-  
+
   let event;
   try {
     event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_WEBHOOK_SECRET);
-    console.log("[ai-proxy] ✅ Webhook vérifié avec succès, type:", event.type);
-  } catch (err) {
-    console.error("[ai-proxy] ❌ Erreur de vérification du webhook:", err.message);
-    return res.status(400).send(`Webhook Error: ${err.message}`);
+    console.log("[ai-proxy] ✅ Webhook vérifié (plateforme), type:", event.type);
+  } catch (err1) {
+    if (STRIPE_SUBSCRIPTION_WEBHOOK_SECRET) {
+      try {
+        event = stripe.webhooks.constructEvent(req.body, sig, STRIPE_SUBSCRIPTION_WEBHOOK_SECRET);
+        console.log("[ai-proxy] ✅ Webhook vérifié (abonnements), type:", event.type);
+      } catch (err2) {
+        console.error("[ai-proxy] ❌ Erreur de vérification du webhook (les deux secrets ont échoué)");
+        return res.status(400).send(`Webhook Error: ${err1.message}`);
+      }
+    } else {
+      console.error("[ai-proxy] ❌ Erreur de vérification du webhook:", err1.message);
+      return res.status(400).send(`Webhook Error: ${err1.message}`);
+    }
   }
 
   try {
