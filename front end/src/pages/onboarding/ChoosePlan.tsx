@@ -92,20 +92,23 @@ export default function ChoosePlan() {
     if (saasAccount) {
       try {
         setUpdatingPlanId(planId);
-        const res = await authenticatedFetch('/api/account/plan', {
-          method: 'PATCH',
+        // Checkout Stripe pour abonnement (1er mois gratuit)
+        const res = await authenticatedFetch('/api/account/plan/checkout', {
+          method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ planId }),
         });
+        const data = await res.json().catch(() => ({}));
         if (!res.ok) {
-          const data = await res.json().catch(() => ({}));
           throw new Error(data.error || 'Erreur lors du changement de plan');
         }
-        toast.success(`Plan ${planId === 'starter' ? 'Starter' : planId === 'pro' ? 'Pro' : 'Ultra'} activé`);
-        queryClient.invalidateQueries({ queryKey: ['features'] });
-        navigate('/account', { replace: true });
+        if (data.url) {
+          window.location.href = data.url; // Redirection Stripe Checkout
+          return;
+        }
+        toast.error('Erreur: aucune URL de paiement reçue');
       } catch (error) {
-        console.error('[ChoosePlan] Erreur changement plan:', error);
+        console.error('[ChoosePlan] Erreur checkout plan:', error);
         toast.error(error instanceof Error ? error.message : 'Erreur lors du changement de plan');
       } finally {
         setUpdatingPlanId(null);

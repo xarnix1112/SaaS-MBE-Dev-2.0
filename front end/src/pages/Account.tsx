@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { logout, deleteCurrentUser, reauthenticateWithPassword } from '@/lib/firebase';
 import { useAuth } from '@/hooks/useAuth';
 import { useFeatures } from '@/hooks/use-features';
@@ -26,8 +26,9 @@ import { AppHeader } from '@/components/layout/AppHeader';
 
 export default function Account() {
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
   const { saasAccount, user, isLoading } = useAuth();
-  const { data: featuresData } = useFeatures();
+  const { data: featuresData, refetch } = useFeatures();
   const [isLoggingOut, setIsLoggingOut] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
   const [deletePassword, setDeletePassword] = useState('');
@@ -39,6 +40,15 @@ export default function Account() {
       navigate('/welcome', { replace: true });
     }
   }, [isLoading, saasAccount, navigate]);
+
+  // Retour depuis Stripe Checkout plan réussi
+  useEffect(() => {
+    if (searchParams.get('plan') === 'success') {
+      toast.success('Votre plan a été activé avec succès !');
+      setSearchParams({}, { replace: true });
+      refetch();
+    }
+  }, [searchParams, setSearchParams, refetch]);
 
   const handleLogout = async () => {
     try {

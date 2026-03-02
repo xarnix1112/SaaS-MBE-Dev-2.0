@@ -1101,6 +1101,27 @@ app.post("/api/stripe/webhook", async (req, res) => {
       return; // Important : ne pas continuer le traitement Payment Link
     }
 
+    // 🔥 Paiement plan SaaS : metadata.type === 'plan_subscription'
+    if (event.type === "checkout.session.completed" && obj.metadata?.type === 'plan_subscription') {
+      const saasAccountId = obj.metadata.saasAccountId;
+      const planId = obj.metadata.planId;
+      if (saasAccountId && planId && firestore) {
+        try {
+          await firestore.collection('saasAccounts').doc(saasAccountId).update({
+            planId,
+            plan: ['pro', 'ultra'].includes(planId) ? 'pro' : 'free',
+            stripeCustomerId: obj.customer || null,
+            stripeSubscriptionId: obj.subscription || null,
+            updatedAt: Timestamp.now(),
+          });
+          console.log('[ai-proxy] ✅ Plan activé via Stripe: saasAccountId=' + saasAccountId + ', planId=' + planId);
+        } catch (e) {
+          console.error('[ai-proxy] Erreur mise à jour plan après checkout:', e);
+        }
+      }
+      return res.status(200).send('OK');
+    }
+
     // Mettre à jour Firestore pour les paiements réussis
     // On traite aussi payment.link.succeeded qui est l'événement principal pour les Payment Links
     if (
@@ -11290,10 +11311,59 @@ app.delete("/api/account", requireAuth, async (req, res) => {
   }
 });
 
+// Map planId → Stripe Price ID (variables d'environnement)
+const PLAN_PRICE_IDS = {
+  starter: process.env.STRIPE_PRICE_STARTER,
+  pro: process.env.STRIPE_PRICE_PRO,
+  ultra: process.env.STRIPE_PRICE_ULTRA,
+};
+
+/**
+ * POST /api/account/plan/checkout
+ * Crée une session Stripe Checkout pour abonnement plan (1er mois gratuit).
+ */
+app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
+  if (!stripe || !firestore) {
+    return res.status(500).json({ error: 'Stripe ou Firestore non configuré' });
+  }
+  const saasAccountId = req.saasAccountId;
+  if (!saasAccountId) {
+    return res.status(400).json({ error: 'Aucun compte SaaS associé' });
+  }
+  const { planId } = req.body;
+  if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
+    return res.status(400).json({ error: 'Plan invalide' });
+  }
+  const priceId = PLAN_PRICE_IDS[planId];
+  if (!priceId) {
+    return res.status(400).json({ error: `Price ID non configuré pour le plan ${planId}` });
+  }
+  try {
+    const session = await stripe.checkout.sessions.create({
+      mode: 'subscription',
+      line_items: [{ price: priceId, quantity: 1 }],
+      subscription_data: {
+        trial_period_days: 30,
+        metadata: { saasAccountId, planId },
+      },
+      metadata: {
+        saasAccountId,
+        planId,
+        type: 'plan_subscription',
+      },
+      success_url: `${FRONTEND_URL}/account?plan=success`,
+      cancel_url: `${FRONTEND_URL}/account`,
+    });
+    return res.json({ url: session.url });
+  } catch (error) {
+    console.error('[API] Erreur checkout plan:', error);
+    return res.status(500).json({ error: error.message || 'Erreur Stripe' });
+  }
+});
+
 /**
  * PATCH /api/account/plan
- * Met à jour le plan du compte SaaS (upgrade/downgrade).
- * Pour l'instant sans Stripe - mise à jour directe du planId.
+ * Met à jour le plan du compte SaaS (upgrade/downgrade) — mode direct sans paiement.
  */
 app.patch("/api/account/plan", requireAuth, async (req, res) => {
   if (!firestore) {
