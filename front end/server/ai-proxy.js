@@ -11361,7 +11361,7 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
   if (!saasAccountId) {
     return res.status(400).json({ error: 'Aucun compte SaaS associé' });
   }
-  const { planId } = req.body;
+  const { planId, fromOnboarding } = req.body;
   if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
     return res.status(400).json({ error: 'Plan invalide' });
   }
@@ -11375,19 +11375,21 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
       error: `Configuration incorrecte : utilisez un Price ID (price_xxx) pour STRIPE_PRICE_${planId.toUpperCase()}, pas un Product ID (prod_xxx). Dans Stripe → Produit → Add price → copier le Price ID.`,
     });
   }
+  const isOnboarding = !!fromOnboarding;
+  const successUrl = isOnboarding ? `${FRONTEND_URL}/onboarding/success` : `${FRONTEND_URL}/account?plan=success`;
+  const cancelUrl = isOnboarding ? `${FRONTEND_URL}/choose-plan` : `${FRONTEND_URL}/account`;
   try {
     const metadata = { saasAccountId, planId, type: 'plan_subscription' };
-    console.log('[ai-proxy] 🛒 Création session Checkout plan - saasAccountId:', saasAccountId, 'planId:', planId, 'metadata:', JSON.stringify(metadata));
+    console.log('[ai-proxy] 🛒 Création session Checkout plan - saasAccountId:', saasAccountId, 'planId:', planId, 'fromOnboarding:', isOnboarding, 'metadata:', JSON.stringify(metadata));
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: {
-        // trial_period_days: 30, // Désactivé pour test paiement immédiat
         metadata: { saasAccountId, planId },
       },
       metadata,
-      success_url: `${FRONTEND_URL}/account?plan=success`,
-      cancel_url: `${FRONTEND_URL}/account`,
+      success_url: successUrl,
+      cancel_url: cancelUrl,
     });
     console.log('[ai-proxy] 🛒 Session créée:', session.id);
     return res.json({ url: session.url });

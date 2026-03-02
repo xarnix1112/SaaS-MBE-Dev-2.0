@@ -16,7 +16,7 @@ interface ProtectedRouteProps {
 }
 
 export function ProtectedRoute({ children, requireSetup = true }: ProtectedRouteProps) {
-  const { user, isLoading, isSetupComplete, userDoc } = useAuth();
+  const { user, isLoading, isSetupComplete, hasActiveSubscription, userDoc } = useAuth();
   const location = useLocation();
 
   // Afficher un loader pendant le chargement
@@ -40,10 +40,13 @@ export function ProtectedRoute({ children, requireSetup = true }: ProtectedRoute
   }
 
   // Si setup requis (requireSetup = true) :
-  // - Vérifier que l'utilisateur a un document user ET que le setup est terminé
-  // - Sinon, rediriger vers setup-mbe
+  // - Setup non terminé : rediriger vers choose-plan (premier pas du funnel)
+  // - Setup terminé mais pas d'abonnement actif : rediriger vers choose-plan pour payer
   if (requireSetup) {
     if (!userDoc || !isSetupComplete) {
+      return <Navigate to="/choose-plan" replace />;
+    }
+    if (!hasActiveSubscription) {
       return <Navigate to="/choose-plan" replace />;
     }
   }

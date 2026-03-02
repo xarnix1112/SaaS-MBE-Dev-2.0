@@ -144,13 +144,24 @@ export default function SetupMBE() {
       const data = JSON.parse(text);
       console.log('[SetupMBE] Compte MBE créé:', data);
 
-      toast.success('Configuration terminée avec succès !');
-      navigate('/onboarding/success', { 
-        state: { 
-          commercialName: formData.commercialName,
-          mbeCity: formData.mbeCity === 'Autre' ? formData.mbeCityCustom : formData.mbeCity,
-        } 
+      toast.success('Redirection vers le paiement...');
+
+      // Paiement Stripe obligatoire avant accès au tableau de bord
+      const checkoutRes = await fetch(`${API_BASE}/api/account/plan/checkout`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${await user.getIdToken()}`,
+        },
+        body: JSON.stringify({ planId, fromOnboarding: true }),
       });
+      const checkoutData = await checkoutRes.json().catch(() => ({}));
+      if (checkoutRes.ok && checkoutData.url) {
+        window.location.href = checkoutData.url;
+        return;
+      }
+      setError(checkoutData.error || 'Impossible de créer la session de paiement. Réessayez ou contactez le support.');
+      toast.error(checkoutData.error || 'Erreur de redirection vers le paiement');
     } catch (err: any) {
       console.error('[SetupMBE] Erreur:', err);
       let errorMessage = err.message || 'Erreur lors de la configuration';

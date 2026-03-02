@@ -9,15 +9,17 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { CheckCircle2, ArrowRight } from 'lucide-react';
+import { useAuth } from '@/hooks/useAuth';
 
 export default function Success() {
   const navigate = useNavigate();
   const location = useLocation();
-  
-  // Récupérer les données passées depuis SetupMBE
+  const { saasAccount } = useAuth();
+
+  // Récupérer les données : depuis Stripe (pas de state) on utilise saasAccount
   const state = location.state as { commercialName?: string; mbeCity?: string } | null;
-  const commercialName = state?.commercialName || 'votre MBE';
-  const mbeCity = state?.mbeCity || '';
+  const commercialName = state?.commercialName || saasAccount?.commercialName || 'votre MBE';
+  const mbeCity = state?.mbeCity || saasAccount?.mbeCity || '';
 
   useEffect(() => {
     // Rediriger vers le dashboard après 10 secondes si l'utilisateur ne clique pas

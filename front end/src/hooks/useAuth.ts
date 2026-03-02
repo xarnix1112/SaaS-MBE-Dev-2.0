@@ -37,6 +37,7 @@ interface AuthState {
   userDoc: UserDoc | null;
   isLoading: boolean;
   isSetupComplete: boolean;
+  hasActiveSubscription: boolean;
 }
 
 export function useAuth() {
@@ -46,6 +47,7 @@ export function useAuth() {
     userDoc: null,
     isLoading: true,
     isSetupComplete: false,
+    hasActiveSubscription: false,
   });
 
   useEffect(() => {
@@ -58,6 +60,7 @@ export function useAuth() {
           userDoc: null,
           isLoading: false,
           isSetupComplete: false,
+          hasActiveSubscription: false,
         });
         return;
       }
@@ -83,6 +86,7 @@ export function useAuth() {
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
           return;
         }
@@ -98,6 +102,7 @@ export function useAuth() {
             userDoc: userDocData,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
           return;
         }
@@ -115,11 +120,13 @@ export function useAuth() {
             userDoc: userDocData,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
           return;
         }
 
         const saasAccountData = saasAccountSnap.data() as SaasAccount;
+        const hasActiveSubscription = !!(saasAccountData?.stripeSubscriptionId);
 
         setAuthState({
           user,
@@ -127,6 +134,7 @@ export function useAuth() {
           userDoc: userDocData,
           isLoading: false,
           isSetupComplete: true,
+          hasActiveSubscription,
         });
       } catch (error: any) {
         console.error('[useAuth] Erreur lors du chargement:', error);
@@ -153,6 +161,7 @@ export function useAuth() {
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
         } else if (isUnavailable) {
           // Firestore injoignable (réseau, proxy, etc.) — garder l'utilisateur connecté
@@ -164,6 +173,7 @@ export function useAuth() {
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
         } else {
           setAuthState({
@@ -172,6 +182,7 @@ export function useAuth() {
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
+            hasActiveSubscription: false,
           });
         }
       }

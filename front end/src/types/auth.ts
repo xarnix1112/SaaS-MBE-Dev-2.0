@@ -27,6 +27,7 @@ export interface SaasAccount {
   isActive: boolean;
   plan: 'free' | 'pro';
   planId?: 'starter' | 'pro' | 'ultra';
+  stripeSubscriptionId?: string | null;
 }
 
 export interface UserDoc {
