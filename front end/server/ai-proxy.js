@@ -11387,6 +11387,7 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
       subscription_data: {
         metadata: { saasAccountId, planId },
       },
+      allow_promotion_codes: true,
       metadata,
       success_url: successUrl,
       cancel_url: cancelUrl,
