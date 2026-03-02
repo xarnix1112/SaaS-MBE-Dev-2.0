@@ -76,7 +76,7 @@ const PLANS = [
 export default function ChoosePlan() {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const { saasAccount } = useAuth();
+  const { saasAccount, hasActiveSubscription } = useAuth();
   const [updatingPlanId, setUpdatingPlanId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -144,7 +144,7 @@ export default function ChoosePlan() {
         <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
           {PLANS.map((plan) => {
             const Icon = plan.icon;
-            const isCurrentPlan = saasAccount?.planId === plan.id;
+            const isCurrentPlan = saasAccount?.planId === plan.id && hasActiveSubscription;
             return (
               <Card
                 key={plan.id}
