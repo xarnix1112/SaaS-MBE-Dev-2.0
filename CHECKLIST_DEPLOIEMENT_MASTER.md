@@ -54,6 +54,7 @@ npm run firestore:indexes:prod
 | `FRONTEND_URL` | Idem que APP_URL | — |
 | `GROQ_API_KEY` | `gsk_...` | groq.com (analyse OCR bordereaux) |
 | `MBE_HUB_ENV` | `prod` | Si MBE Hub utilisé en prod |
+| `FIREBASE_STORAGE_BUCKET` | `saas-mbe-sdv-production.appspot.com` ou `.firebasestorage.app` | **Obligatoire pour upload logo (Modèles d'email)**. Voir `FIREBASE_STORAGE_PRODUCTION.md` si erreur "bucket does not exist" |
 
 **Fichier credentials Firebase :** Le backend lit `firebase-credentials-prod.json` quand `NODE_ENV=production`. Place ce fichier dans `front end/` (ou là où Railway build).
 
@@ -89,7 +90,7 @@ npm run firestore:indexes:prod
 
 ## Actions optionnelles (selon ton setup)
 
-- **Firebase Storage** : Si templates email avec logo upload, vérifier `firebasestorage.app` dans la config Storage
+- **Firebase Storage** : Si templates email avec logo upload, activer Storage sur le projet prod + définir `FIREBASE_STORAGE_BUCKET` sur Railway (voir `FIREBASE_STORAGE_PRODUCTION.md`)
 - **Google Sheets** : Bilan (En cours / Terminés) — connecter le Sheet dans Paramètres → Intégrations
 - **Gmail OAuth** : Pour envoi d’emails depuis l’app
 

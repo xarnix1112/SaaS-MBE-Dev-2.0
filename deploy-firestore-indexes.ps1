@@ -48,11 +48,17 @@ if (Test-Path "firestore.indexes.json") {
     exit 1
 }
 
-# Sélectionner le projet de production
+# Sélectionner le projet Firebase (staging par défaut pour les tests)
 Write-Host ""
 Write-Host "4️⃣ Sélection du projet Firebase..." -ForegroundColor Yellow
-Write-Host "   Projet cible : saas-mbe-sdv-production" -ForegroundColor Cyan
-firebase use saas-mbe-sdv-production
+$envArg = $args[0]
+if ($envArg -eq "production" -or $envArg -eq "prod") {
+    $project = "saas-mbe-sdv-production"
+} else {
+    $project = "saas-mbe-sdv-staging"
+}
+Write-Host "   Projet cible : $project (utiliser .\deploy-firestore-indexes.ps1 production pour prod)" -ForegroundColor Cyan
+firebase use $project
 if ($LASTEXITCODE -ne 0) {
     Write-Host "   ❌ Échec de la sélection du projet" -ForegroundColor Red
     exit 1
@@ -89,7 +95,7 @@ if ($LASTEXITCODE -eq 0) {
     Write-Host "📋 Prochaines étapes :" -ForegroundColor Cyan
     Write-Host "   1. Attendre 1-3 minutes que les index soient créés" -ForegroundColor White
     Write-Host "   2. Vérifier dans la console Firebase :" -ForegroundColor White
-    Write-Host "      https://console.firebase.google.com/project/saas-mbe-sdv-production/firestore/indexes" -ForegroundColor Gray
+    Write-Host "      https://console.firebase.google.com/project/$project/firestore/indexes" -ForegroundColor Gray
     Write-Host "   3. Attendre que tous les index soient 'Enabled' (statut vert)" -ForegroundColor White
     Write-Host "   4. Tester l'application : cliquer sur 'Initialiser la grille tarifaire'" -ForegroundColor White
     Write-Host ""
