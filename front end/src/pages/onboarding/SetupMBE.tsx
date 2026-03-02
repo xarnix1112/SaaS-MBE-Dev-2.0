@@ -40,6 +40,7 @@ export default function SetupMBE() {
   const navigate = useNavigate();
   const location = useLocation();
   const planId = (location.state as { planId?: string })?.planId || 'starter';
+  const promoCode = (location.state as { promoCode?: string })?.promoCode;
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [formData, setFormData] = useState({
@@ -153,7 +154,7 @@ export default function SetupMBE() {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${await user.getIdToken()}`,
         },
-        body: JSON.stringify({ planId, fromOnboarding: true }),
+        body: JSON.stringify({ planId, fromOnboarding: true, promoCode: promoCode || undefined }),
       });
       const checkoutData = await checkoutRes.json().catch(() => ({}));
       if (checkoutRes.ok && checkoutData.url) {

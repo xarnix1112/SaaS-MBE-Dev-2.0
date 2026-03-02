@@ -11361,7 +11361,7 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
   if (!saasAccountId) {
     return res.status(400).json({ error: 'Aucun compte SaaS associé' });
   }
-  const { planId, fromOnboarding } = req.body;
+  const { planId, fromOnboarding, promoCode } = req.body;
   if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
     return res.status(400).json({ error: 'Plan invalide' });
   }
@@ -11378,20 +11378,43 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
   const isOnboarding = !!fromOnboarding;
   const successUrl = isOnboarding ? `${FRONTEND_URL}/onboarding/success` : `${FRONTEND_URL}/account?plan=success`;
   const cancelUrl = isOnboarding ? `${FRONTEND_URL}/choose-plan` : `${FRONTEND_URL}/account`;
+
+  let discounts = null;
+  const rawPromoCode = (promoCode || '').trim();
+  if (rawPromoCode) {
+    try {
+      const promoList = await stripe.promotionCodes.list({ code: rawPromoCode, active: true, limit: 1 });
+      if (promoList.data.length === 0) {
+        const inactiveList = await stripe.promotionCodes.list({ code: rawPromoCode, limit: 1 });
+        if (inactiveList.data.length > 0) {
+          return res.status(400).json({ error: 'Ce code promo n\'est plus actif (expiré ou désactivé).' });
+        }
+        return res.status(400).json({ error: 'Code promo invalide. Vérifiez le code et réessayez.' });
+      }
+      discounts = [{ promotion_code: promoList.data[0].id }];
+      console.log('[ai-proxy] 🎟️ Code promo appliqué:', rawPromoCode, '→', promoList.data[0].id);
+    } catch (promoErr) {
+      console.error('[ai-proxy] Erreur recherche code promo:', promoErr.message);
+      return res.status(400).json({ error: 'Impossible de valider le code promo. Réessayez.' });
+    }
+  }
+
   try {
     const metadata = { saasAccountId, planId, type: 'plan_subscription' };
-    console.log('[ai-proxy] 🛒 Création session Checkout plan - saasAccountId:', saasAccountId, 'planId:', planId, 'fromOnboarding:', isOnboarding, 'metadata:', JSON.stringify(metadata));
-    const session = await stripe.checkout.sessions.create({
+    console.log('[ai-proxy] 🛒 Création session Checkout plan - saasAccountId:', saasAccountId, 'planId:', planId, 'fromOnboarding:', isOnboarding, 'promoCode:', rawPromoCode || 'aucun', 'metadata:', JSON.stringify(metadata));
+    const sessionParams = {
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
       subscription_data: {
         metadata: { saasAccountId, planId },
       },
-      allow_promotion_codes: true,
+      allow_promotion_codes: !discounts,
       metadata,
       success_url: successUrl,
       cancel_url: cancelUrl,
-    });
+    };
+    if (discounts) sessionParams.discounts = discounts;
+    const session = await stripe.checkout.sessions.create(sessionParams);
     console.log('[ai-proxy] 🛒 Session créée:', session.id);
     return res.json({ url: session.url });
   } catch (error) {

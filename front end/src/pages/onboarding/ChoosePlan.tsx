@@ -13,7 +13,9 @@ import { useAuth } from '@/hooks/useAuth';
 import { authenticatedFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Check, Zap, Crown, Sparkles, Loader2 } from 'lucide-react';
+import { Check, Zap, Crown, Sparkles, Loader2, Tag } from 'lucide-react';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import { toast } from 'sonner';
 
 const PLANS = [
@@ -78,6 +80,7 @@ export default function ChoosePlan() {
   const queryClient = useQueryClient();
   const { saasAccount, hasActiveSubscription } = useAuth();
   const [updatingPlanId, setUpdatingPlanId] = useState<string | null>(null);
+  const [promoCode, setPromoCode] = useState('');
 
   useEffect(() => {
     const unsubscribe = auth.onAuthStateChanged((user) => {
@@ -96,7 +99,7 @@ export default function ChoosePlan() {
         const res = await authenticatedFetch('/api/account/plan/checkout', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ planId }),
+          body: JSON.stringify({ planId, promoCode: promoCode.trim() || undefined }),
         });
         const data = await res.json().catch(() => ({}));
         if (!res.ok) {
@@ -114,7 +117,7 @@ export default function ChoosePlan() {
         setUpdatingPlanId(null);
       }
     } else {
-      navigate('/setup-mbe', { state: { planId } });
+      navigate('/setup-mbe', { state: { planId, promoCode: promoCode.trim() || undefined } });
     }
   };
 
@@ -138,6 +141,22 @@ export default function ChoosePlan() {
               ? "Sélectionnez le plan qui vous convient. Le changement est effectif immédiatement."
               : "Sélectionnez l'offre qui correspond à vos besoins. Vous pourrez changer de plan plus tard."}
           </p>
+        </div>
+
+        {/* Code promo optionnel */}
+        <div className="max-w-sm mx-auto space-y-2">
+          <Label htmlFor="promoCode" className="text-sm text-muted-foreground flex items-center gap-2">
+            <Tag className="h-4 w-4" />
+            Code promo (optionnel)
+          </Label>
+          <Input
+            id="promoCode"
+            type="text"
+            placeholder="Ex. JEANNETEST"
+            value={promoCode}
+            onChange={(e) => setPromoCode(e.target.value)}
+            className="font-normal"
+          />
         </div>
 
         {/* Cartes des plans */}
