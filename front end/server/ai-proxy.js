@@ -1012,6 +1012,11 @@ app.post("/api/stripe/webhook", async (req, res) => {
 
   try {
     const obj = event.data.object || {};
+    // #region agent log
+    if (event.type === 'checkout.session.completed') {
+      console.log('[ai-proxy] 🔍 checkout.session.completed - metadata:', JSON.stringify(obj.metadata || {}), 'customer:', obj.customer ? 'present' : 'missing', 'subscription:', obj.subscription ? 'present' : 'missing');
+    }
+    // #endregion
     let ref = obj.metadata?.reference || obj.metadata?.ref || null;
     
     // Pour checkout.session.completed, payment_link est un champ direct (plink_xxx)
@@ -1077,6 +1082,12 @@ app.post("/api/stripe/webhook", async (req, res) => {
     const amount = obj.amount || obj.amount_received || obj.amount_total || null;
     const currency = obj.currency || null;
 
+    // #region agent log
+    if (event.type === 'checkout.session.completed' && obj.metadata?.type !== 'plan_subscription' && !obj.metadata?.devisId) {
+      console.log('[ai-proxy] ⚠️ checkout.session.completed IGNORÉ (pas devisId, pas plan_subscription) - metadata.type:', obj.metadata?.type, 'keys:', obj.metadata ? Object.keys(obj.metadata) : []);
+    }
+    // #endregion
+
     console.log("[ai-proxy] webhook reçu", {
       type: event.type,
       ref,
@@ -1105,6 +1116,9 @@ app.post("/api/stripe/webhook", async (req, res) => {
     if (event.type === "checkout.session.completed" && obj.metadata?.type === 'plan_subscription') {
       const saasAccountId = obj.metadata.saasAccountId;
       const planId = obj.metadata.planId;
+      // #region agent log
+      console.log('[ai-proxy] 📦 plan_subscription branch - saasAccountId:', saasAccountId, 'planId:', planId, 'firestore:', !!firestore);
+      // #endregion
       if (saasAccountId && planId && firestore) {
         try {
           await firestore.collection('saasAccounts').doc(saasAccountId).update({
@@ -1116,8 +1130,12 @@ app.post("/api/stripe/webhook", async (req, res) => {
           });
           console.log('[ai-proxy] ✅ Plan activé via Stripe: saasAccountId=' + saasAccountId + ', planId=' + planId);
         } catch (e) {
-          console.error('[ai-proxy] Erreur mise à jour plan après checkout:', e);
+          console.error('[ai-proxy] ❌ Erreur mise à jour plan après checkout:', e.message, e.code);
         }
+      } else {
+        // #region agent log
+        console.warn('[ai-proxy] ⚠️ plan_subscription SKIP - saasAccountId:', !!saasAccountId, 'planId:', !!planId, 'firestore:', !!firestore);
+        // #endregion
       }
       return res.status(200).send('OK');
     }
@@ -11334,11 +11352,19 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
   if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
     return res.status(400).json({ error: 'Plan invalide' });
   }
-  const priceId = PLAN_PRICE_IDS[planId];
+  const priceId = (PLAN_PRICE_IDS[planId] || '').trim();
   if (!priceId) {
     return res.status(400).json({ error: `Price ID non configuré pour le plan ${planId}` });
   }
+  // Stripe attend un Price ID (price_xxx), pas un Product ID (prod_xxx)
+  if (priceId.startsWith('prod_')) {
+    return res.status(400).json({
+      error: `Configuration incorrecte : utilisez un Price ID (price_xxx) pour STRIPE_PRICE_${planId.toUpperCase()}, pas un Product ID (prod_xxx). Dans Stripe → Produit → Add price → copier le Price ID.`,
+    });
+  }
   try {
+    const metadata = { saasAccountId, planId, type: 'plan_subscription' };
+    console.log('[ai-proxy] 🛒 Création session Checkout plan - saasAccountId:', saasAccountId, 'planId:', planId, 'metadata:', JSON.stringify(metadata));
     const session = await stripe.checkout.sessions.create({
       mode: 'subscription',
       line_items: [{ price: priceId, quantity: 1 }],
@@ -11346,14 +11372,11 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
         trial_period_days: 30,
         metadata: { saasAccountId, planId },
       },
-      metadata: {
-        saasAccountId,
-        planId,
-        type: 'plan_subscription',
-      },
+      metadata,
       success_url: `${FRONTEND_URL}/account?plan=success`,
       cancel_url: `${FRONTEND_URL}/account`,
     });
+    console.log('[ai-proxy] 🛒 Session créée:', session.id);
     return res.json({ url: session.url });
   } catch (error) {
     console.error('[API] Erreur checkout plan:', error);
