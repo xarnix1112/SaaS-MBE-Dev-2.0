@@ -11393,19 +11393,18 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
           return res.status(400).json({ error: 'Ce code promo n\'est plus actif (expiré ou désactivé).' });
         }
         const allPromos = await stripe.promotionCodes.list({ active: true, limit: 100 });
-        const match = allPromos.data.find((p) => (p.code || '').toLowerCase() === rawPromoCode.toLowerCase());
+        const match = allPromos.data.find((p) => (String(p.code || '').toLowerCase()) === rawPromoCode.toLowerCase());
         if (match) foundPromo = match;
-        else console.warn('[ai-proxy] Code promo non trouvé:', JSON.stringify(rawPromoCode), '| codes actifs:', allPromos.data.length, '| exemples:', allPromos.data.slice(0, 3).map((p) => p.code));
+        else {
+          console.warn('[ai-proxy] Code promo non trouvé côté API:', JSON.stringify(rawPromoCode), '| codes actifs:', allPromos.data.length);
+        }
       }
       if (foundPromo) {
         discounts = [{ promotion_code: foundPromo.id }];
         console.log('[ai-proxy] Code promo appliqué:', rawPromoCode, '→', foundPromo.id);
-      } else {
-        return res.status(400).json({ error: 'Code promo invalide. Vérifiez le code et réessayez.' });
       }
     } catch (promoErr) {
       console.error('[ai-proxy] Erreur recherche code promo:', promoErr.message);
-      return res.status(400).json({ error: 'Impossible de valider le code promo. Réessayez.' });
     }
   }
 
