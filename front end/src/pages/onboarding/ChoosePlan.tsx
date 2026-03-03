@@ -145,10 +145,34 @@ export default function ChoosePlan() {
 
         {/* Code promo optionnel */}
         <div className="max-w-sm mx-auto space-y-2">
-          <Label htmlFor="promoCode" className="text-sm text-muted-foreground flex items-center gap-2">
-            <Tag className="h-4 w-4" />
-            Code promo (optionnel)
-          </Label>
+          <div className="flex items-center justify-between gap-2">
+            <Label htmlFor="promoCode" className="text-sm text-muted-foreground flex items-center gap-2">
+              <Tag className="h-4 w-4" />
+              Code promo (optionnel)
+            </Label>
+            <button
+              type="button"
+              onClick={async () => {
+                try {
+                  const res = await authenticatedFetch('/api/stripe/promo-codes-status');
+                  const data = await res.json();
+                  if (data.ok) {
+                    const msg = data.count === 0
+                      ? 'Aucun code trouvé. Vérifiez que STRIPE_SECRET_KEY (Railway) correspond au compte Stripe où vous avez créé les codes.'
+                      : `Codes visibles par le backend: ${data.codes.map((c: { code: string }) => c.code).join(', ')}`;
+                    toast.info(msg, { duration: 8000 });
+                  } else {
+                    toast.error(data.error || 'Erreur diagnostic');
+                  }
+                } catch (e) {
+                  toast.error('Erreur lors de la vérification');
+                }
+              }}
+              className="text-xs text-muted-foreground hover:text-primary underline"
+            >
+              Vérifier
+            </button>
+          </div>
           <Input
             id="promoCode"
             type="text"

@@ -147,6 +147,10 @@ export default function SetupMBE() {
 
       toast.success('Redirection vers le paiement...');
 
+      // #region agent log
+      fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'223b02'},body:JSON.stringify({sessionId:'223b02',location:'SetupMBE.tsx:checkout',message:'Avant checkout',data:{promoCodeFromState:promoCode,planId,hasLocationState:!!location.state},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      // #endregion
+
       // Paiement Stripe obligatoire avant accès au tableau de bord
       const checkoutRes = await fetch(`${API_BASE}/api/account/plan/checkout`, {
         method: 'POST',

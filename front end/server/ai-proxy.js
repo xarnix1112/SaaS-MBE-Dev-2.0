@@ -11350,6 +11350,31 @@ const PLAN_PRICE_IDS = {
 };
 
 /**
+ * GET /api/stripe/promo-codes-status
+ * Diagnostic : liste les codes promo visibles par le backend (même compte que STRIPE_SECRET_KEY).
+ * Permet de vérifier si les codes créés dans le Dashboard sont dans le bon compte.
+ */
+app.get("/api/stripe/promo-codes-status", requireAuth, async (req, res) => {
+  if (!stripe) {
+    return res.json({ ok: false, error: 'Stripe non configuré' });
+  }
+  try {
+    const list = await stripe.promotionCodes.list({ active: true, limit: 20 });
+    const codes = list.data.map((p) => ({ code: p.code, id: p.id }));
+    return res.json({
+      ok: true,
+      count: list.data.length,
+      codes,
+      hint: codes.length === 0
+        ? 'Aucun code promo trouvé. Vérifiez que STRIPE_SECRET_KEY (Railway) correspond au compte Stripe où vous avez créé les codes. Stripe Dashboard → Développeurs → Clés API.'
+        : 'Ces codes sont visibles par votre backend. Si le vôtre n\'apparaît pas, il est dans un autre compte Stripe.',
+    });
+  } catch (err) {
+    return res.json({ ok: false, error: err.message });
+  }
+});
+
+/**
  * POST /api/account/plan/checkout
  * Crée une session Stripe Checkout pour abonnement plan (1er mois gratuit).
  */
@@ -11362,6 +11387,9 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
     return res.status(400).json({ error: 'Aucun compte SaaS associé' });
   }
   const { planId, fromOnboarding, promoCode } = req.body;
+  // #region agent log
+  try { fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'223b02'},body:JSON.stringify({sessionId:'223b02',location:'ai-proxy.js:checkout',message:'Backend reçoit checkout',data:{promoCodeBody:promoCode,planId},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{}); } catch(e){}
+  // #endregion
   if (!planId || !['starter', 'pro', 'ultra'].includes(planId)) {
     return res.status(400).json({ error: 'Plan invalide' });
   }
@@ -11403,6 +11431,9 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
         discounts = [{ promotion_code: foundPromo.id }];
         console.log('[ai-proxy] Code promo appliqué:', rawPromoCode, '→', foundPromo.id);
       }
+      // #region agent log
+      try { fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'223b02'},body:JSON.stringify({sessionId:'223b02',location:'ai-proxy.js:promo',message:'Résultat recherche promo',data:{rawPromoCode,foundPromo:!!foundPromo,foundId:foundPromo?.id,discounts:!!discounts},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{}); } catch(e){}
+      // #endregion
     } catch (promoErr) {
       console.error('[ai-proxy] Erreur recherche code promo:', promoErr.message);
     }
@@ -11423,6 +11454,9 @@ app.post("/api/account/plan/checkout", requireAuth, async (req, res) => {
       cancel_url: cancelUrl,
     };
     if (discounts) sessionParams.discounts = discounts;
+    // #region agent log
+    try { fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'223b02'},body:JSON.stringify({sessionId:'223b02',location:'ai-proxy.js:sessionCreate',message:'Paramètres session Stripe',data:{hasDiscounts:!!discounts,allowPromotionCodes:sessionParams.allow_promotion_codes},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{}); } catch(e){}
+    // #endregion
     const session = await stripe.checkout.sessions.create(sessionParams);
     console.log('[ai-proxy] 🛒 Session créée:', session.id);
     return res.json({ url: session.url });
@@ -13049,6 +13083,7 @@ const expectedRoutes = [
   'POST /api/stripe/connect',
   'GET /stripe/callback',
   'GET /api/stripe/status',
+  'GET /api/stripe/promo-codes-status',
   'POST /api/stripe/disconnect',
   'POST /api/devis/:id/paiement',
   'GET /api/devis/:id/paiements',

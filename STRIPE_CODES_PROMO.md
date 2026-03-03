@@ -63,6 +63,14 @@ Pour que le client puisse entrer un code dans Checkout, il faut un **code promot
 
 ---
 
+## Diagnostic : quel compte Stripe utilise le backend ?
+
+Sur la page **Choisissez votre plan**, clique sur **« Vérifier »** à côté du champ Code promo. Le message affiche :
+- **Aucun code trouvé** → La clé `STRIPE_SECRET_KEY` sur Railway ne pointe pas vers le compte Stripe où tu as créé les codes. Vérifie Stripe Dashboard → Développeurs → Clés API et compare avec Railway.
+- **Codes visibles : X, Y, Z** → Ces codes sont dans le bon compte. Si ton code n’apparaît pas, crée-le dans ce même compte (celui dont la clé est dans Railway).
+
+---
+
 ## Vérification rapide dans Stripe
 
 1. Ouvrir le coupon « Jeanne » ou « JEANNE »
