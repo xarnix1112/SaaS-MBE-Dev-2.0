@@ -11361,15 +11361,26 @@ app.get("/api/stripe/promo-codes-status", requireAuth, async (req, res) => {
   const sk = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET || '';
   const keyMode = sk.startsWith('sk_test_') ? 'test' : sk.startsWith('sk_live_') ? 'live' : 'unknown';
   try {
-    const list = await stripe.promotionCodes.list({ active: true, limit: 50 });
-    const codes = list.data.map((p) => ({ code: p.code, id: p.id }));
-    const hint = codes.length === 0
-      ? `Aucun code en mode ${keyMode.toUpperCase()}. Les codes Test et Live sont séparés : basculez "Mode test" dans Stripe (coin supérieur droit) ou utilisez la clé sk_test_* / sk_live_* correspondante.`
-      : 'Ces codes sont visibles. Si le vôtre manque, il est peut-être dans l\'autre mode (Test vs Live).';
+    const [promoRes, couponsRes] = await Promise.all([
+      stripe.promotionCodes.list({ active: true, limit: 50 }),
+      stripe.coupons.list({ limit: 50 }),
+    ]);
+    const codes = promoRes.data.map((p) => ({ code: p.code, id: p.id }));
+    const couponsCount = couponsRes.data.length;
+    let hint;
+    if (codes.length > 0) {
+      hint = 'Ces codes sont visibles. Si le vôtre manque, il est peut-être dans l\'autre mode (Test vs Live).';
+    } else if (couponsCount > 0) {
+      const base = keyMode === 'test' ? 'https://dashboard.stripe.com/test' : 'https://dashboard.stripe.com';
+      hint = `Vous avez ${couponsCount} coupon(s) mais aucun CODE PROMOTIONNEL. Un coupon seul ne suffit pas : il faut créer un code à partir du coupon. Stripe Dashboard → ${base}/coupons → Clique sur un coupon → « Créer un code promotionnel » / « Add promotion code » et saisissez votre code (ex: JEANNE).`;
+    } else {
+      hint = `Aucun coupon ni code en mode ${keyMode.toUpperCase()}. 1) Basculez « Mode test » dans Stripe (coin supérieur droit) si vous utilisez sk_test_*. 2) Créez un coupon puis un code promotionnel : ${keyMode === 'test' ? 'https://dashboard.stripe.com/test/coupons' : 'https://dashboard.stripe.com/coupons'}`;
+    }
     return res.json({
       ok: true,
-      count: list.data.length,
+      count: codes.length,
       codes,
+      couponsCount,
       keyMode,
       hint,
     });

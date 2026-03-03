@@ -45,12 +45,21 @@ Si l’option « Première transaction uniquement » est activée sur le code pr
 - Vérifier **« Expire le »** (redeem_by) : le code ne doit pas être périmé
 - Vérifier **« Utilisations »** (max_redemptions) : la limite ne doit pas être atteinte
 
-### D) Promo vs coupon
+### D) Coupon sans code promotionnel (cause fréquente : « Aucun code trouvé »)
 
-Pour que le client puisse entrer un code dans Checkout, il faut un **code promotionnel** (promotion code), pas seulement un **coupon**.
+Stripe a deux notions distinctes :
+- **Coupon** = la règle de réduction (ex. -20 %)
+- **Code promotionnel** = le code que le client tape (ex. `JEANNE`)
 
-- Dans Stripe : **Promotions → Codes promotionnels** (ou création depuis un coupon avec champ « Code »)
-- Le code saisi par le client (ex. `JEANNE`) doit être celui défini dans ces codes promotionnels
+**Un coupon seul ne suffit pas.** Il faut créer un **code promotionnel** à partir du coupon.
+
+**Procédure (mode Test, clé sk_test_*) :**
+1. Stripe Dashboard → basculer **« Mode test »** ON (coin supérieur droit)
+2. Aller sur https://dashboard.stripe.com/test/coupons
+3. Créer un coupon si besoin (réduction %, montant fixe, etc.)
+4. **Cliquer sur le coupon** → bouton **« Créer un code promotionnel »** / **« Add promotion code »**
+5. Saisir le code client (ex. `JEANNE`) → Enregistrer
+6. Ce code apparaîtra ensuite dans « Vérifier » sur notre app
 
 ---
 
