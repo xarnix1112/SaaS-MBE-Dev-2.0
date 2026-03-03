@@ -20,6 +20,8 @@
 
 Ouvre un **nouveau terminal** et exécute :
 
+je rajoute simplement quelque chose pour que ce soit validé sur les modifications.
+
 ```bash
 cd "front end"
 ./start-stripe-webhook.sh
