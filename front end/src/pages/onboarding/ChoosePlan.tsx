@@ -158,9 +158,9 @@ export default function ChoosePlan() {
                   const data = await res.json();
                   if (data.ok) {
                     const msg = data.count === 0
-                      ? 'Aucun code trouvé. Vérifiez que STRIPE_SECRET_KEY (Railway) correspond au compte Stripe où vous avez créé les codes.'
-                      : `Codes visibles par le backend: ${data.codes.map((c: { code: string }) => c.code).join(', ')}`;
-                    toast.info(msg, { duration: 8000 });
+                      ? `Mode ${data.keyMode || '?'}: ${data.hint || 'Aucun code trouvé. Vérifiez Test vs Live dans Stripe Dashboard.'}`
+                      : `Mode ${data.keyMode || '?'} — codes visibles: ${data.codes.map((c: { code: string }) => c.code).join(', ')}`;
+                    toast.info(msg, { duration: 12000 });
                   } else {
                     toast.error(data.error || 'Erreur diagnostic');
                   }

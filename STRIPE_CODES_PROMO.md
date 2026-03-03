@@ -66,8 +66,9 @@ Pour que le client puisse entrer un code dans Checkout, il faut un **code promot
 ## Diagnostic : quel compte Stripe utilise le backend ?
 
 Sur la page **Choisissez votre plan**, clique sur **« Vérifier »** à côté du champ Code promo. Le message affiche :
-- **Aucun code trouvé** → La clé `STRIPE_SECRET_KEY` sur Railway ne pointe pas vers le compte Stripe où tu as créé les codes. Vérifie Stripe Dashboard → Développeurs → Clés API et compare avec Railway.
-- **Codes visibles : X, Y, Z** → Ces codes sont dans le bon compte. Si ton code n’apparaît pas, crée-le dans ce même compte (celui dont la clé est dans Railway).
+- **Mode TEST / LIVE** → La clé utilisée. Test et Live sont séparés : codes créés en Test ≠ visibles en Live (et inversement).
+- **Aucun code trouvé** → Clé dans le mauvais mode ou mauvais compte. Bascule « Mode test » dans Stripe (coin supérieur droit) et crée tes codes dans le même mode que ta clé (`sk_test_*` = Test, `sk_live_*` = Live).
+- **Codes visibles : X, Y, Z** → Bon compte et bon mode. Si ton code manque, crée-le dans le même mode (Test ou Live).
 
 ---
 

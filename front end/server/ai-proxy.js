@@ -11352,25 +11352,29 @@ const PLAN_PRICE_IDS = {
 /**
  * GET /api/stripe/promo-codes-status
  * Diagnostic : liste les codes promo visibles par le backend (même compte que STRIPE_SECRET_KEY).
- * Permet de vérifier si les codes créés dans le Dashboard sont dans le bon compte.
+ * Retourne aussi le mode de la clé (Test vs Live) — les codes ne sont pas partagés entre les deux.
  */
 app.get("/api/stripe/promo-codes-status", requireAuth, async (req, res) => {
   if (!stripe) {
     return res.json({ ok: false, error: 'Stripe non configuré' });
   }
+  const sk = process.env.STRIPE_SECRET_KEY || process.env.STRIPE_SECRET || '';
+  const keyMode = sk.startsWith('sk_test_') ? 'test' : sk.startsWith('sk_live_') ? 'live' : 'unknown';
   try {
-    const list = await stripe.promotionCodes.list({ active: true, limit: 20 });
+    const list = await stripe.promotionCodes.list({ active: true, limit: 50 });
     const codes = list.data.map((p) => ({ code: p.code, id: p.id }));
+    const hint = codes.length === 0
+      ? `Aucun code en mode ${keyMode.toUpperCase()}. Les codes Test et Live sont séparés : basculez "Mode test" dans Stripe (coin supérieur droit) ou utilisez la clé sk_test_* / sk_live_* correspondante.`
+      : 'Ces codes sont visibles. Si le vôtre manque, il est peut-être dans l\'autre mode (Test vs Live).';
     return res.json({
       ok: true,
       count: list.data.length,
       codes,
-      hint: codes.length === 0
-        ? 'Aucun code promo trouvé. Vérifiez que STRIPE_SECRET_KEY (Railway) correspond au compte Stripe où vous avez créé les codes. Stripe Dashboard → Développeurs → Clés API.'
-        : 'Ces codes sont visibles par votre backend. Si le vôtre n\'apparaît pas, il est dans un autre compte Stripe.',
+      keyMode,
+      hint,
     });
   } catch (err) {
-    return res.json({ ok: false, error: err.message });
+    return res.json({ ok: false, error: err.message, keyMode });
   }
 });
 
