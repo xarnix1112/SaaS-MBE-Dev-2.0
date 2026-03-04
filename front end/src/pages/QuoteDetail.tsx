@@ -3409,13 +3409,30 @@ export default function QuoteDetail() {
             setCustomMsgText('');
             setCustomMsgLang('fr');
             setIsLoadingCustomMsgs(true);
+            // #region agent log
+            fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:onOpenChange',message:'Dialog opened - starting fetch',data:{},hypothesisId:'A-B-C',timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
             authenticatedFetch('/api/custom-quote-messages')
-              .then((r) => r.json())
-              .then((d) => {
-                setCustomMsgPrincipales(d.messages?.principales || []);
-                setCustomMsgOptionnelles(d.messages?.optionnelles || []);
+              .then((r) => {
+                // #region agent log
+                fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:fetch.then1',message:'Fetch response received',data:{status:r.status,ok:r.ok},hypothesisId:'B-C',timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                return r.json();
               })
-              .catch(() => {})
+              .then((d) => {
+                const principales = d.messages?.principales || [];
+                const optionnelles = d.messages?.optionnelles || [];
+                // #region agent log
+                fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:fetch.then2',message:'Messages loaded from API',data:{principalesCount:principales.length,optionnellesCount:optionnelles.length,rawData:d},hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+                setCustomMsgPrincipales(principales);
+                setCustomMsgOptionnelles(optionnelles);
+              })
+              .catch((err) => {
+                // #region agent log
+                fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:fetch.catch',message:'Fetch error',data:{error:String(err)},hypothesisId:'B-C',timestamp:Date.now()})}).catch(()=>{});
+                // #endregion
+              })
               .finally(() => setIsLoadingCustomMsgs(false));
           }
         }}
@@ -3444,6 +3461,9 @@ export default function QuoteDetail() {
 
             const allMsgs = [...customMsgPrincipales, ...customMsgOptionnelles];
             const hasMessages = customMsgPrincipales.length > 0 || customMsgOptionnelles.length > 0;
+            // #region agent log
+            fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:IIFE-render',message:'IIFE render - hasMessages check',data:{hasMessages,principalesCount:customMsgPrincipales.length,optionnellesCount:customMsgOptionnelles.length,isLoading:isLoadingCustomMsgs},hypothesisId:'A-D',timestamp:Date.now()})}).catch(()=>{});
+            // #endregion
 
             const toggleMsg = (msg: CustomQuoteMessage) => {
               const isSelected = selectedMsgIds.includes(msg.id);
