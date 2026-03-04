@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { authenticatedFetch } from '@/lib/api';
 import { Mail, RotateCcw, Eye, Loader2, ChevronDown, ChevronUp, Plus, Trash2, ImageIcon } from 'lucide-react';
 
-const SECTION_BASED_TYPES = ['quote_send', 'payment_received', 'collected'] as const;
+const SECTION_BASED_TYPES = ['quote_send', 'payment_received', 'collected', 'collection_failed'] as const;
 
 export interface SectionItem {
   id: string;
@@ -30,6 +30,7 @@ const EMAIL_TYPES = [
   'collected',
   'awaiting_shipment',
   'shipped',
+  'collection_failed',
 ] as const;
 
 const EMAIL_TYPE_LABELS: Record<string, string> = {
@@ -40,6 +41,7 @@ const EMAIL_TYPE_LABELS: Record<string, string> = {
   collected: 'Lot collecté',
   awaiting_shipment: 'Colis prêt',
   shipped: 'Colis expédié',
+  collection_failed: 'Lot non récupéré',
 };
 
 const PLACEHOLDERS = [
@@ -58,6 +60,9 @@ const PLACEHOLDERS = [
   { key: '{{lotDescription}}', label: 'Description lot' },
   { key: '{{mbeName}}', label: 'Nom MBE' },
   { key: '{{amount}}', label: 'Montant' },
+  { key: '{{raison}}', label: 'Raison non-récupération' },
+  { key: '{{coordonneesSalleVentes}}', label: 'Coordonnées salle des ventes' },
+  { key: '{{lotDisplay}}', label: 'Affichage lot ("le lot X", "les lots X, Y"…)' },
 ];
 
 interface TemplateData {
@@ -367,7 +372,7 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
                       className="mt-1"
                     />
                   </div>
-                  {['quote_send', 'surcharge', 'payment_received', 'collected'].includes(type) && (
+                  {['quote_send', 'surcharge', 'payment_received', 'collected', 'collection_failed'].includes(type) && (
                     <div>
                       <Label>Logo du bandeau</Label>
                       <p className="text-xs text-muted-foreground mt-0.5 mb-1">URL ou sélectionnez un fichier depuis votre ordinateur</p>
@@ -510,7 +515,12 @@ export default function EmailTemplatesSettings({ onLoad }: EmailTemplatesSetting
                       <p className="font-medium">Aperçu :</p>
                       <p><strong>Sujet :</strong> {preview[type].subject}</p>
                       <div className="border rounded p-3 bg-white dark:bg-zinc-900 mt-2 max-h-96 overflow-auto">
-                        <div dangerouslySetInnerHTML={{ __html: preview[type].bodyHtml || '' }} className="prose prose-sm max-w-none" />
+                        <iframe
+                          srcDoc={preview[type].bodyHtml || ''}
+                          title="Aperçu de l'email"
+                          className="w-full min-h-[400px] border-0 rounded"
+                          sandbox="allow-same-origin"
+                        />
                       </div>
                     </div>
                   )}

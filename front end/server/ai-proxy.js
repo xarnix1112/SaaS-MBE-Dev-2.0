@@ -6000,36 +6000,44 @@ app.post('/api/devis/:id/notify-collection-failed', requireAuth, async (req, res
     const clientName = quoteData?.client?.name || quoteData?.clientName || 'Client';
 
     let commercialName = 'votre MBE';
-    if (quoteData?.saasAccountId) {
-      const saasDoc = await firestore.collection('saasAccounts').doc(quoteData.saasAccountId).get();
-      if (saasDoc.exists && saasDoc.data().commercialName) {
-        commercialName = saasDoc.data().commercialName;
+    const saasAccountId = quoteData.saasAccountId || req.saasAccountId;
+    let emailTemplates = null;
+    if (saasAccountId) {
+      const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountId).get();
+      if (saasDoc.exists) {
+        commercialName = saasDoc.data().commercialName || commercialName;
+        emailTemplates = saasDoc.data().emailTemplates;
       }
     }
 
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"></head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <p>Bonjour ${clientName},</p>
-  <p>${lotDisplay.charAt(0).toUpperCase() + lotDisplay.slice(1)} n'a pas pu être récupéré auprès de la salle des ventes.</p>
-  <p><strong>Raison :</strong> ${reasonTruncated.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>
-  <p>Merci de contacter la salle des ventes pour faire débloquer la situation.</p>
-  <div style="background: #f3f4f6; padding: 16px; border-radius: 8px; margin: 20px 0;">
-    <p style="margin: 0 0 8px 0; font-weight: 600;">Coordonnées de la salle des ventes :</p>
-    <pre style="margin: 0; white-space: pre-wrap; font-family: inherit;">${contactBlock.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</pre>
-  </div>
-  <p style="color: #6b7280; font-size: 14px;">Référence : ${reference}</p>
-  <p>Cordialement,<br><strong>${commercialName}</strong></p>
-</body>
-</html>`.trim();
+    const templates = getTemplatesExtendedForAccount(emailTemplates);
+    const t = templates.collection_failed;
+    const lotDisplayCapitalized = lotDisplay.charAt(0).toUpperCase() + lotDisplay.slice(1);
+    const templateValues = {
+      clientName,
+      reference,
+      mbeName: commercialName,
+      lotDisplay: lotDisplayCapitalized,
+      raison: reasonTruncated,
+      coordonneesSalleVentes: contactBlock,
+      nomSalleVentes: auctionHouseName,
+    };
+    const bodyHtml = Array.isArray(t.bodySections) && t.bodySections.length > 0
+      ? buildBodyHtmlFromSections(t.bodySections, templateValues)
+      : replacePlaceholdersExtended(t.bodyHtml || '', templateValues);
+    const signatureHtml = replacePlaceholdersExtended(t.signature || '', templateValues).replace(/\n/g, '<br>');
+    const subject = replacePlaceholdersExtended(t.subject || '', templateValues);
+    const htmlContent = buildEmailHtmlSimple(
+      { ...t, bannerColor: t.bannerColor || '#2563eb', fontFamily: t.fontFamily || 'Arial, sans-serif', fontSize: t.fontSize ?? 14 },
+      bodyHtml,
+      signatureHtml,
+      templateValues
+    );
 
-    const saasAccountId = quoteData.saasAccountId || req.saasAccountId;
     await sendEmail({
       to: clientEmail,
-      subject: `Lot non récupéré auprès de la salle des ventes - ${reference}`,
-      text: `${lotDisplay.charAt(0).toUpperCase() + lotDisplay.slice(1)} n'a pas pu être récupéré. Raison : ${reasonTruncated}. Merci de contacter la salle des ventes : ${contactBlock}`,
+      subject,
+      text: `${lotDisplayCapitalized} n'a pas pu être récupéré. Raison : ${reasonTruncated}. Merci de contacter la salle des ventes : ${contactBlock}`,
       html: htmlContent,
       saasAccountId,
     });
@@ -12595,6 +12603,9 @@ app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAut
       mbeName: commercialName,
       amount: '21.00',
       description: 'Surcoût pour dimensions réelles',
+      raison: 'Lot non disponible au moment de la collecte',
+      coordonneesSalleVentes: 'Millon Riviera\nEmail : contact@millon.com\nContact : 01 23 45 67 89',
+      lotDisplay: 'Le lot 38',
     };
     const subject = replacePlaceholdersExtended(t.subject || '', sampleValues);
     const bodyHtml = Array.isArray(t.bodySections) && t.bodySections.length > 0

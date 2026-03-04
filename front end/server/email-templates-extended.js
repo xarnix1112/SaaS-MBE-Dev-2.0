@@ -13,6 +13,7 @@ export const EMAIL_TYPES_EXTENDED = [
   'collected',
   'awaiting_shipment',
   'shipped',
+  'collection_failed', // Lot non récupéré
 ];
 
 export const EMAIL_TYPE_LABELS_EXTENDED = {
@@ -23,6 +24,7 @@ export const EMAIL_TYPE_LABELS_EXTENDED = {
   collected: 'Lot collecté',
   awaiting_shipment: 'Colis prêt',
   shipped: 'Colis expédié',
+  collection_failed: 'Lot non récupéré',
 };
 
 /** Placeholders disponibles (format {{key}} ou {key}) */
@@ -47,6 +49,9 @@ export const PLACEHOLDERS_EXTENDED = [
   { key: '{{lotDescription}}', label: 'Description du lot', alt: '{lotDescription}' },
   { key: '{{mbeName}}', label: 'Nom du MBE', alt: '{mbeName}' },
   { key: '{{amount}}', label: 'Montant (€)', alt: '{amount}' },
+  { key: '{{raison}}', label: 'Raison du non-récupération (Lot non récupéré)', alt: '{raison}' },
+  { key: '{{coordonneesSalleVentes}}', label: 'Coordonnées salle des ventes', alt: '{coordonneesSalleVentes}' },
+  { key: '{{lotDisplay}}', label: '"le lot X" / "les lots X, Y" / "votre lot"', alt: '{lotDisplay}' },
 ];
 
 /** Template par défaut - Envoi de devis - espacement généreux pour lisibilité (Gmail, Outlook, etc.) */
@@ -143,6 +148,14 @@ export const DEFAULT_PAYMENT_RECEIVED_SECTIONS = [
   { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions encore de votre confiance.' },
 ];
 
+/** Sections par défaut pour lot non récupéré */
+export const DEFAULT_COLLECTION_FAILED_SECTIONS = [
+  { id: 's1', title: '', content: "Bonjour {{clientName}},\n\n{{lotDisplay}} n'a pas pu être récupéré auprès de la salle des ventes." },
+  { id: 's2', title: 'Raison', content: '{{raison}}' },
+  { id: 's3', title: '', content: 'Merci de contacter la salle des ventes pour faire débloquer la situation.' },
+  { id: 's4', title: 'Coordonnées de la salle des ventes', content: '{{coordonneesSalleVentes}}' },
+];
+
 /** Sections par défaut pour lot collecté */
 export const DEFAULT_COLLECTED_SECTIONS = [
   { id: 'intro', title: '', content: 'Bonjour,\n\nNous avons le plaisir de vous confirmer que votre ou vos lot(s) pour le bordereau d\'adjudication n° {{bordereauNum}} ont été collecté(s) avec soin à la salle des ventes.' },
@@ -151,7 +164,7 @@ export const DEFAULT_COLLECTED_SECTIONS = [
 ];
 
 /** Types de templates utilisant l\'éditeur par sections (add/remove) */
-export const SECTION_BASED_TEMPLATES = ['quote_send', 'payment_received', 'collected'];
+export const SECTION_BASED_TEMPLATES = ['quote_send', 'payment_received', 'collected', 'collection_failed'];
 
 /** Valeurs par défaut - templates étendus */
 export const DEFAULT_TEMPLATES_EXTENDED = {
@@ -245,6 +258,14 @@ Nous vous remercions d'avoir choisi de travailler avec <strong>{{mbeName}}</stro
     bannerColor: '#2563eb',
     buttonColor: null,
     bannerTitle: '📦 Colis expédié',
+  },
+  collection_failed: {
+    subject: 'Lot non récupéré auprès de la salle des ventes - {{reference}}',
+    bodySections: DEFAULT_COLLECTION_FAILED_SECTIONS,
+    signature: 'Cordialement,<br><strong>{{mbeName}}</strong>',
+    bannerColor: '#2563eb',
+    buttonColor: null,
+    bannerTitle: '⚠ Lot non récupéré',
   },
 };
 
