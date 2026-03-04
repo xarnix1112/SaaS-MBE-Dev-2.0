@@ -11,6 +11,7 @@ import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
 import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
+import CustomQuoteMessagesSettings from '@/components/settings/CustomQuoteMessagesSettings';
 import { useFeatures } from '@/hooks/use-features';
 import { useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/components/ui/input';
@@ -101,6 +102,7 @@ export default function Settings() {
         ? [
             { id: 'emails', label: 'Comptes Email', icon: Mail },
             { id: 'modeles-emails', label: "Modèles d'emails", icon: Send },
+            { id: 'messages-personnalises', label: 'Messages personnalisés', icon: Send },
           ]
         : [{ id: 'emails', label: 'Comptes Email', icon: Mail }],
     },
@@ -1918,6 +1920,11 @@ export default function Settings() {
           {canCustomizeAutoEmails && (
             <TabsContent value="modeles-emails" className="space-y-6">
               <EmailTemplatesSettings />
+            </TabsContent>
+          )}
+          {canCustomizeAutoEmails && (
+            <TabsContent value="messages-personnalises" className="space-y-6">
+              <CustomQuoteMessagesSettings />
             </TabsContent>
           )}
           <TabsContent value="mbehub" className="space-y-6">

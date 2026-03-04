@@ -4989,7 +4989,7 @@ app.post('/api/send-quote-email', async (req, res) => {
   let clientEmail = null;
   
   try {
-    const { quote } = req.body;
+    const { quote, customMessage } = req.body;
     console.log('[Email] 📦 Quote reçu - ID:', quote?.id);
     console.log('[Email] 📦 Quote.paymentLinks:', quote?.paymentLinks ? `${quote.paymentLinks.length} lien(s)` : 'undefined');
 
@@ -5201,6 +5201,7 @@ Dès qu'un des deux liens est payé, l'autre est automatiquement désactivé.`;
       lotDescription,
       mbeName,
       amount: finalTotal.toFixed(2),
+      messagePersonnalise: customMessage || '',
     };
     const emailTemplates = firestore && saasAccountId
       ? (await firestore.collection('saasAccounts').doc(saasAccountId).get()).data()?.emailTemplates
@@ -12606,6 +12607,8 @@ app.post('/api/email-templates-extended/preview', requireAuth, checkCustomizeAut
       raison: 'Lot non disponible au moment de la collecte',
       coordonneesSalleVentes: 'Millon Riviera\nEmail : contact@millon.com\nContact : 01 23 45 67 89',
       lotDisplay: 'Le lot 38',
+      messagePersonnalise: 'Le devis suivant a été considéré pour une lithographie pouvant être roulé et mise en tube.',
+      sectionPaiement: '👉 https://checkout.stripe.com/example',
     };
     const subject = replacePlaceholdersExtended(t.subject || '', sampleValues);
     const bodyHtml = Array.isArray(t.bodySections) && t.bodySections.length > 0
@@ -12676,6 +12679,49 @@ app.post('/api/email-templates-extended/reset', requireAuth, checkCustomizeAutoE
   } catch (err) {
     console.error('[API] Erreur reset email-templates-extended:', err);
     return res.status(500).json({ error: 'Erreur réinitialisation' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// API : Messages personnalisés devis (custom-quote-messages)
+// Stocké dans saasAccounts/{id}.customQuoteMessages
+// ─────────────────────────────────────────────────────────────────────────────
+
+app.get('/api/custom-quote-messages', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    const data = saasDoc.exists ? saasDoc.data() : {};
+    return res.json({ messages: data.customQuoteMessages || { principales: [], optionnelles: [] } });
+  } catch (err) {
+    console.error('[API] Erreur GET custom-quote-messages:', err);
+    return res.status(500).json({ error: 'Erreur récupération messages' });
+  }
+});
+
+app.put('/api/custom-quote-messages', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { messages } = req.body || {};
+  if (!messages || typeof messages !== 'object') {
+    return res.status(400).json({ error: 'Données invalides' });
+  }
+  const principales = Array.isArray(messages.principales) ? messages.principales : [];
+  const optionnelles = Array.isArray(messages.optionnelles) ? messages.optionnelles : [];
+  const validate = (list) => list.every(
+    (m) => m && typeof m.id === 'string' && typeof m.label === 'string' && typeof m.textFr === 'string' && typeof m.textEn === 'string'
+  );
+  if (!validate(principales) || !validate(optionnelles)) {
+    return res.status(400).json({ error: 'Structure des messages invalide' });
+  }
+  try {
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).set(
+      { customQuoteMessages: { principales, optionnelles }, updatedAt: Timestamp.now() },
+      { merge: true }
+    );
+    return res.json({ success: true, messages: { principales, optionnelles } });
+  } catch (err) {
+    console.error('[API] Erreur PUT custom-quote-messages:', err);
+    return res.status(500).json({ error: 'Erreur sauvegarde messages' });
   }
 });
 

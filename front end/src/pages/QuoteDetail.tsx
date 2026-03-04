@@ -131,6 +131,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
+import type { CustomQuoteMessage } from '@/components/settings/CustomQuoteMessagesSettings';
 import type { Paiement } from "@/types/stripe";
 import { useFeatures } from "@/hooks/use-features";
 import { useQuery } from "@tanstack/react-query";
@@ -198,6 +199,14 @@ export default function QuoteDetail() {
   const [surchargeReason, setSurchargeReason] = useState<string>('dimensions_reelles');
   const [surchargeReasonOther, setSurchargeReasonOther] = useState('');
   const [isSendingQuote, setIsSendingQuote] = useState(false);
+
+  // Messages personnalisés devis
+  const [customMsgPrincipales, setCustomMsgPrincipales] = useState<CustomQuoteMessage[]>([]);
+  const [customMsgOptionnelles, setCustomMsgOptionnelles] = useState<CustomQuoteMessage[]>([]);
+  const [selectedMsgIds, setSelectedMsgIds] = useState<string[]>([]);
+  const [customMsgText, setCustomMsgText] = useState('');
+  const [customMsgLang, setCustomMsgLang] = useState<'fr' | 'en'>('fr');
+  const [isLoadingCustomMsgs, setIsLoadingCustomMsgs] = useState(false);
 
   // Réinitialiser les tarifs MBE quand on change de devis
   useEffect(() => {
@@ -1145,7 +1154,7 @@ export default function QuoteDetail() {
       const quoteToSend = { ...quote, paymentLinks: [...(quote.paymentLinks || []), ...newLinks] };
       const sendRes = await authenticatedFetch('/api/send-quote-email', {
         method: 'POST',
-        body: JSON.stringify({ quote: quoteToSend }),
+        body: JSON.stringify({ quote: quoteToSend, customMessage: customMsgText.trim() || undefined }),
       });
       if (!sendRes.ok) {
         const errData = await sendRes.json().catch(() => ({}));
@@ -1187,7 +1196,7 @@ export default function QuoteDetail() {
       // Utiliser authenticatedFetch pour router correctement vers le backend Railway
       const response = await authenticatedFetch(apiUrl, {
         method: 'POST',
-        body: JSON.stringify({ quote }),
+        body: JSON.stringify({ quote, customMessage: customMsgText.trim() || undefined }),
       });
 
       console.log('[Email] Réponse status:', response.status, response.statusText);
@@ -3391,8 +3400,27 @@ export default function QuoteDetail() {
       </div>
 
       {/* Dialogue Envoyer le devis - choix 1 lien ou 2 liens */}
-      <Dialog open={isSendQuoteDialogOpen} onOpenChange={setIsSendQuoteDialogOpen}>
-        <DialogContent className="max-w-md">
+      <Dialog
+        open={isSendQuoteDialogOpen}
+        onOpenChange={(open) => {
+          setIsSendQuoteDialogOpen(open);
+          if (open) {
+            setSelectedMsgIds([]);
+            setCustomMsgText('');
+            setCustomMsgLang('fr');
+            setIsLoadingCustomMsgs(true);
+            authenticatedFetch('/api/custom-quote-messages')
+              .then((r) => r.json())
+              .then((d) => {
+                setCustomMsgPrincipales(d.messages?.principales || []);
+                setCustomMsgOptionnelles(d.messages?.optionnelles || []);
+              })
+              .catch(() => {})
+              .finally(() => setIsLoadingCustomMsgs(false));
+          }
+        }}
+      >
+        <DialogContent className="max-w-lg">
           <DialogHeader>
             <DialogTitle>Envoyer le devis</DialogTitle>
             <DialogDescription>
@@ -3414,9 +3442,110 @@ export default function QuoteDetail() {
             const hasAddr = !!(addr.zip || addr.city || addr.country || safeQuote.client?.address);
             const canSendTwoLinks = showMbehubButton && hasDims && weight > 0 && hasAddr && !isPrincipalPaidForEdit;
 
+            const allMsgs = [...customMsgPrincipales, ...customMsgOptionnelles];
+            const hasMessages = customMsgPrincipales.length > 0 || customMsgOptionnelles.length > 0;
+
+            const toggleMsg = (msg: CustomQuoteMessage) => {
+              const isSelected = selectedMsgIds.includes(msg.id);
+              const newIds = isSelected
+                ? selectedMsgIds.filter((id) => id !== msg.id)
+                : [...selectedMsgIds, msg.id];
+              setSelectedMsgIds(newIds);
+              // Reconstruire le texte dans l'ordre : principaux sélectionnés, puis optionnels sélectionnés
+              const principauxSelected = customMsgPrincipales.filter((m) => newIds.includes(m.id));
+              const optionnellesSelected = customMsgOptionnelles.filter((m) => newIds.includes(m.id));
+              const ordered = [...principauxSelected, ...optionnellesSelected];
+              setCustomMsgText(ordered.map((m) => (customMsgLang === 'en' ? m.textEn : m.textFr)).join('\n\n'));
+            };
+
+            const toggleLang = () => {
+              const newLang = customMsgLang === 'fr' ? 'en' : 'fr';
+              setCustomMsgLang(newLang);
+              // Reconstruire le texte dans la nouvelle langue
+              const principauxSelected = customMsgPrincipales.filter((m) => selectedMsgIds.includes(m.id));
+              const optionnellesSelected = customMsgOptionnelles.filter((m) => selectedMsgIds.includes(m.id));
+              const ordered = [...principauxSelected, ...optionnellesSelected];
+              setCustomMsgText(ordered.map((m) => (newLang === 'en' ? m.textEn : m.textFr)).join('\n\n'));
+            };
+
+            const customMessagesBlock = hasMessages ? (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium">Message personnalisé (optionnel)</p>
+                  {(customMsgPrincipales.length > 0 || customMsgOptionnelles.length > 0) && (
+                    <Button
+                      variant={customMsgLang === 'en' ? 'default' : 'outline'}
+                      size="sm"
+                      className="h-6 px-2 text-xs gap-1"
+                      onClick={toggleLang}
+                    >
+                      {customMsgLang === 'fr' ? '🇬🇧 EN' : '🇫🇷 FR'}
+                    </Button>
+                  )}
+                </div>
+                {isLoadingCustomMsgs ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2 className="w-3 h-3 animate-spin" />Chargement…
+                  </div>
+                ) : (
+                  <div className="space-y-2">
+                    {customMsgPrincipales.length > 0 && (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Principaux</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {customMsgPrincipales.map((msg) => {
+                            const sel = selectedMsgIds.includes(msg.id);
+                            return (
+                              <button
+                                key={msg.id}
+                                type="button"
+                                onClick={() => toggleMsg(msg)}
+                                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${sel ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
+                              >
+                                {msg.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {customMsgOptionnelles.length > 0 && (
+                      <div>
+                        <p className="text-xs text-muted-foreground mb-1">Optionnels</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {customMsgOptionnelles.map((msg) => {
+                            const sel = selectedMsgIds.includes(msg.id);
+                            return (
+                              <button
+                                key={msg.id}
+                                type="button"
+                                onClick={() => toggleMsg(msg)}
+                                className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${sel ? 'bg-primary text-primary-foreground border-primary' : 'border-border hover:bg-muted'}`}
+                              >
+                                {msg.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    )}
+                    {selectedMsgIds.length > 0 && (
+                      <textarea
+                        className="w-full min-h-[90px] rounded-md border border-input bg-background px-3 py-2 text-xs ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring resize-y"
+                        value={customMsgText}
+                        onChange={(e) => setCustomMsgText(e.target.value)}
+                        placeholder="Texte du message…"
+                      />
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : null;
+
             if (!hasPrincipalLink) {
               return (
                 <div className="space-y-4">
+                  {customMessagesBlock}
                   <p className="text-sm text-muted-foreground">
                     {canSendTwoLinks
                       ? "Créez d'abord un lien en cliquant sur Appliquer, ou envoyez avec 2 liens."
@@ -3459,6 +3588,7 @@ export default function QuoteDetail() {
                   <p>Total : {(safeQuote.totalAmount ?? 0).toFixed(2)}€</p>
                   <p>Livraison : {linkLabel}</p>
                 </div>
+                {customMessagesBlock}
                 <div className="flex flex-col gap-2">
                   <Button
                     className="w-full justify-start gap-2"

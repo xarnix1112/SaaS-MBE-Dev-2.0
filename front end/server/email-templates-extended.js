@@ -52,6 +52,7 @@ export const PLACEHOLDERS_EXTENDED = [
   { key: '{{raison}}', label: 'Raison du non-récupération (Lot non récupéré)', alt: '{raison}' },
   { key: '{{coordonneesSalleVentes}}', label: 'Coordonnées salle des ventes', alt: '{coordonneesSalleVentes}' },
   { key: '{{lotDisplay}}', label: '"le lot X" / "les lots X, Y" / "votre lot"', alt: '{lotDisplay}' },
+  { key: '{{messagePersonnalise}}', label: 'Message personnalisé (spécificités du devis)', alt: '{messagePersonnalise}' },
 ];
 
 /** Template par défaut - Envoi de devis - espacement généreux pour lisibilité (Gmail, Outlook, etc.) */
@@ -135,6 +136,7 @@ export const DEFAULT_QUOTE_SEND_SECTIONS = [
   { id: 's6', title: '4 – Livraison', content: 'Votre colis sera expédié à l\'adresse suivante :\n\n{{adresseDestinataire}}\n\nSi vous souhaitez une livraison en point relais ou à une autre adresse que celle de votre bordereau, merci de nous l\'indiquer par retour de cet e-mail uniquement.\n\n⚠ Après envoi du colis, tout changement d\'adresse sera facturé 15 € TTC.\n\nEn cas de problème à la livraison, merci de :\n• prendre plusieurs photos du colis et de l\'emballage,\n• garder tous les matériaux d\'emballage,\n• nous prévenir immédiatement (sans dépasser les délais du transporteur).' },
   { id: 's7', title: '5 – CGV – Responsabilités – Informations utiles', content: 'La responsabilité de MBE ne peut être engagée si le transporteur refuse l\'indemnisation en raison de la nature, de la valeur ou de l\'emballage.\n\nLien vers nos conditions générales ainsi que celles de nos transporteurs : https://linktr.ee/mbe026' },
   { id: 's8', title: '6 – Facture', content: 'L\'envoi d\'une facture n\'est pas automatique.\n\n👉 Merci de préciser dans votre réponse si vous souhaitez une facture et, le cas échéant, d\'indiquer les coordonnées de votre société.' },
+  { id: 'messagePersonnalise', title: 'Informations spécifiques', content: '{{messagePersonnalise}}' },
   { id: 'closing', title: '', content: 'Nous restons à votre disposition pour toute question et vous remercions de votre confiance.' },
 ];
 
