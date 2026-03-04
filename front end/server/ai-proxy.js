@@ -7139,7 +7139,7 @@ app.post('/api/google-sheets/select', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'OAuth Google Sheets non autorisé' });
     }
 
-    // Mettre à jour avec le sheet sélectionné
+    // Mettre à jour avec le sheet sélectionné (préserver columnMapping si existant)
     await saasAccountRef.update({
       'integrations.googleSheets': {
         connected: true,
@@ -7148,10 +7148,11 @@ app.post('/api/google-sheets/select', requireAuth, async (req, res) => {
         accessToken: oauthTokens.accessToken,
         refreshToken: oauthTokens.refreshToken,
         expiresAt: oauthTokens.expiresAt,
-        lastRowImported: 1, // Commencer à la ligne 2 (ligne 1 = headers)
+        lastRowImported: 1,
         lastSyncAt: null,
         connectedAt: googleSheetsIntegration.connectedAt || Timestamp.now(),
-        selectedAt: Timestamp.now()
+        selectedAt: Timestamp.now(),
+        ...(googleSheetsIntegration?.columnMapping && { columnMapping: googleSheetsIntegration.columnMapping })
       }
     });
 
@@ -7253,6 +7254,86 @@ app.delete('/api/google-sheets/disconnect', requireAuth, async (req, res) => {
   } catch (error) {
     console.error('[API] Erreur lors de la déconnexion Google Sheets:', error);
     res.status(500).json({ error: error.message });
+  }
+});
+
+// Route: GET column mapping
+app.get('/api/google-sheets/column-mapping', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  try {
+    const doc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const gs = doc.data().integrations?.googleSheets || {};
+    const mapping = { ...DEFAULT_COLUMN_MAPPING, ...(gs.columnMapping || {}) };
+    res.json({ mapping, defaultMapping: DEFAULT_COLUMN_MAPPING });
+  } catch (err) {
+    console.error('[API] Erreur column-mapping GET:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Route: PUT column mapping
+app.put('/api/google-sheets/column-mapping', requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const { mapping } = req.body;
+  if (!mapping || typeof mapping !== 'object') {
+    return res.status(400).json({ error: 'mapping requis (objet)' });
+  }
+  for (const [k, v] of Object.entries(mapping)) {
+    if (!DEFAULT_COLUMN_MAPPING.hasOwnProperty(k)) continue;
+    if (v !== null && (typeof v !== 'number' || v < 0)) {
+      return res.status(400).json({ error: `Champ "${k}" : valeur invalide (nombre >= 0 ou null)` });
+    }
+  }
+  try {
+    await firestore.collection('saasAccounts').doc(req.saasAccountId).update({
+      'integrations.googleSheets.columnMapping': mapping
+    });
+    res.json({ success: true, message: 'Mapping enregistré' });
+  } catch (err) {
+    console.error('[API] Erreur column-mapping PUT:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Route: GET preview rows (premières lignes du sheet pour configurer le mapping)
+app.get('/api/google-sheets/preview-rows', requireAuth, async (req, res) => {
+  if (!firestore || !googleSheetsOAuth2Client) return res.status(500).json({ error: 'Config manquante' });
+  if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  const limit = Math.min(parseInt(req.query.rows, 10) || 5, 20);
+  try {
+    const doc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!doc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const gs = doc.data().integrations?.googleSheets || {};
+    if (!gs.connected || !gs.spreadsheetId || !gs.accessToken) {
+      return res.status(400).json({ error: 'Google Sheet non connecté' });
+    }
+    let expiryDate = null;
+    if (gs.expiresAt) {
+      if (gs.expiresAt.toDate) expiryDate = gs.expiresAt.toDate().getTime();
+      else if (gs.expiresAt instanceof Date) expiryDate = gs.expiresAt.getTime();
+      else expiryDate = new Date(gs.expiresAt).getTime();
+    }
+    const auth = new google.auth.OAuth2(GOOGLE_SHEETS_CLIENT_ID, GOOGLE_SHEETS_CLIENT_SECRET, GOOGLE_SHEETS_REDIRECT_URI);
+    auth.setCredentials({ access_token: gs.accessToken, refresh_token: gs.refreshToken, expiry_date: expiryDate });
+    const sheets = google.sheets({ version: 'v4', auth });
+    const resp = await sheets.spreadsheets.get({
+      spreadsheetId: gs.spreadsheetId,
+      includeGridData: true,
+      ranges: [`A1:ZZ${limit + 1}`]
+    });
+    const sheet = resp.data.sheets?.[0];
+    const rowData = sheet?.data?.[0]?.rowData || [];
+    const rows = rowData.map(row => {
+      if (!row.values) return [];
+      return row.values.map(c => c.formattedValue || '');
+    });
+    res.json({ rows });
+  } catch (err) {
+    console.error('[API] Erreur preview-rows:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
@@ -8907,6 +8988,38 @@ app.post('/api/google-sheets/resync', requireAuth, async (req, res) => {
   }
 });
 
+// Mapping par défaut des colonnes Google Sheet (index 0-based) - rétrocompatibilité
+const DEFAULT_COLUMN_MAPPING = {
+  clientFirstName: 0,
+  clientLastName: 1,
+  clientPhone: 2,
+  clientEmail: 3,
+  clientAddress: 4,
+  clientAddressComplement: 5,
+  clientCity: 6,
+  clientState: 7,
+  clientZip: 8,
+  clientCountry: 9,
+  receiverAnswer: 10,
+  receiverAddress: 11,
+  receiverAddressComplement: 12,
+  receiverCity: 13,
+  receiverState: 14,
+  receiverZip: 15,
+  receiverCountry: 16,
+  receiverFirstName: 17,
+  receiverLastName: 18,
+  receiverPhone: 19,
+  receiverEmail: 20,
+  upsAccessPoint: 21,
+  bordereau: 25,
+  usefulInfo: 23,
+  wantsInsurance: 24,
+  submittedAt: 26,
+  token: 27,
+  wantsProfessionalInvoice: 28
+};
+
 // Fonction: Synchroniser un Google Sheet pour un compte SaaS
 async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
   if (!firestore || !googleSheetsOAuth2Client) return;
@@ -8944,12 +9057,16 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
 
     const sheets = google.sheets({ version: 'v4', auth });
 
+    // Récupérer le mapping des colonnes (personnalisé ou défaut)
+    const columnMapping = { ...DEFAULT_COLUMN_MAPPING, ...(googleSheetsIntegration.columnMapping || {}) };
+
     // CRITIQUE: Utiliser spreadsheets.get() avec includeGridData pour obtenir les hyperliens
     // Les bordereaux Typeform sont des liens cliquables dans les cellules
+    // A2:ZZ pour supporter les colonnes supplémentaires (ex: facture professionnelle)
     const response = await sheets.spreadsheets.get({
       spreadsheetId: googleSheetsIntegration.spreadsheetId,
       includeGridData: true,
-      ranges: ['A2:Z'] // Lire à partir de la ligne 2
+      ranges: ['A2:ZZ']
     });
 
     // Extraire les données avec métadonnées complètes
@@ -9012,19 +9129,6 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         continue;
       }
 
-      // Mapping des colonnes selon la structure Typeform
-      // 0: Prénom, 1: Nom de famille, 2: Numéro de téléphone, 3: E-mail
-      // 4: Adresse, 5: Complément d'adresse, 6: Ville, 7: État/Région/Province
-      // 8: Code postal, 9: Pays
-      // 10: Êtes-vous le destinataire ? (Oui/Non)
-      // 11-20: Informations destinataire (si différent)
-      // 21: Adresse point relais UPS
-      // 22: 📎 Ajouter votre bordereau
-      // 23: Informations utiles
-      // 24: Souhaitez vous assurer votre/vos bordereau(x) ?
-      // 25: Submitted At
-      // 26: Token
-      
       // Helper pour extraire la valeur d'une cellule (texte ou objet avec hyperlink)
       const getCellValue = (cell) => {
         if (!cell) return '';
@@ -9033,32 +9137,37 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         }
         return cell.toString().trim();
       };
+      const getMappedValue = (field) => {
+        const idx = columnMapping[field];
+        if (idx == null || idx < 0) return '';
+        return getCellValue(row[idx]);
+      };
+      const getMappedCell = (field) => {
+        const idx = columnMapping[field];
+        if (idx == null || idx < 0) return null;
+        return row[idx];
+      };
       
-      // Informations client (expéditeur)
-      const clientFirstName = getCellValue(row[0]);
-      const clientLastName = getCellValue(row[1]);
-      const clientPhone = getCellValue(row[2]);
-      const clientEmail = getCellValue(row[3]);
-      const clientAddress = getCellValue(row[4]);
-      const clientAddressComplement = getCellValue(row[5]);
-      const clientCity = getCellValue(row[6]);
-      const clientState = getCellValue(row[7]);
-      const clientZip = getCellValue(row[8]);
-      const clientCountry = getCellValue(row[9]);
+      // Informations client (expéditeur) - via mapping configurable
+      const clientFirstName = getMappedValue('clientFirstName');
+      const clientLastName = getMappedValue('clientLastName');
+      const clientPhone = getMappedValue('clientPhone');
+      const clientEmail = getMappedValue('clientEmail');
+      const clientAddress = getMappedValue('clientAddress');
+      const clientAddressComplement = getMappedValue('clientAddressComplement');
+      const clientCity = getMappedValue('clientCity');
+      const clientState = getMappedValue('clientState');
+      const clientZip = getMappedValue('clientZip');
+      const clientCountry = getMappedValue('clientCountry');
       
       // Vérifier si le client est le destinataire
-      // La colonne 10 peut contenir :
-      // - "Oui" / "Yes" → Le client est le destinataire
-      // - "Non" / "No" → Le client n'est pas le destinataire, il y a un destinataire spécifique (colonnes 11-20)
-      // - "Livrer à un point relais UPS" / "Deliver to UPS Access Point" → Point relais UPS (colonne 21)
-      const receiverAnswer = getCellValue(row[10]);
+      const receiverAnswer = getMappedValue('receiverAnswer');
       const isClientReceiver = receiverAnswer.toLowerCase() === 'oui' || receiverAnswer.toLowerCase() === 'yes';
       const isUpsAccessPoint = receiverAnswer.toLowerCase().includes('point relais') || 
                                 receiverAnswer.toLowerCase().includes('access point') ||
                                 receiverAnswer.toLowerCase().includes('ups');
       
-      // Adresse point relais UPS (colonne 21, utilisée uniquement si point relais choisi)
-      const upsAccessPoint = getCellValue(row[21]);
+      const upsAccessPoint = getMappedValue('upsAccessPoint');
       
       // Informations destinataire
       let receiverFirstName = '';
@@ -9073,7 +9182,6 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       let receiverCountry = '';
       
       if (isClientReceiver) {
-        // Le client est le destinataire, utiliser ses informations
         receiverFirstName = clientFirstName;
         receiverLastName = clientLastName;
         receiverPhone = clientPhone;
@@ -9085,14 +9193,10 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         receiverZip = clientZip;
         receiverCountry = clientCountry;
       } else if (isUpsAccessPoint && upsAccessPoint) {
-        // Le client a choisi un point relais UPS
-        // Les informations du point relais sont dans la colonne 21
-        // On utilise les informations du client pour le contact, mais l'adresse sera le point relais
         receiverFirstName = clientFirstName;
         receiverLastName = clientLastName;
         receiverPhone = clientPhone;
         receiverEmail = clientEmail;
-        // L'adresse complète du point relais est dans upsAccessPoint (colonne 21)
         receiverAddress = upsAccessPoint;
         receiverAddressComplement = '';
         receiverCity = '';
@@ -9100,28 +9204,20 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         receiverZip = '';
         receiverCountry = '';
       } else {
-        // Le destinataire est différent du client (informations dans colonnes 11-20)
-        receiverAddress = getCellValue(row[11]);
-        receiverAddressComplement = getCellValue(row[12]);
-        receiverCity = getCellValue(row[13]);
-        receiverState = getCellValue(row[14]);
-        receiverZip = getCellValue(row[15]);
-        receiverCountry = getCellValue(row[16]);
-        receiverFirstName = getCellValue(row[17]);
-        receiverLastName = getCellValue(row[18]);
-        receiverPhone = getCellValue(row[19]);
-        receiverEmail = getCellValue(row[20]);
+        receiverAddress = getMappedValue('receiverAddress');
+        receiverAddressComplement = getMappedValue('receiverAddressComplement');
+        receiverCity = getMappedValue('receiverCity');
+        receiverState = getMappedValue('receiverState');
+        receiverZip = getMappedValue('receiverZip');
+        receiverCountry = getMappedValue('receiverCountry');
+        receiverFirstName = getMappedValue('receiverFirstName');
+        receiverLastName = getMappedValue('receiverLastName');
+        receiverPhone = getMappedValue('receiverPhone');
+        receiverEmail = getMappedValue('receiverEmail');
       }
       
-      // Bordereau - CRITIQUE: Extraire le lien Google Drive si présent
-      // La colonne 22 peut contenir soit du texte, soit un objet { text, hyperlink }
-      // CORRECTION: Les colonnes dans le Google Sheet Typeform
-      // Colonne Z (index 25) : 📎 Ajouter votre bordereau
-      // Colonne AA (index 26) : Submitted At
-      // Colonne AB (index 27) : Token
-      // Note: Les index commencent à 0, donc colonne Z = index 25
-      
-      const bordereauCell = row[25]; // ✅ Colonne Z (index 25) = Bordereau
+      // Bordereau - CRITIQUE: Extraire le lien Google Drive si présent (via mapping)
+      const bordereauCell = getMappedCell('bordereau');
       let bordereauInfo = '';
       let bordereauLink = null;
       let driveFileIdFromLink = null;
@@ -9166,22 +9262,22 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         console.log(`[Google Sheets Sync] ⚠️  Aucun lien bordereau trouvé pour ligne ${i + 2} (col Z, index 25)`);
       }
       
-      // Informations utiles (colonne X = index 23)
-      const usefulInfo = getCellValue(row[23]);
-      
-      // Assurance (colonne Y = index 24)
-      const insuranceAnswer = getCellValue(row[24]);
+      const usefulInfo = getMappedValue('usefulInfo');
+      const insuranceAnswer = getMappedValue('wantsInsurance');
       const wantsInsurance = insuranceAnswer.toLowerCase() === 'oui' || insuranceAnswer.toLowerCase() === 'yes';
+      const submittedAt = getMappedValue('submittedAt');
+      const token = getMappedValue('token');
       
-      // Date de soumission (colonne AA = index 26)
-      const submittedAt = getCellValue(row[26]);
-      console.log(`[Google Sheets Sync] 📅 Submitted At (col AA, index 26): ${submittedAt}`);
+      // Facture professionnelle (Oui/Yes → true)
+      let wantsProfessionalInvoiceVal = null;
+      const factureProRaw = getMappedValue('wantsProfessionalInvoice');
+      if (factureProRaw && (factureProRaw.toLowerCase() === 'oui' || factureProRaw.toLowerCase() === 'yes')) {
+        wantsProfessionalInvoiceVal = true;
+      } else if (factureProRaw && (factureProRaw.toLowerCase() === 'non' || factureProRaw.toLowerCase() === 'no')) {
+        wantsProfessionalInvoiceVal = false;
+      }
       
-      // Token Typeform (colonne AB = index 27) - utilisé comme externalId pour détecter les doublons
-      const token = getCellValue(row[27]);
-      console.log(`[Google Sheets Sync] 🔑 Token Typeform (col AB, index 27): ${token}`);
-      
-      // Si pas de token, utiliser Submitted At (colonne 25) comme fallback
+      // Si pas de token, utiliser Submitted At comme fallback
       const externalId = token || submittedAt || `row-${i + 2}`; // Fallback sur numéro de ligne si rien
 
       // Construire le nom complet du client
@@ -9324,7 +9420,11 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
         recipientAddress: receiverFullAddress,
         
         // Référence générée automatiquement
-        reference: `GS-${Date.now()}-${sheetRowIndex}`
+        reference: `GS-${Date.now()}-${sheetRowIndex}`,
+        
+        // Facture professionnelle (depuis questionnaire)
+        ...(wantsProfessionalInvoiceVal === true && { wantsProfessionalInvoice: true }),
+        ...(wantsProfessionalInvoiceVal === false && { wantsProfessionalInvoice: false })
       };
 
       // Vérifier limite plan avant création
@@ -13167,6 +13267,9 @@ const expectedRoutes = [
   'POST /api/google-sheets/select',
   'DELETE /api/google-sheets/disconnect',
   'POST /api/google-sheets/resync',
+  'GET /api/google-sheets/column-mapping',
+  'PUT /api/google-sheets/column-mapping',
+  'GET /api/google-sheets/preview-rows',
   'GET /api/google-drive/folders',
   'POST /api/google-drive/select-folder',
   'GET /api/google-drive/status',

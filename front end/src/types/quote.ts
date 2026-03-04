@@ -238,6 +238,9 @@ export interface Quote {
   mbeTrackingId?: string;
   /** Date d'envoi vers MBE Hub */
   sentToMbeHubAt?: Date | { toDate: () => Date } | null;
+
+  /** Le client souhaite une facture professionnelle (depuis questionnaire Typeform) */
+  wantsProfessionalInvoice?: boolean | null;
 }
 
 export interface TimelineEvent {

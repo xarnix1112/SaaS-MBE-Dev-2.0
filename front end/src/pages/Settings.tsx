@@ -15,6 +15,7 @@ import { useFeatures } from '@/hooks/use-features';
 import { useQueryClient } from '@tanstack/react-query';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
+import { COLUMN_MAPPING_LABELS, type GoogleSheetsColumnMapping } from '@/types/googleSheets';
 import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group';
 import { Separator } from '@/components/ui/separator';
 
@@ -56,6 +57,12 @@ export default function Settings() {
   const [availableSheets, setAvailableSheets] = useState<GoogleSheet[]>([]);
   const [isLoadingSheetsList, setIsLoadingSheetsList] = useState(false);
   const [showSheetSelector, setShowSheetSelector] = useState(false);
+  const [columnMapping, setColumnMapping] = useState<GoogleSheetsColumnMapping | null>(null);
+  const [defaultColumnMapping, setDefaultColumnMapping] = useState<GoogleSheetsColumnMapping | null>(null);
+  const [previewRows, setPreviewRows] = useState<string[][]>([]);
+  const [isLoadingColumnMapping, setIsLoadingColumnMapping] = useState(false);
+  const [isSavingColumnMapping, setIsSavingColumnMapping] = useState(false);
+  const [showColumnMappingConfig, setShowColumnMappingConfig] = useState(false);
   
   // État Google Drive
   interface GoogleDriveStatus {
@@ -463,6 +470,70 @@ export default function Settings() {
     }
   };
 
+  const loadColumnMapping = async () => {
+    try {
+      setIsLoadingColumnMapping(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/google-sheets/column-mapping');
+      if (response.ok) {
+        const data = await response.json();
+        setColumnMapping(data.mapping);
+        setDefaultColumnMapping(data.defaultMapping);
+      }
+    } catch (err) {
+      console.error('[Settings] Erreur chargement column mapping:', err);
+    } finally {
+      setIsLoadingColumnMapping(false);
+    }
+  };
+
+  const loadPreviewRows = async () => {
+    try {
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/google-sheets/preview-rows?rows=5');
+      if (response.ok) {
+        const data = await response.json();
+        setPreviewRows(data.rows || []);
+      } else {
+        toast.error('Impossible de charger l\'aperçu');
+      }
+    } catch (err) {
+      console.error('[Settings] Erreur preview rows:', err);
+      toast.error('Erreur lors du chargement de l\'aperçu');
+    }
+  };
+
+  const saveColumnMapping = async () => {
+    if (!columnMapping) return;
+    try {
+      setIsSavingColumnMapping(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/google-sheets/column-mapping', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ mapping: columnMapping }),
+      });
+      if (response.ok) {
+        toast.success('Configuration des colonnes enregistrée');
+      } else {
+        const err = await response.json().catch(() => ({}));
+        toast.error(err.error || 'Erreur lors de l\'enregistrement');
+      }
+    } catch (err) {
+      console.error('[Settings] Erreur sauvegarde column mapping:', err);
+      toast.error('Erreur lors de l\'enregistrement');
+    } finally {
+      setIsSavingColumnMapping(false);
+    }
+  };
+
+  const resetColumnMapping = () => {
+    if (defaultColumnMapping) {
+      setColumnMapping({ ...defaultColumnMapping });
+      toast.info('Mapping réinitialisé au modèle par défaut');
+    }
+  };
+
   const loadGoogleSheetsStatus = async () => {
     try {
       setIsLoadingGoogleSheets(true);
@@ -485,6 +556,7 @@ export default function Settings() {
       const status = await response.json();
       setGoogleSheetsStatus(status);
       if (status.oauthAuthorized) loadBilanStatus();
+      if (status.connected) loadColumnMapping();
       
       // Si OAuth autorisé mais pas de sheet sélectionné, afficher le sélecteur
       if (status.oauthAuthorized && !status.connected) {
@@ -1246,6 +1318,102 @@ export default function Settings() {
                           </Button>
                         </div>
                       </div>
+                    </Card>
+
+                    {/* Configuration des colonnes */}
+                    <Card>
+                      <CardHeader>
+                        <CardTitle className="text-base">Configuration des colonnes</CardTitle>
+                        <CardDescription>
+                          Mappez les colonnes de votre Google Sheet aux champs de l'application. Chaque MBE peut avoir une structure de formulaire différente.
+                        </CardDescription>
+                      </CardHeader>
+                      <CardContent className="space-y-4">
+                        {isLoadingColumnMapping ? (
+                          <div className="flex items-center gap-2 py-4">
+                            <Loader2 className="w-4 h-4 animate-spin" />
+                            Chargement de la configuration...
+                          </div>
+                        ) : columnMapping ? (
+                          <>
+                            <Button
+                              variant="outline"
+                              size="sm"
+                              onClick={() => setShowColumnMappingConfig(!showColumnMappingConfig)}
+                              className="gap-2"
+                            >
+                              {showColumnMappingConfig ? 'Masquer la configuration' : 'Afficher la configuration'}
+                            </Button>
+                            {showColumnMappingConfig && (
+                              <>
+                                <div className="grid grid-cols-[1fr_120px] gap-2 items-center text-sm border-b pb-2 font-medium">
+                                  <div>Champ</div>
+                                  <div>Colonne (index)</div>
+                                </div>
+                                <div className="max-h-80 overflow-y-auto space-y-1">
+                                  {(Object.keys(COLUMN_MAPPING_LABELS) as (keyof GoogleSheetsColumnMapping)[]).map((key) => (
+                                    <div key={key} className="grid grid-cols-[1fr_120px] gap-2 items-center">
+                                      <Label className="text-sm font-normal">{COLUMN_MAPPING_LABELS[key]}</Label>
+                                      <Input
+                                        type="number"
+                                        min={0}
+                                        placeholder="-"
+                                        value={columnMapping[key] ?? ''}
+                                        onChange={(e) => {
+                                          const v = e.target.value;
+                                          const num = v === '' ? null : parseInt(v, 10);
+                                          setColumnMapping((prev) => prev ? { ...prev, [key]: num === null || isNaN(num) ? null : num } : null);
+                                        }}
+                                        className="h-8"
+                                      />
+                                    </div>
+                                  ))}
+                                </div>
+                                <div className="flex flex-wrap gap-2 pt-4 border-t">
+                                  <Button size="sm" onClick={loadPreviewRows} variant="outline" className="gap-2">
+                                    <FileSpreadsheet className="w-4 h-4" />
+                                    Prévisualiser les données
+                                  </Button>
+                                  <Button size="sm" onClick={resetColumnMapping} variant="outline" className="gap-2" disabled={!defaultColumnMapping}>
+                                    Réinitialiser au modèle par défaut
+                                  </Button>
+                                  <Button size="sm" onClick={saveColumnMapping} disabled={isSavingColumnMapping} className="gap-2">
+                                    {isSavingColumnMapping ? <Loader2 className="w-4 h-4 animate-spin" /> : null}
+                                    Enregistrer
+                                  </Button>
+                                </div>
+                                {previewRows.length > 0 && (
+                                  <div className="mt-4 p-3 bg-muted/50 rounded-lg overflow-x-auto">
+                                    <p className="text-xs font-medium mb-2">Aperçu des premières lignes (index en en-tête) :</p>
+                                    <table className="text-xs border-collapse">
+                                      <thead>
+                                        <tr>
+                                          {previewRows[0]?.map((_, i) => (
+                                            <th key={i} className="border px-2 py-1 bg-muted font-mono">{i}</th>
+                                          ))}
+                                        </tr>
+                                      </thead>
+                                      <tbody>
+                                        {previewRows.map((row, ri) => (
+                                          <tr key={ri}>
+                                            {row.map((cell, ci) => (
+                                              <td key={ci} className="border px-2 py-1 max-w-[150px] truncate" title={cell}>
+                                                {cell || ''}
+                                              </td>
+                                            ))}
+                                          </tr>
+                                        ))}
+                                      </tbody>
+                                    </table>
+                                  </div>
+                                )}
+                              </>
+                            )}
+                          </>
+                        ) : (
+                          <p className="text-sm text-muted-foreground">Configuration non disponible</p>
+                        )}
+                      </CardContent>
                     </Card>
 
                     {/* Bilan devis MBE */}

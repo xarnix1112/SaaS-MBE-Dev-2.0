@@ -2456,6 +2456,14 @@ export default function QuoteDetail() {
                         <Badge variant="error" className="text-[10px]">Manquante</Badge>
                       )}
                     </div>
+                    {safeQuote.wantsProfessionalInvoice === true && (
+                      <div className="flex items-center gap-2 col-span-2">
+                        <FileText className="w-4 h-4 text-muted-foreground" />
+                        <Badge variant="secondary" className="font-normal">
+                          Facture professionnelle demandée
+                        </Badge>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 
@@ -3771,6 +3779,8 @@ export default function QuoteDetail() {
                       deliveryAddress: deliveryAddress,
                       // Carton sélectionné
                       cartonId: updatedQuote.cartonId || null,
+                      // Facture professionnelle
+                      wantsProfessionalInvoice: updatedQuote.wantsProfessionalInvoice ?? null,
                       // AuctionSheet avec recommendedCarton
                       ...(Object.keys(auctionSheetData).length > 0 ? { auctionSheet: auctionSheetData } : {}),
                     },
@@ -4134,6 +4144,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     deliveryAddressCity: safeQuote.delivery.address.city || '',
     deliveryAddressZip: safeQuote.delivery.address.zip || '',
     deliveryAddressCountry: safeQuote.delivery.address.country || '',
+    wantsProfessionalInvoice: safeQuote.wantsProfessionalInvoice ?? null,
   });
 
   // État pour le carton sélectionné
@@ -4523,6 +4534,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       auctionSheet: updatedAuctionSheet,
       totalAmount: newTotal,
       cartonId: selectedCartonId || undefined,
+      wantsProfessionalInvoice: formData.wantsProfessionalInvoice,
     };
 
     try {
@@ -4637,6 +4649,22 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                     value={formData.clientAddress}
                     onChange={(e) => setFormData({ ...formData, clientAddress: e.target.value })}
                   />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="wantsProfessionalInvoice">Facture professionnelle</Label>
+                  <Select
+                    value={formData.wantsProfessionalInvoice === true ? 'yes' : formData.wantsProfessionalInvoice === false ? 'no' : 'none'}
+                    onValueChange={(v) => setFormData({ ...formData, wantsProfessionalInvoice: v === 'yes' ? true : v === 'no' ? false : null })}
+                  >
+                    <SelectTrigger id="wantsProfessionalInvoice">
+                      <SelectValue placeholder="Non renseigné" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">Non renseigné</SelectItem>
+                      <SelectItem value="yes">Oui</SelectItem>
+                      <SelectItem value="no">Non</SelectItem>
+                    </SelectContent>
+                  </Select>
                 </div>
               </div>
             </CardContent>
