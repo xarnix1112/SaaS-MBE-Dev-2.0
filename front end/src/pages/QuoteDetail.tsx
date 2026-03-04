@@ -227,6 +227,32 @@ export default function QuoteDetail() {
   const [customMsgLang, setCustomMsgLang] = useState<'fr' | 'en'>('fr');
   const [isLoadingCustomMsgs, setIsLoadingCustomMsgs] = useState(false);
 
+  // Chargement des messages personnalisés à l'ouverture du dialog d'envoi
+  useEffect(() => {
+    if (!isSendQuoteDialogOpen) return;
+    setSelectedMsgIds([]);
+    setCustomMsgText('');
+    setCustomMsgLang('fr');
+    setIsLoadingCustomMsgs(true);
+    authenticatedFetch('/api/custom-quote-messages')
+      .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
+      .then((d) => {
+        let principales = d.messages?.principales || [];
+        let optionnelles = d.messages?.optionnelles || [];
+        if (principales.length === 0 && optionnelles.length === 0) {
+          principales = DEFAULT_POPUP_MESSAGES.principales;
+          optionnelles = DEFAULT_POPUP_MESSAGES.optionnelles;
+        }
+        setCustomMsgPrincipales(principales);
+        setCustomMsgOptionnelles(optionnelles);
+      })
+      .catch(() => {
+        setCustomMsgPrincipales(DEFAULT_POPUP_MESSAGES.principales);
+        setCustomMsgOptionnelles(DEFAULT_POPUP_MESSAGES.optionnelles);
+      })
+      .finally(() => setIsLoadingCustomMsgs(false));
+  }, [isSendQuoteDialogOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
   // Réinitialiser les tarifs MBE quand on change de devis
   useEffect(() => {
     setMbeShippingRates(null);
@@ -3421,34 +3447,7 @@ export default function QuoteDetail() {
       {/* Dialogue Envoyer le devis - choix 1 lien ou 2 liens */}
       <Dialog
         open={isSendQuoteDialogOpen}
-        onOpenChange={(open) => {
-          setIsSendQuoteDialogOpen(open);
-          if (open) {
-            setSelectedMsgIds([]);
-            setCustomMsgText('');
-            setCustomMsgLang('fr');
-            setIsLoadingCustomMsgs(true);
-            authenticatedFetch('/api/custom-quote-messages')
-              .then((r) => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-              .then((d) => {
-                let principales = d.messages?.principales || [];
-                let optionnelles = d.messages?.optionnelles || [];
-                // Si aucun message configuré en base, utiliser les messages par défaut
-                if (principales.length === 0 && optionnelles.length === 0) {
-                  principales = DEFAULT_POPUP_MESSAGES.principales;
-                  optionnelles = DEFAULT_POPUP_MESSAGES.optionnelles;
-                }
-                setCustomMsgPrincipales(principales);
-                setCustomMsgOptionnelles(optionnelles);
-              })
-              .catch(() => {
-                // En cas d'erreur API, utiliser les messages par défaut
-                setCustomMsgPrincipales(DEFAULT_POPUP_MESSAGES.principales);
-                setCustomMsgOptionnelles(DEFAULT_POPUP_MESSAGES.optionnelles);
-              })
-              .finally(() => setIsLoadingCustomMsgs(false));
-          }
-        }}
+        onOpenChange={setIsSendQuoteDialogOpen}
       >
         <DialogContent className="max-w-lg">
           <DialogHeader>
