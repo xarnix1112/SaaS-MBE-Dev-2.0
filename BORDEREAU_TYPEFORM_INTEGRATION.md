@@ -298,6 +298,30 @@ Warning: getPathGenerator - ignoring character: "Error: Requesting object that i
 
 ---
 
+## ⚠️ Dépannage Production
+
+### Erreur « invalid_grant » / « Token has been expired or revoked » (logs Railway)
+
+L’analyse des bordereaux échoue car le **jeton OAuth Google** (Sheets/Drive) a expiré ou été révoqué.
+
+**Solution :**
+1. Aller dans **Paramètres → Intégrations**
+2. **Déconnecter** Google Sheets
+3. **Reconnecter** Google Sheets (autoriser à nouveau l’accès)
+4. Sur le devis concerné, relancer l’**analyse du bordereau**
+
+Une notification système s’affiche également pour vous rappeler cette action.
+
+### Firebase : domaine non autorisé pour OAuth (www.mbe-sdv.fr)
+
+Si vous voyez : *« The current domain is not authorized for OAuth operations »* :
+
+1. Firebase Console → **Authentication** → **Settings** → **Authorized domains**
+2. Cliquer sur **Add domain**
+3. Ajouter `www.mbe-sdv.fr` (et éventuellement `mbe-sdv.fr` sans www)
+
+---
+
 ## 📚 Documentation Associée
 
 - `CONTEXTE_FINAL.md` : Contexte complet du projet

@@ -35,6 +35,16 @@
 - Référence du devis
 - Option assurance (si activée sur le devis)
 
+## Erreur 403 / « Identifiants refusés »
+
+Si vous voyez **« Error http status codes »** ou **« Identifiants MBE Hub refusés (403) »** :
+
+1. **Vérifiez le format** : le login est souvent `votrelogin@Pays` (ex. `Clementest.fr0026.mol@France`). Le mot de passe est le **mot de passe API** créé sur mbehub.fr (Paramétrages → Gestion de la clé API du Centre), pas votre mot de passe de connexion au portail.
+
+2. **Démo vs Production** : par défaut l’app utilise l’API **démo** (api.demo.mbehub.it). Les identifiants démo et production sont différents. Pour la prod, définissez `MBE_HUB_ENV=prod` sur Railway.
+
+3. **Accès API** : assurez-vous que le compte mbehub.fr a le rôle **ONLINEMBE_USER** et que l’accès à l’API SOAP est activé.
+
 ## API SOAP utilisée
 
 - **WSDL DEMO** : `https://api.demo.mbehub.it/ws/e-link.wsdl`

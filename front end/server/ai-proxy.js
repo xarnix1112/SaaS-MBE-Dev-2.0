@@ -9862,12 +9862,36 @@ async function triggerOCRForBordereau(bordereauId, saasAccountId, opts = {}) {
 
   } catch (error) {
     console.error('[OCR] Erreur:', error);
-    // Marquer l'OCR comme échoué
+    const errMsg = error?.message || String(error);
+    const isTokenExpired = errMsg.includes('invalid_grant') || errMsg.includes('Token has been expired') || errMsg.includes('revoked');
+    const userFriendlyError = isTokenExpired
+      ? 'Connexion Google expirée ou révoquée. Reconnectez Google Sheets dans Paramètres → Intégrations pour relancer l\'analyse.'
+      : errMsg;
     await firestore.collection('bordereaux').doc(bordereauId).update({
       ocrStatus: 'failed',
-      ocrError: error.message,
+      ocrError: userFriendlyError,
       updatedAt: Timestamp.now()
     });
+    if (isTokenExpired && firestore) {
+      try {
+        const bordereauDoc = await firestore.collection('bordereaux').doc(bordereauId).get();
+        const devisId = bordereauDoc.exists ? bordereauDoc.data().devisId : null;
+        await createNotification(firestore, {
+          clientSaasId: saasAccountId,
+          devisId,
+          type: NOTIFICATION_TYPES.SYSTEM,
+          title: '⚠️ Connexion Google expirée',
+          message: 'L\'analyse du bordereau a échoué : votre connexion Google (Sheets/Drive) a expiré ou été révoquée.\n\n' +
+                   '📋 Pour corriger :\n' +
+                   '1. Allez dans Paramètres → Intégrations\n' +
+                   '2. Déconnectez puis reconnectez Google Sheets\n' +
+                   '3. Relancez l\'analyse du bordereau sur le devis\n\n' +
+                   '✅ Une fois reconnecté, l\'analyse des bordereaux fonctionnera à nouveau.'
+        });
+      } catch (notifErr) {
+        console.error('[OCR] Erreur création notification:', notifErr);
+      }
+    }
   }
 }
 
@@ -11660,7 +11684,11 @@ app.post('/api/mbehub/shipping-options', requireAuth, async (req, res) => {
     return res.json({ success: true, options });
   } catch (error) {
     console.error('[API] Erreur mbehub/shipping-options:', error);
-    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+    const status = error?.response?.status;
+    const userMessage = status === 403
+      ? 'Identifiants MBE Hub refusés (403). Vérifiez dans Paramètres → MBE Hub que le login et le mot de passe API sont corrects.'
+      : (error.message || 'Erreur MBE Hub');
+    return res.status(status && status >= 400 && status < 600 ? status : 500).json({ error: userMessage });
   }
 });
 
@@ -11759,7 +11787,14 @@ app.post('/api/mbehub/quote-shipping-rates', requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('[API] Erreur mbehub/quote-shipping-rates:', error);
-    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+    const status = error?.response?.status;
+    let userMessage = error.message || 'Erreur MBE Hub';
+    if (status === 403) {
+      userMessage = 'Identifiants MBE Hub refusés (403). Vérifiez dans Paramètres → MBE Hub que le login et le mot de passe API sont corrects. En production, les identifiants mbehub.fr diffèrent du mode démo.';
+    } else if (error.message?.includes('http status codes')) {
+      userMessage = `MBE Hub a refusé la requête (${status || 'erreur'}). Vérifiez vos identifiants dans Paramètres → MBE Hub et que votre compte a bien accès à l'API SOAP.`;
+    }
+    return res.status(status && status >= 400 && status < 600 ? status : 500).json({ error: userMessage });
   }
 });
 
@@ -11908,7 +11943,11 @@ app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('[API] Erreur mbehub/prepare-quote-email:', error);
-    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+    const status = error?.response?.status;
+    const userMessage = status === 403
+      ? 'Identifiants MBE Hub refusés (403). Vérifiez dans Paramètres → MBE Hub.'
+      : (error.message || 'Erreur MBE Hub');
+    return res.status(status && status >= 400 && status < 600 ? status : 500).json({ error: userMessage });
   }
 });
 
@@ -11983,7 +12022,11 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
     return res.json({ success: true, mbeTrackingId: result.mbeTrackingId });
   } catch (error) {
     console.error('[API] Erreur mbehub/create-draft:', error);
-    return res.status(500).json({ error: error.message || 'Erreur MBE Hub' });
+    const status = error?.response?.status;
+    const userMessage = status === 403
+      ? 'Identifiants MBE Hub refusés (403). Vérifiez dans Paramètres → MBE Hub.'
+      : (error.message || 'Erreur MBE Hub');
+    return res.status(status && status >= 400 && status < 600 ? status : 500).json({ error: userMessage });
   }
 });
 
