@@ -132,6 +132,25 @@ import { useEmailMessages } from "@/hooks/use-email-messages";
 import { EmailMessage } from "@/types/quote";
 import { authenticatedFetch } from "@/lib/api";
 import type { CustomQuoteMessage } from '@/components/settings/CustomQuoteMessagesSettings';
+
+const DEFAULT_POPUP_MESSAGES = {
+  principales: [
+    { id: 'p1', label: 'Lithographie roulable', textFr: 'Le devis suivant a été considéré pour une lithographie pouvant être roulé et mise en tube.', textEn: 'The following quote has been considered for a lithograph that can be rolled and placed in a tube.' },
+    { id: 'p2', label: 'Affiches à plat', textFr: 'Le devis suivant a été considéré pour un envoi à plat de vos affiches.', textEn: 'The following quote has been considered for a flat shipment of your posters.' },
+    { id: 'p3', label: 'Tableaux sans cadres', textFr: 'Le devis suivant a été considéré pour des tableaux sans cadres.', textEn: 'The following quote has been considered for unframed paintings.' },
+    { id: 'p4', label: 'Tableau mince (< 5 cm)', textFr: "Le devis suivant a été considéré pour un tableau d'une épaisseur de moins de 5 cm.", textEn: 'The following quote has been considered for a painting less than 5 cm thick.' },
+    { id: 'p5', label: 'Colis léger (< 18 kg)', textFr: 'Le devis suivant a été considéré pour un lot de moins de 18 kg et pouvant voyager en colis.', textEn: 'The following quote has been considered for a lot weighing less than 18 kg that can travel as a parcel.' },
+    { id: 'p6', label: 'Ensemble léger (< 18 kg)', textFr: 'Le devis suivant a été considéré pour un ensemble de moins de 18 kg.', textEn: 'The following quote has been considered for an assembly weighing less than 18 kg.' },
+    { id: 'p7', label: 'Objet pliable/roulable', textFr: 'Le devis suivant a été considéré pour un objet pouvant être plié/roulé.', textEn: 'The following quote has been considered for an item that can be folded/rolled.' },
+    { id: 'p8', label: 'Palette + livraison pas de porte', textFr: "Le devis suivant a été considéré pour une préparation sur palette et une livraison par transporteur en pas de porte.\nSi il est nécessaire d'avoir une livraison en étage, un devis par transporteur dédié sera nécessaire, et prendra plus de temps.", textEn: "The following quote has been considered for pallet preparation and delivery by carrier to the ground floor.\nIf delivery to an upper floor is required, a quote from a dedicated carrier will be necessary and will take longer." },
+  ] as CustomQuoteMessage[],
+  optionnelles: [
+    { id: 'o1', label: 'Transport express (main propre)', textFr: "(Transport en express avec remise en main propre. Si vous souhaitez un transport standard, merci de nous le faire savoir en retour d'e-mail.)", textEn: '(Express delivery with personal handover. If you prefer standard shipping, please let us know by return e-mail.)' },
+    { id: 'o2', label: 'Transport standard', textFr: "(Transport en standard. Si vous souhaitez un transport express avec remise en main propre, merci de nous le faire savoir en retour d'e-mail.)", textEn: '(Standard delivery. If you prefer express shipping with personal handover, please let us know by return e-mail.)' },
+    { id: 'o3', label: 'Assurance optionnelle', textFr: "(Optionnelle. Si vous ne souhaitez pas souscrire à l'assurance, merci de nous le faire savoir en retour d'e-mail.)", textEn: "(Optional. If you don't want insurance please let us know.)" },
+    { id: 'o4', label: 'Instructions douanes', textFr: 'Si vous avez des instructions particulières pour la déclaration douanière (description – valeur), merci de nous le faire savoir.', textEn: 'If you have any particular instructions for the customs declaration (description – value), please let us know.' },
+  ] as CustomQuoteMessage[],
+};
 import type { Paiement } from "@/types/stripe";
 import { useFeatures } from "@/hooks/use-features";
 import { useQuery } from "@tanstack/react-query";
@@ -3420,10 +3439,15 @@ export default function QuoteDetail() {
                 return r.json();
               })
               .then((d) => {
-                const principales = d.messages?.principales || [];
-                const optionnelles = d.messages?.optionnelles || [];
+                let principales = d.messages?.principales || [];
+                let optionnelles = d.messages?.optionnelles || [];
+                // Si aucun message configuré en base, utiliser les messages par défaut
+                if (principales.length === 0 && optionnelles.length === 0) {
+                  principales = DEFAULT_POPUP_MESSAGES.principales;
+                  optionnelles = DEFAULT_POPUP_MESSAGES.optionnelles;
+                }
                 // #region agent log
-                fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:fetch.then2',message:'Messages loaded from API',data:{principalesCount:principales.length,optionnellesCount:optionnelles.length,rawData:d},hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
+                fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'QuoteDetail.tsx:fetch.then2',message:'Messages loaded from API (after fallback)',data:{principalesCount:principales.length,optionnellesCount:optionnelles.length,rawData:d},hypothesisId:'A',timestamp:Date.now()})}).catch(()=>{});
                 // #endregion
                 setCustomMsgPrincipales(principales);
                 setCustomMsgOptionnelles(optionnelles);
@@ -3488,11 +3512,11 @@ export default function QuoteDetail() {
               setCustomMsgText(ordered.map((m) => (newLang === 'en' ? m.textEn : m.textFr)).join('\n\n'));
             };
 
-            const customMessagesBlock = hasMessages ? (
-              <div className="space-y-2">
+            const customMessagesBlock = (
+              <div className="space-y-2 border rounded-lg p-3 bg-muted/30">
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium">Message personnalisé (optionnel)</p>
-                  {(customMsgPrincipales.length > 0 || customMsgOptionnelles.length > 0) && (
+                  {!isLoadingCustomMsgs && hasMessages && (
                     <Button
                       variant={customMsgLang === 'en' ? 'default' : 'outline'}
                       size="sm"
@@ -3507,6 +3531,8 @@ export default function QuoteDetail() {
                   <div className="flex items-center gap-2 text-xs text-muted-foreground">
                     <Loader2 className="w-3 h-3 animate-spin" />Chargement…
                   </div>
+                ) : !hasMessages ? (
+                  <p className="text-xs text-muted-foreground">Aucun message configuré. Ajoutez des messages dans Paramètres &gt; Messages personnalisés.</p>
                 ) : (
                   <div className="space-y-2">
                     {customMsgPrincipales.length > 0 && (
@@ -3560,7 +3586,7 @@ export default function QuoteDetail() {
                   </div>
                 )}
               </div>
-            ) : null;
+            );
 
             if (!hasPrincipalLink) {
               return (
