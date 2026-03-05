@@ -5721,6 +5721,24 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
       }
     }
 
+    // Récupérer le nom du MBE pour le bandeau "Demande de collecte – MBE Nice"
+    let bannerTitle = 'Demande de collecte – MBE';
+    const saasAccountIdForBanner = req.saasAccountId || (quotes && quotes.length > 0 ? quotes[0].saasAccountId : null);
+    if (firestore && saasAccountIdForBanner) {
+      try {
+        const saasDoc = await firestore.collection('saasAccounts').doc(saasAccountIdForBanner).get();
+        const commercialName = (saasDoc.exists && saasDoc.data().commercialName) ? String(saasDoc.data().commercialName).trim() : '';
+        if (commercialName) {
+          const raw = commercialName;
+          const part = raw.toLowerCase().startsWith('mbe ') ? raw.substring(4).trim() : raw;
+          const displayName = part ? 'MBE ' + (part.charAt(0).toUpperCase() + part.slice(1).toLowerCase()) : 'MBE';
+          bannerTitle = 'Demande de collecte – ' + displayName;
+        }
+      } catch (e) {
+        console.warn('[send-collection-email] Impossible de charger commercialName:', e.message);
+      }
+    }
+
     // Générer un tableau HTML pour les lots
     let lotsTableHtml = '';
     if (quotes && quotes.length > 0) {
@@ -5797,7 +5815,7 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
         </head>
         <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 800px; margin: 0 auto; padding: 20px;">
           <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 8px 8px 0 0; text-align: center;">
-            <h1 style="color: white; margin: 0; font-size: 24px;">Demande de collecte</h1>
+            <h1 style="color: white; margin: 0; font-size: 24px;">${bannerTitle}</h1>
             ${auctionHouse ? `<p style="color: rgba(255,255,255,0.9); margin: 10px 0 0 0;">Salle des ventes : <strong>${auctionHouse}</strong></p>` : ''}
           </div>
           
