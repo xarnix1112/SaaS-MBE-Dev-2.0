@@ -69,6 +69,7 @@ import {
   Loader2,
   Banknote,
   RotateCcw,
+  Trash2,
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { saveAuctionSheetForQuote, removeAuctionSheetForQuote } from "@/lib/quoteEnhancements";
@@ -4245,6 +4246,13 @@ function AddNoteForm({ quote, onSave, onCancel }: AddNoteFormProps) {
   );
 }
 
+// Type local pour un lot dans le formulaire d'édition
+type FormLot = {
+  lotNumber: string;
+  description: string;
+  value: number;
+};
+
 // Composant formulaire d'édition
 interface EditQuoteFormProps {
   quote: Quote;
@@ -4306,6 +4314,23 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     deliveryAddressZip: safeQuote.delivery.address.zip || '',
     deliveryAddressCountry: safeQuote.delivery.address.country || '',
     wantsProfessionalInvoice: safeQuote.wantsProfessionalInvoice ?? null,
+    bordereauNumber: quote.auctionSheet?.bordereauNumber || '',
+  });
+
+  // État pour la liste des lots éditable
+  const [formLots, setFormLots] = useState<FormLot[]>(() => {
+    if (quote.auctionSheet?.lots && quote.auctionSheet.lots.length > 0) {
+      return quote.auctionSheet.lots.map((l) => ({
+        lotNumber: l.lotNumber || '',
+        description: l.description || '',
+        value: l.value ?? (l as any).total ?? 0,
+      }));
+    }
+    return [{
+      lotNumber: safeQuote.lot.number || '',
+      description: safeQuote.lot.description || '',
+      value: Number(safeQuote.lot.value) || 0,
+    }];
   });
 
   // État pour le carton sélectionné
@@ -4542,7 +4567,10 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
   const calculateTotal = () => {
     const packagingPrice = formData.packagingPrice || 0;
     const shippingPrice = formData.shippingPrice || 0;
-    const insuranceAmount = formData.insurance ? (formData.insuranceAmount || 0) : 0;
+    const totalLotValue = formLots.reduce((sum, l) => sum + (l.value || 0), 0);
+    const insuranceAmount = formData.insurance
+      ? (formData.insuranceAmount > 0 ? formData.insuranceAmount : totalLotValue * 0.025)
+      : 0;
     return packagingPrice + shippingPrice + insuranceAmount;
   };
 
@@ -4639,12 +4667,18 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     } : (quote.auctionSheet?.recommendedCarton || undefined);
 
     // Construire l'objet auctionSheet mis à jour
-    const updatedAuctionSheet = quote.auctionSheet || selectedCartonRef ? {
+    const updatedAuctionSheet = {
       ...(quote.auctionSheet || {}),
+      bordereauNumber: formData.bordereauNumber || undefined,
+      lots: formLots.map((l) => ({
+        lotNumber: l.lotNumber,
+        description: l.description,
+        value: l.value,
+      })),
+      totalLots: formLots.length,
+      totalObjects: formLots.length,
       recommendedCarton,
-      totalLots: quote.auctionSheet?.totalLots || 1,
-      totalObjects: quote.auctionSheet?.totalObjects || 1,
-    } : undefined;
+    };
 
     const updatedQuote: Quote = {
       ...quote,
@@ -4657,9 +4691,9 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       },
       lot: {
         ...quote.lot,
-        number: formData.lotNumber,
-        description: formData.lotDescription,
-        value: formData.lotValue,
+        number: formLots[0]?.lotNumber || '',
+        description: formLots[0]?.description || '',
+        value: formLots[0]?.value || 0,
         auctionHouse: formData.lotAuctionHouse,
         dimensions: {
           length: formData.lotLength,
@@ -4668,7 +4702,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
           weight: formData.lotWeight,
           estimated: safeQuote.lot.dimensions.estimated || false,
         },
-        volumetricWeight: formData.lotWeight, // Mettre à jour le poids volumétrique
+        volumetricWeight: formData.lotWeight,
       },
       options: {
         ...quote.options,
@@ -4768,6 +4802,23 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
         </TabsList>
 
         <TabsContent value="info" className="space-y-4 mt-4">
+          {/* Bordereau */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Bordereau</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Label htmlFor="bordereauNumber">Numéro de bordereau</Label>
+              <Input
+                id="bordereauNumber"
+                value={formData.bordereauNumber}
+                onChange={(e) => setFormData({ ...formData, bordereauNumber: e.target.value })}
+                placeholder="ex. 0260-25"
+                className="mt-1"
+              />
+            </CardContent>
+          </Card>
+
           {/* Informations client */}
           <Card>
             <CardHeader>
@@ -4831,52 +4882,97 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
             </CardContent>
           </Card>
 
-          {/* Informations du lot */}
+          {/* Salle des ventes */}
           <Card>
             <CardHeader>
-              <CardTitle className="text-base">Informations du lot</CardTitle>
+              <CardTitle className="text-base">Salle des ventes</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <Label htmlFor="lotAuctionHouse">Salle des ventes</Label>
+              <Input
+                id="lotAuctionHouse"
+                value={formData.lotAuctionHouse}
+                onChange={(e) => setFormData({ ...formData, lotAuctionHouse: e.target.value })}
+                className="mt-1"
+              />
+            </CardContent>
+          </Card>
+
+          {/* Lots */}
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle className="text-base">Lots</CardTitle>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setFormLots((prev) => [...prev, { lotNumber: '', description: '', value: 0 }])}
+              >
+                <Plus className="w-4 h-4 mr-1" /> Ajouter un lot
+              </Button>
             </CardHeader>
             <CardContent className="space-y-4">
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label htmlFor="lotNumber">Numéro de lot</Label>
-                  <Input
-                    id="lotNumber"
-                    value={formData.lotNumber}
-                    onChange={(e) => setFormData({ ...formData, lotNumber: e.target.value })}
-                  />
+              {formLots.map((lot, index) => (
+                <div key={index} className="border rounded-lg p-4 space-y-3">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium">Lot {index + 1}</span>
+                    {formLots.length > 1 && (
+                      <Button
+                        type="button"
+                        size="icon"
+                        variant="ghost"
+                        className="text-destructive"
+                        onClick={() => setFormLots((prev) => prev.filter((_, i) => i !== index))}
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <Input
+                      placeholder="N° de lot"
+                      value={lot.lotNumber}
+                      onChange={(e) =>
+                        setFormLots((prev) =>
+                          prev.map((l, i) => (i === index ? { ...l, lotNumber: e.target.value } : l))
+                        )
+                      }
+                    />
+                    <Input
+                      type="number"
+                      placeholder="Valeur déclarée (€)"
+                      step="0.01"
+                      min="0"
+                      value={lot.value}
+                      onChange={(e) =>
+                        setFormLots((prev) =>
+                          prev.map((l, i) => (i === index ? { ...l, value: parseFloat(e.target.value) || 0 } : l))
+                        )
+                      }
+                    />
+                    <Textarea
+                      className="col-span-2"
+                      placeholder="Description"
+                      rows={2}
+                      value={lot.description}
+                      onChange={(e) =>
+                        setFormLots((prev) =>
+                          prev.map((l, i) => (i === index ? { ...l, description: e.target.value } : l))
+                        )
+                      }
+                    />
+                  </div>
                 </div>
-                <div className="space-y-2">
-                  <Label htmlFor="lotAuctionHouse">Salle des ventes</Label>
-                  <Input
-                    id="lotAuctionHouse"
-                    value={formData.lotAuctionHouse}
-                    onChange={(e) => setFormData({ ...formData, lotAuctionHouse: e.target.value })}
-                  />
-                </div>
-                <div className="space-y-2 col-span-2">
-                  <Label htmlFor="lotDescription">Description</Label>
-                  <Textarea
-                    id="lotDescription"
-                    value={formData.lotDescription}
-                    onChange={(e) => setFormData({ ...formData, lotDescription: e.target.value })}
-                    rows={3}
-                  />
-                </div>
-                <div className="space-y-2">
-                  <Label htmlFor="lotValue">Valeur déclarée (€)</Label>
-                  <Input
-                    id="lotValue"
-                    type="number"
-                    step="0.01"
-                    min="0"
-                    value={formData.lotValue}
-                    onChange={(e) => setFormData({ ...formData, lotValue: parseFloat(e.target.value) || 0 })}
-                  />
-                </div>
-              </div>
+              ))}
+            </CardContent>
+          </Card>
 
-              <Separator />
+          {/* Carton et dimensions */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Carton & Dimensions</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
 
               {/* Sélecteur de carton */}
               <div className="space-y-4">
