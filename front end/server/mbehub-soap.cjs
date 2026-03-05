@@ -193,6 +193,7 @@ async function createDraftShipment({
     },
   };
 
+  // IsDraft doit être dans Shipment (WSDL ShipmentType), pas dans RequestContainer
   const shipmentData = {
     ShipperType: 'MBE',
     Description: String(reference || 'Expédition').slice(0, 100),
@@ -205,6 +206,7 @@ async function createDraftShipment({
     PackageType: 'GENERIC',
     GoodType: 'GOODS', // Doc: GOODS/ART/LUGGAGE
     Items: items,
+    IsDraft: true, // Brouillon → apparaît dans "En attente" du Hub MBE, pas dans "Historique"
   };
 
   const args = {
@@ -214,7 +216,6 @@ async function createDraftShipment({
       InternalReferenceID: `MBE-SDV-${Date.now()}-${reference || 'draft'}`,
       Recipient: recipientData,
       Shipment: shipmentData,
-      IsDraft: true,
     },
   };
 
