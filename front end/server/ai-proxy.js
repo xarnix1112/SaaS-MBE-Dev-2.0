@@ -12120,6 +12120,19 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
     if (quote.saasAccountId !== saasAccountId) return res.status(403).json({ error: 'Devis non accessible' });
 
     const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
+
+    // Log pour debug (sans mot de passe) en cas d'erreur SR_006 ou similaire
+    const payloadForLog = {
+      recipient: { ...recipient, email: recipient?.email ? '[présent]' : undefined, phone: recipient?.phone ? '[présent]' : undefined },
+      service,
+      courierService: courierService || '(vide)',
+      courierAccount: courierAccount || '(vide)',
+      weight,
+      dimensions,
+      reference: reference || quote.reference,
+    };
+    console.log('[API] mbehub/create-draft payload:', JSON.stringify(payloadForLog));
+
     const result = await mbehubSoap.createDraftShipment({
       username: creds.username,
       password: creds.password,

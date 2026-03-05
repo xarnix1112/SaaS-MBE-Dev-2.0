@@ -121,6 +121,7 @@ async function getShippingOptions({ username, password, env, destination, weight
         CourierDesc: opt.CourierDesc,
         CourierService: opt.CourierService,
         CourierServiceDesc: opt.CourierServiceDesc,
+        CourierAccount: opt.CourierAccount,
         GrossShipmentPrice: opt.GrossShipmentPrice,
         NetShipmentPrice: opt.NetShipmentPrice,
       })));
@@ -163,16 +164,21 @@ async function createDraftShipment({
 
   const recipientData = {
     Name: String(recipient.name || 'Client').slice(0, 100),
-    CompanyName: String(recipient.companyName || recipient.name || '').slice(0, 100) || 'N/A',
+    CompanyName: String(recipient.companyName || recipient.name || '').trim().slice(0, 100) || undefined,
     Address: String(recipient.address || '').slice(0, 200),
-    Address2: String(recipient.address2 || '').slice(0, 100) || undefined,
+    Address2: String(recipient.address2 || '').trim().slice(0, 100) || undefined,
     City: String(recipient.city || '').slice(0, 100),
     ZipCode: String(recipient.zipCode || '').slice(0, 12),
-    State: String(recipient.state || '').slice(0, 2) || undefined,
+    State: (String(recipient.state || '').trim().slice(0, 2) || undefined),
     Country: String(recipient.country || '').slice(0, 2).toUpperCase(),
-    Email: String(recipient.email || '').slice(0, 100) || undefined,
-    Phone: String(recipient.phone || '').slice(0, 50) || undefined,
+    Email: String(recipient.email || '').trim().slice(0, 100) || undefined,
+    Phone: String(recipient.phone || '').trim().slice(0, 50) || undefined,
   };
+  if (recipientData.CompanyName === undefined) delete recipientData.CompanyName;
+  if (recipientData.Address2 === undefined || recipientData.Address2 === '') delete recipientData.Address2;
+  if (recipientData.State === undefined || recipientData.State === '') delete recipientData.State;
+  if (recipientData.Email === undefined || recipientData.Email === '') delete recipientData.Email;
+  if (recipientData.Phone === undefined || recipientData.Phone === '') delete recipientData.Phone;
 
   const items = {
     Item: {
@@ -192,8 +198,8 @@ async function createDraftShipment({
     Insurance: !!insurance,
     ...(insurance && insuranceValue > 0 ? { InsuranceValue: insuranceValue } : {}),
     Service: service,
-    CourierService: courierService || undefined,
-    CourierAccount: courierAccount || undefined,
+    ...(courierService && String(courierService).trim() ? { CourierService: String(courierService).trim() } : {}),
+    ...(courierAccount && String(courierAccount).trim() ? { CourierAccount: String(courierAccount).trim() } : {}),
     PackageType: 'GENERIC',
     GoodType: 'GOODS', // Doc: GOODS/ART/LUGGAGE
     Items: items,
@@ -218,11 +224,19 @@ async function createDraftShipment({
       if (!container) return reject(new Error('Réponse MBE invalide'));
 
       if (container.Status === 'ERROR') {
-        const errMsg = container.Errors?.Error
+        const errList = container.Errors?.Error
           ? (Array.isArray(container.Errors.Error) ? container.Errors.Error : [container.Errors.Error])
-            .map((e) => e.ErrorMessage || e.ErrorCode || JSON.stringify(e))
-            .join('; ')
+          : [];
+        const errMsg = errList.length > 0
+          ? errList
+              .map((e) => {
+                const code = e.ErrorCode || '';
+                const msg = e.ErrorMessage || '';
+                return code && msg ? `${code}: ${msg}` : msg || code || JSON.stringify(e);
+              })
+              .join('; ')
           : 'Erreur MBE non détaillée';
+        console.error('[mbehub-soap] ShipmentRequest ERROR:', JSON.stringify(container.Errors));
         return reject(new Error(errMsg));
       }
 

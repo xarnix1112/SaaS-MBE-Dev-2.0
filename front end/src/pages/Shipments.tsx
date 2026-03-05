@@ -145,7 +145,24 @@ export default function Shipments() {
     const recAddr = recipientInfo.address || '';
 
     setClientAddress(parseAddressString(clientAddr));
-    setRecipientAddress(parseAddressString(recAddr));
+
+    // Utiliser l'adresse structurée quand disponible (delivery.address) pour éviter les erreurs de parsing
+    let parsedRecipient: ParsedAddress;
+    if (quote.delivery?.address && (quote.delivery.address.line1 || quote.delivery.address.city)) {
+      const addr = quote.delivery.address;
+      parsedRecipient = {
+        street: addr.line1 || '',
+        address2: addr.line2,
+        city: addr.city || '',
+        zip: addr.zip || '',
+        state: addr.state,
+        country: (addr.country || 'FR').toUpperCase().slice(0, 2),
+        raw: recAddr,
+      };
+    } else {
+      parsedRecipient = parseAddressString(recAddr);
+    }
+    setRecipientAddress(parsedRecipient);
 
     const { weight: w, length: l, width: wid, height: h } = getQuoteWeightAndDimensions(quote);
     setWeight(w);
@@ -189,6 +206,22 @@ export default function Shipments() {
 
   const handleSendToMbeHub = async () => {
     if (!selectedQuote || !recipientAddress) return;
+    if (!recipientAddress.street?.trim()) {
+      toast.error('Adresse destinataire incomplète : renseignez l\'adresse');
+      return;
+    }
+    if (!recipientAddress.city?.trim()) {
+      toast.error('Adresse destinataire incomplète : renseignez la ville');
+      return;
+    }
+    if (!recipientAddress.zip?.trim()) {
+      toast.error('Adresse destinataire incomplète : renseignez le code postal');
+      return;
+    }
+    if (!recipientAddress.country?.trim()) {
+      toast.error('Adresse destinataire incomplète : renseignez le pays');
+      return;
+    }
     if (!selectedService) {
       toast.error('Sélectionnez un service de livraison');
       return;
