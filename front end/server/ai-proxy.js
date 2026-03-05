@@ -12148,6 +12148,16 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       insuranceValue: Number(insuranceValue) || 0,
     });
 
+    // Option B : si CloseShipmentsRequest échoue, on ne considère pas la création comme réussie (pas de mise à jour Firestore)
+    if (result.mbeTrackingId && String(result.mbeTrackingId).trim()) {
+      await mbehubSoap.closeShipments({
+        username: creds.username,
+        password: creds.password,
+        env,
+        masterTrackingsMBE: result.mbeTrackingId,
+      });
+    }
+
     // Mettre à jour le devis: mbeTrackingId, status sent_to_mbe_hub, sentToMbeHubAt
     const existingTimeline = quote.timeline || [];
     const timelineEvent = {

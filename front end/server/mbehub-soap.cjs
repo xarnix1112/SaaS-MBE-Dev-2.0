@@ -252,7 +252,60 @@ async function createDraftShipment({
   });
 }
 
+/**
+ * Appel CloseShipmentsRequest - transfère l'expédition brouillon vers Interface B (Centre MBE, zone "En attente")
+ * @param {Object} params
+ * @param {string} params.username
+ * @param {string} params.password
+ * @param {string} params.env - 'demo' | 'prod'
+ * @param {string|string[]} params.masterTrackingsMBE - ID(s) retourné(s) par ShipmentRequest (MasterTrackingMBE)
+ * @returns {Promise<{status: string}>}
+ */
+async function closeShipments({ username, password, env, masterTrackingsMBE }) {
+  const client = await createMbeSoapClient(env, username, password);
+  const ids = Array.isArray(masterTrackingsMBE) ? masterTrackingsMBE : [masterTrackingsMBE].filter(Boolean);
+  if (ids.length === 0) return Promise.reject(new Error('MasterTrackingsMBE requis'));
+
+  const args = {
+    RequestContainer: {
+      SystemType: 'IT', // Doc: défini par l'URL d'appel, valeur conservée pour compatibilité
+      Credentials: { Username: username, Passphrase: password },
+      InternalReferenceID: `MBE-SDV-close-${Date.now()}`,
+      MasterTrackingsMBE: ids,
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    client.CloseShipmentsRequest(args, (err, result) => {
+      if (err) return reject(err);
+
+      const container = result?.RequestContainer;
+      if (!container) return reject(new Error('Réponse MBE invalide'));
+
+      if (container.Status === 'ERROR') {
+        const errList = container.Errors?.Error
+          ? (Array.isArray(container.Errors.Error) ? container.Errors.Error : [container.Errors.Error])
+          : [];
+        const errMsg = errList.length > 0
+          ? errList
+              .map((e) => {
+                const code = e.ErrorCode || '';
+                const msg = e.ErrorMessage || e.Description || '';
+                return code && msg ? `${code}: ${msg}` : msg || code || JSON.stringify(e);
+              })
+              .join('; ')
+          : 'Erreur MBE non détaillée';
+        console.error('[mbehub-soap] CloseShipmentsRequest ERROR:', JSON.stringify(container.Errors));
+        return reject(new Error(errMsg));
+      }
+
+      resolve({ status: container.Status });
+    });
+  });
+}
+
 module.exports = {
   getShippingOptions,
   createDraftShipment,
+  closeShipments,
 };
