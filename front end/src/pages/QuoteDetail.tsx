@@ -3876,6 +3876,17 @@ export default function QuoteDetail() {
                   });
                   
                   // Construire l'objet auctionSheet pour Firestore
+                  // #region agent log
+                  console.log('[DEBUG-H-D] updatedQuote.auctionSheet reçu dans onSave:', JSON.stringify({
+                    hasBordereauNumber: updatedQuote.auctionSheet?.bordereauNumber !== undefined,
+                    bordereauNumber: updatedQuote.auctionSheet?.bordereauNumber,
+                    hasLots: Array.isArray(updatedQuote.auctionSheet?.lots),
+                    lotsCount: updatedQuote.auctionSheet?.lots?.length,
+                    lotsData: updatedQuote.auctionSheet?.lots,
+                    totalLots: updatedQuote.auctionSheet?.totalLots,
+                    lotInQuote: { number: updatedQuote.lot?.number, description: updatedQuote.lot?.description, value: updatedQuote.lot?.value },
+                  }));
+                  // #endregion
                   const auctionSheetData: any = {};
                   if (updatedQuote.auctionSheet) {
                     if (updatedQuote.auctionSheet.recommendedCarton) {
@@ -3903,6 +3914,15 @@ export default function QuoteDetail() {
                       auctionSheetData.auctionDate = updatedQuote.auctionSheet.auctionDate;
                     }
                   }
+
+                  // #region agent log
+                  console.log('[DEBUG-H-D] auctionSheetData construit (AVANT setDoc):', JSON.stringify({
+                    keys: Object.keys(auctionSheetData),
+                    hasBordereauNumber: 'bordereauNumber' in auctionSheetData,
+                    hasLots: 'lots' in auctionSheetData,
+                    auctionSheetData,
+                  }));
+                  // #endregion
 
                   await setDoc(
                     doc(db, "quotes", quote.id),
