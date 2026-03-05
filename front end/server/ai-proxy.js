@@ -12135,9 +12135,8 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       return res.status(400).json({ error: `Salle des ventes "${auctionHouseName}" non trouvée. Ajoutez-la dans Paramètres → Salles des ventes.` });
     }
     const mbeCustomerId = (matchedHouse.data().mbeCustomerId || '').trim();
-    if (!mbeCustomerId) {
-      return res.status(400).json({ error: 'Configurez l\'ID client MBE pour cette salle des ventes (Paramètres → Salles des ventes).' });
-    }
+    // mbeCustomerId optionnel : requis seulement pour les comptes MBE de type AH (Auction House).
+    // Si non configuré ou si le compte n'est pas AH (SR_005), l'expédition se fait sans CustomerMbeId.
 
     // Recuperer les adresses expéditeur du MBE Hub
     let sender = null;
@@ -12165,22 +12164,50 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
     };
     console.log('[API] mbehub/create-draft payload:', JSON.stringify(payloadForLog));
 
-    const result = await mbehubSoap.createDraftShipment({
-      username: creds.username,
-      password: creds.password,
-      env,
-      recipient,
-      sender: sender || undefined,
-      customerMbeId: mbeCustomerId || undefined,
-      service,
-      courierService: courierService || null,
-      courierAccount: courierAccount || null,
-      weight: Number(weight) || 1,
-      dimensions: dimensions || { length: 10, width: 10, height: 10 },
-      reference: reference || quote.reference || quoteId,
-      insurance: !!insurance,
-      insuranceValue: Number(insuranceValue) || 0,
-    });
+    let result;
+    try {
+      result = await mbehubSoap.createDraftShipment({
+        username: creds.username,
+        password: creds.password,
+        env,
+        recipient,
+        sender: sender || undefined,
+        customerMbeId: mbeCustomerId || undefined,
+        service,
+        courierService: courierService || null,
+        courierAccount: courierAccount || null,
+        weight: Number(weight) || 1,
+        dimensions: dimensions || { length: 10, width: 10, height: 10 },
+        reference: reference || quote.reference || quoteId,
+        insurance: !!insurance,
+        insuranceValue: Number(insuranceValue) || 0,
+      });
+    } catch (shipErr) {
+      // SR_005 : "The MOL user does not belong to a customer of type AH. The field CustomerMbeId cannot be provided"
+      // Le compte MBE utilisé n'est pas de type AH (Auction House). On réessaie sans CustomerMbeId.
+      const isSR005 = shipErr?.message?.includes('SR_005') || shipErr?.message?.includes('customer of type AH');
+      if (isSR005 && mbeCustomerId) {
+        console.warn('[API] SR_005 détecté - réessai sans CustomerMbeId (compte MBE non type AH)');
+        result = await mbehubSoap.createDraftShipment({
+          username: creds.username,
+          password: creds.password,
+          env,
+          recipient,
+          sender: sender || undefined,
+          customerMbeId: undefined,
+          service,
+          courierService: courierService || null,
+          courierAccount: courierAccount || null,
+          weight: Number(weight) || 1,
+          dimensions: dimensions || { length: 10, width: 10, height: 10 },
+          reference: reference || quote.reference || quoteId,
+          insurance: !!insurance,
+          insuranceValue: Number(insuranceValue) || 0,
+        });
+      } else {
+        throw shipErr;
+      }
+    }
 
     // Option B : si CloseShipmentsRequest échoue, on ne considère pas la création comme réussie (pas de mise à jour Firestore)
     if (result.mbeTrackingId && String(result.mbeTrackingId).trim()) {
