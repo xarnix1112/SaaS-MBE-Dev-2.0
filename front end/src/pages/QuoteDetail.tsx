@@ -3913,13 +3913,22 @@ export default function QuoteDetail() {
                     if (updatedQuote.auctionSheet.auctionDate) {
                       auctionSheetData.auctionDate = updatedQuote.auctionSheet.auctionDate;
                     }
+                    // Persistance bordereauNumber et lots (fix H-D)
+                    if (updatedQuote.auctionSheet.bordereauNumber !== undefined) {
+                      auctionSheetData.bordereauNumber = updatedQuote.auctionSheet.bordereauNumber;
+                    }
+                    if (Array.isArray(updatedQuote.auctionSheet.lots)) {
+                      auctionSheetData.lots = updatedQuote.auctionSheet.lots;
+                    }
                   }
 
                   // #region agent log
-                  console.log('[DEBUG-H-D] auctionSheetData construit (AVANT setDoc):', JSON.stringify({
+                  console.log('[DEBUG-H-D] auctionSheetData construit (AVANT setDoc) [post-fix]:', JSON.stringify({
                     keys: Object.keys(auctionSheetData),
                     hasBordereauNumber: 'bordereauNumber' in auctionSheetData,
+                    bordereauNumber: auctionSheetData.bordereauNumber,
                     hasLots: 'lots' in auctionSheetData,
+                    lotsCount: auctionSheetData.lots?.length,
                     auctionSheetData,
                   }));
                   // #endregion
