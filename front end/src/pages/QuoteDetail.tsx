@@ -29,6 +29,7 @@ import {
 import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { useQuotes } from "@/hooks/use-quotes";
+import { useAuctionHouses } from "@/hooks/use-auction-houses";
 import { useQueryClient } from "@tanstack/react-query";
 import { AuctionSheetAnalysis } from '@/lib/auctionSheetAnalyzer';
 import { Quote, DeliveryMode, DeliveryInfo, PaymentLink, ClientRefusalReason } from '@/types/quote';
@@ -159,6 +160,7 @@ import { useQuery } from "@tanstack/react-query";
 export default function QuoteDetail() {
   const { id } = useParams();
   const { data: quotes = [], isLoading, isError } = useQuotes();
+  const { houses: auctionHouses = [] } = useAuctionHouses();
   const queryClient = useQueryClient();
   const { data: featuresData } = useFeatures();
   const { data: mbehubStatus } = useQuery({
@@ -2538,7 +2540,7 @@ export default function QuoteDetail() {
                     </CardTitle>
                   </CardHeader>
                   <CardContent className="space-y-4">
-                    {/* Informations globales (Salle des ventes et Bordereau) */}
+                    {/* Informations globales (Salle des ventes, ID client MBE et Bordereau) */}
                     <div className="grid grid-cols-2 gap-4">
                       <div>
                         <p className="text-xs text-muted-foreground">Salle des ventes</p>
@@ -2552,6 +2554,17 @@ export default function QuoteDetail() {
                                 : 'Non détecté par OCR')}
                           </span>
                         </div>
+                      </div>
+                      <div>
+                        <p className="text-xs text-muted-foreground">ID client MBE (Expéditions)</p>
+                        <p className="font-medium font-mono text-sm">
+                          {(() => {
+                            const name = (safeQuote.auctionSheet?.auctionHouse || safeQuote.lot?.auctionHouse || safeQuote.lotAuctionHouse || '').trim();
+                            const norm = (s: string) => (s || '').trim().toLowerCase();
+                            const matched = auctionHouses.find((h) => norm(h.name) === norm(name));
+                            return matched?.mbeCustomerId ? matched.mbeCustomerId : 'Non configuré';
+                          })()}
+                        </p>
                       </div>
                       <div>
                         <p className="text-xs text-muted-foreground">Bordereau</p>

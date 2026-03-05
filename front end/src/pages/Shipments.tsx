@@ -9,6 +9,7 @@ import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Separator } from '@/components/ui/separator';
 import { useQuotes } from "@/hooks/use-quotes";
+import { useAuctionHouses } from "@/hooks/use-auction-houses";
 import { authenticatedFetch } from "@/lib/api";
 import { useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
@@ -24,6 +25,7 @@ import { parseAddressString, type ParsedAddress } from '@/lib/parseAddress';
 import {
   Send,
   Truck,
+  Building2,
   FileText,
   CheckCircle2,
   ExternalLink,
@@ -56,6 +58,7 @@ function getOptionId(o: MbeShippingOption) {
 
 export default function Shipments() {
   const { data: quotes = [], isLoading, isError } = useQuotes();
+  const { houses: auctionHouses = [] } = useAuctionHouses();
   const queryClient = useQueryClient();
   const [isShipmentDialogOpen, setIsShipmentDialogOpen] = useState(false);
   const [selectedQuote, setSelectedQuote] = useState<any>(null);
@@ -273,6 +276,7 @@ export default function Shipments() {
         // Non bloquant, le backend a déjà tenté la sync
       }
       toast.success(`Expédition créée en brouillon. N° MBE : ${data.mbeTrackingId || '-'}`);
+      if (data.warning) toast.info(data.warning);
       setIsShipmentDialogOpen(false);
       setSelectedQuote(null);
     } catch (error) {
@@ -519,6 +523,26 @@ export default function Shipments() {
                   <div>
                     <Label className="text-xs text-muted-foreground">Adresse</Label>
                     <p className="font-medium text-sm">{clientAddress.raw || 'Non renseignée'}</p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground flex items-center gap-1">
+                      <Building2 className="w-3 h-3" />
+                      Salle des ventes
+                    </Label>
+                    <p className="font-medium">
+                      {(selectedQuote.lot?.auctionHouse || selectedQuote.auctionSheet?.auctionHouse || selectedQuote.lotAuctionHouse || '') || 'Non renseignée'}
+                    </p>
+                  </div>
+                  <div>
+                    <Label className="text-xs text-muted-foreground">ID client MBE (Expéditions)</Label>
+                    <p className="font-medium font-mono text-sm">
+                      {(() => {
+                        const auctionHouseName = (selectedQuote.lot?.auctionHouse || selectedQuote.auctionSheet?.auctionHouse || selectedQuote.lotAuctionHouse || '').trim();
+                        const norm = (s: string) => (s || '').trim().toLowerCase();
+                        const matched = auctionHouses.find((h) => norm(h.name) === norm(auctionHouseName));
+                        return matched?.mbeCustomerId ? matched.mbeCustomerId : 'Non configuré';
+                      })()}
+                    </p>
                   </div>
                 </div>
               </div>

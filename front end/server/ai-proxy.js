@@ -12209,14 +12209,26 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       }
     }
 
-    // Option B : si CloseShipmentsRequest échoue, on ne considère pas la création comme réussie (pas de mise à jour Firestore)
+    // Option B : CloseShipments transfère le brouillon vers Interface B (zone « En attente »).
+    // Si CSR_005 (manquant manifest), le brouillon existe déjà sur MBE Hub → on considère quand même la création réussie.
+    let closeShipmentsWarning = null;
     if (result.mbeTrackingId && String(result.mbeTrackingId).trim()) {
-      await mbehubSoap.closeShipments({
-        username: creds.username,
-        password: creds.password,
-        env,
-        masterTrackingsMBE: result.mbeTrackingId,
-      });
+      try {
+        await mbehubSoap.closeShipments({
+          username: creds.username,
+          password: creds.password,
+          env,
+          masterTrackingsMBE: result.mbeTrackingId,
+        });
+      } catch (closeErr) {
+        const isCSR005 = closeErr?.message?.includes('CSR_005') || closeErr?.message?.includes('recovery of manifest');
+        if (isCSR005) {
+          console.warn('[API] CSR_005 (manifest non récupérable) - brouillon créé avec succès, transfert vers Interface B ignoré:', closeErr?.message);
+          closeShipmentsWarning = 'Le brouillon a été créé. Le transfert vers "En attente" a échoué (manifest). L\'expédition est visible dans MBE Hub.';
+        } else {
+          throw closeErr;
+        }
+      }
     }
 
     // Mettre à jour le devis: mbeTrackingId, status sent_to_mbe_hub, sentToMbeHubAt
@@ -12246,7 +12258,7 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       console.warn('[Bilan] Sync après envoi MBE Hub:', bilanErr?.message);
     }
 
-    return res.json({ success: true, mbeTrackingId: result.mbeTrackingId });
+    return res.json({ success: true, mbeTrackingId: result.mbeTrackingId, warning: closeShipmentsWarning || undefined });
   } catch (error) {
     console.error('[API] Erreur mbehub/create-draft:', error);
     const status = error?.response?.status;
