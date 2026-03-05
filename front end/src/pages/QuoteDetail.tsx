@@ -2439,10 +2439,17 @@ export default function QuoteDetail() {
                 {/* Delivery Info */}
                 <Card>
                   <CardHeader className="pb-3">
-                    <CardTitle className="text-base flex items-center gap-2">
-                      <Home className="w-4 h-4" />
-                      {deliveryTitle}
-                    </CardTitle>
+                    <div className="flex items-center justify-between">
+                      <CardTitle className="text-base flex items-center gap-2">
+                        <Home className="w-4 h-4" />
+                        {deliveryTitle}
+                      </CardTitle>
+                      {delivery.mode === 'pickup' && (
+                        <Badge variant="secondary" className="font-normal">
+                          Point relais
+                        </Badge>
+                      )}
+                    </div>
                   </CardHeader>
                   <CardContent className="grid grid-cols-2 gap-4">
                     <div className="space-y-1">
@@ -3976,6 +3983,10 @@ export default function QuoteDetail() {
                       declaredValue: updatedQuote.declaredValue ?? null,
                       // AuctionSheet avec recommendedCarton
                       ...(Object.keys(auctionSheetData).length > 0 ? { auctionSheet: auctionSheetData } : {}),
+                      // Timeline (si nouvel événement ajouté, ex. changement d'adresse)
+                      ...(updatedQuote.timeline && updatedQuote.timeline.length > 0
+                        ? { timeline: updatedQuote.timeline.map((e: any) => timelineEventToFirestore(e)) }
+                        : {}),
                     },
                     { merge: true }
                   );
@@ -4696,11 +4707,114 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     }
   };
 
+  // Helper : extraire le code pays depuis les champs du formulaire
+  const getCountryCodeFromForm = (fd: typeof formData): string => {
+    const deliveryCountry = (fd.deliveryAddressCountry || '').trim();
+    const addressLine = (fd.deliveryAddressLine1 || '').trim();
+    const countryMap: Record<string, string> = {
+      "france": "FR", "belgique": "BE", "belgium": "BE", "suisse": "CH", "switzerland": "CH",
+      "allemagne": "DE", "germany": "DE", "espagne": "ES", "spain": "ES", "italie": "IT", "italy": "IT",
+      "pays-bas": "NL", "netherlands": "NL", "royaume-uni": "GB", "united kingdom": "GB", "uk": "GB",
+      "portugal": "PT", "autriche": "AT", "austria": "AT", "danemark": "DK", "denmark": "DK",
+      "irlande": "IE", "ireland": "IE", "suède": "SE", "sweden": "SE", "finlande": "FI", "finland": "FI",
+      "pologne": "PL", "poland": "PL", "usa": "US", "united states": "US", "états-unis": "US",
+      "canada": "CA", "mexique": "MX", "mexico": "MX", "brésil": "BR", "brazil": "BR",
+      "argentine": "AR", "argentina": "AR", "chili": "CL", "chile": "CL", "colombie": "CO", "colombia": "CO",
+      "pérou": "PE", "peru": "PE", "hongrie": "HU", "hungary": "HU", "république tchèque": "CZ", "czech republic": "CZ",
+    };
+    if (deliveryCountry) {
+      const code = countryMap[deliveryCountry.toLowerCase()] || deliveryCountry.toUpperCase().substring(0, 2);
+      if (code) return code;
+    }
+    const match = addressLine.match(/\b([A-Z]{2})\b/);
+    return match ? match[1] : '';
+  };
+
+  // Vérifier si l'adresse de destination a changé
+  const hasAddressChanged = (): boolean => {
+    const oldAddr = quote.delivery?.address || {};
+    const o = (v: string | undefined) => (v || '').trim();
+    return (
+      o(oldAddr.line1) !== o(formData.deliveryAddressLine1) ||
+      o(oldAddr.line2) !== o(formData.deliveryAddressLine2) ||
+      o(oldAddr.city) !== o(formData.deliveryAddressCity) ||
+      o(oldAddr.zip) !== o(formData.deliveryAddressZip) ||
+      o(oldAddr.country) !== o(formData.deliveryAddressCountry)
+    );
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     
-    // Calculer le nouveau total
-    const newTotal = calculateTotal();
+    let finalShippingPrice = formData.shippingPrice;
+    let addressChanged = hasAddressChanged();
+
+    // Si l'adresse a changé : recalculer le prix d'expédition
+    if (addressChanged) {
+      const volumetricWeight = formData.lotWeight || calculateVolumetricWeight(
+        formData.lotLength || 0,
+        formData.lotWidth || 0,
+        formData.lotHeight || 0
+      );
+      const countryCode = getCountryCodeFromForm(formData);
+
+      if (useMbehubForShipping && countryCode) {
+        try {
+          const dest = {
+            zipCode: (formData.deliveryAddressZip || '').trim(),
+            city: (formData.deliveryAddressCity || '').trim(),
+            state: ((formData as any).deliveryAddressState || '').trim().slice(0, 2),
+            country: countryCode,
+          };
+          const res = await authenticatedFetch('/api/mbehub/shipping-options', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              destination: dest,
+              weight: Math.max(volumetricWeight, 1),
+              dimensions: {
+                length: formData.lotLength || 10,
+                width: formData.lotWidth || 10,
+                height: formData.lotHeight || 10,
+              },
+              insurance: formData.insurance,
+              insuranceValue: formData.insuranceAmount || 0,
+            }),
+          });
+          if (res.ok) {
+            const data = await res.json();
+            const opts = data.options || [];
+            const expressOpts = opts.filter((o: any) => /express/i.test(String(o.ServiceDesc || '')));
+            const pickCheapest = (arr: any[]) => {
+              if (!arr.length) return 0;
+              return arr.reduce((a, b) => {
+                const pa = Number(a?.GrossShipmentPrice ?? a?.NetShipmentPrice ?? 9999);
+                const pb = Number(b?.GrossShipmentPrice ?? b?.NetShipmentPrice ?? 9999);
+                return pa <= pb ? a : b;
+              });
+            };
+            const express = pickCheapest(expressOpts);
+            if (express) {
+              finalShippingPrice = Number(express.GrossShipmentPrice ?? express.NetShipmentPrice ?? 0);
+            }
+          }
+        } catch (err) {
+          console.warn('[EditQuote] Erreur MBE Hub shipping-options:', err);
+        }
+      } else if (!useMbehubForShipping && countryCode && volumetricWeight > 0) {
+        try {
+          finalShippingPrice = await calculateShippingPrice(countryCode, volumetricWeight, true);
+        } catch (err) {
+          console.warn('[EditQuote] Erreur calcul expédition grille:', err);
+        }
+      }
+    }
+
+    const packagingPrice = formData.packagingPrice || 0;
+    const insuranceAmount = formData.insurance
+      ? computeInsuranceAmount(formData.declaredValue || 0, true, formData.insuranceAmount > 0 ? formData.insuranceAmount : null)
+      : 0;
+    const newTotal = packagingPrice + finalShippingPrice + insuranceAmount;
     const oldTotal = quote.totalAmount;
     
     // Construire l'objet carton recommandé pour l'auctionSheet
@@ -4755,7 +4869,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       options: {
         ...quote.options,
         packagingPrice: formData.packagingPrice,
-        shippingPrice: formData.shippingPrice,
+        shippingPrice: finalShippingPrice,
         insuranceAmount: formData.insuranceAmount,
         insurance: formData.insurance,
       },
@@ -4780,6 +4894,15 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       wantsProfessionalInvoice: formData.wantsProfessionalInvoice,
       declaredValue: formData.declaredValue || null,
     };
+
+    // Ajouter un événement dans l'historique si l'adresse a été modifiée
+    if (addressChanged) {
+      const addrEvent = createTimelineEvent(
+        (quote.status as any) || 'calculated',
+        `Adresse de destination modifiée – expédition recalculée (nouveau total : ${newTotal.toFixed(2)} €)`
+      );
+      updatedQuote.timeline = [...(quote.timeline || []), addrEvent];
+    }
 
     try {
       console.log('[EditQuote] 📊 Comparaison totaux:', { oldTotal, newTotal, changed: newTotal !== oldTotal });
@@ -5165,16 +5288,40 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
             <CardContent className="space-y-4">
               <div className="space-y-2">
                 <Label htmlFor="deliveryMode">Mode de livraison</Label>
-                <select
-                  id="deliveryMode"
-                  className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                  value={formData.deliveryMode}
-                  onChange={(e) => setFormData({ ...formData, deliveryMode: e.target.value as DeliveryMode })}
-                >
-                  <option value="client">Client</option>
-                  <option value="receiver">Destinataire</option>
-                  <option value="pickup">Point relais</option>
-                </select>
+                <div className="flex items-center gap-2">
+                  <select
+                    id="deliveryMode"
+                    className="flex h-10 flex-1 rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                    value={formData.deliveryMode}
+                    onChange={(e) => setFormData({ ...formData, deliveryMode: e.target.value as DeliveryMode })}
+                  >
+                    <option value="client">Client</option>
+                    <option value="receiver">Destinataire</option>
+                    <option value="pickup">Point relais</option>
+                  </select>
+                  {formData.deliveryMode === 'pickup' && (
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="shrink-0"
+                      onClick={() => {
+                        setFormData({
+                          ...formData,
+                          deliveryMode: 'receiver',
+                          deliveryAddressLine1: '',
+                          deliveryAddressLine2: '',
+                          deliveryAddressCity: '',
+                          deliveryAddressZip: '',
+                          deliveryAddressCountry: '',
+                        });
+                        toast.success('Adresse vidée. Saisissez la nouvelle adresse de livraison.');
+                      }}
+                    >
+                      Passer en livraison à domicile
+                    </Button>
+                  )}
+                </div>
               </div>
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
