@@ -64,13 +64,14 @@ async function getShippingOptions({ username, password, env, destination, weight
     Country: String(destination.country || '').trim().slice(0, 2).toUpperCase(),
   };
 
+  // WSDL DimensionsType utilise "Lenght" (typo API) au lieu de "Length", ordre: Lenght, Height, Width
   const items = {
     Item: {
       Weight: Number(weight) || 1,
       Dimensions: {
-        Length: Number(dimensions?.length) || 10,
-        Width: Number(dimensions?.width) || 10,
+        Lenght: Number(dimensions?.length) || 10,
         Height: Number(dimensions?.height) || 10,
+        Width: Number(dimensions?.width) || 10,
       },
     },
   };
@@ -180,13 +181,14 @@ async function createDraftShipment({
   if (recipientData.Email === undefined || recipientData.Email === '') delete recipientData.Email;
   if (recipientData.Phone === undefined || recipientData.Phone === '') delete recipientData.Phone;
 
+  // WSDL DimensionsType utilise "Lenght" (typo API) au lieu de "Length", ordre: Lenght, Height, Width
   const items = {
     Item: {
       Weight: Number(weight) || 1,
       Dimensions: {
-        Length: Math.max(1, Number(dimensions?.length) || 10),
-        Width: Math.max(1, Number(dimensions?.width) || 10),
+        Lenght: Math.max(1, Number(dimensions?.length) || 10),
         Height: Math.max(1, Number(dimensions?.height) || 10),
+        Width: Math.max(1, Number(dimensions?.width) || 10),
       },
     },
   };
@@ -231,7 +233,7 @@ async function createDraftShipment({
           ? errList
               .map((e) => {
                 const code = e.ErrorCode || '';
-                const msg = e.ErrorMessage || '';
+                const msg = e.ErrorMessage || e.Description || '';
                 return code && msg ? `${code}: ${msg}` : msg || code || JSON.stringify(e);
               })
               .join('; ')
