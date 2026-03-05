@@ -241,6 +241,9 @@ export interface Quote {
 
   /** Le client souhaite une facture professionnelle (depuis questionnaire Typeform) */
   wantsProfessionalInvoice?: boolean | null;
+
+  /** Valeur totale déclarée du devis (inclut les frais de la salle des ventes). Distinct de la somme des prix marteau des lots. Utilisé pour le calcul de l'assurance. */
+  declaredValue?: number | null;
 }
 
 export interface TimelineEvent {

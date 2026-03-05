@@ -291,7 +291,7 @@ export default function QuoteDetail() {
           (quote.auctionSheet?.recommendedCarton as { priceTTC?: number })?.priceTTC ??
           quote.options?.packagingPrice ?? 0;
         const insuranceAmount = computeInsuranceAmount(
-          quote.lot?.value || 0,
+          quote.declaredValue ?? quote.lot?.value ?? 0,
           quote.options?.insurance,
           quote.options?.insuranceAmount
         );
@@ -995,7 +995,7 @@ export default function QuoteDetail() {
     
     const shippingPrice = quote.options.shippingPrice || 0;
     const insuranceAmount = computeInsuranceAmount(
-      quote.lot?.value || 0,
+      quote.declaredValue ?? quote.lot?.value ?? 0,
       quote.options?.insurance,
       quote.options?.insuranceAmount
     );
@@ -2055,7 +2055,7 @@ export default function QuoteDetail() {
     
     // Recalculer le totalAmount en incluant les nouveaux prix : emballage + expédition + assurance
     const insuranceAmount = computeInsuranceAmount(
-      updatedQuote.lot?.value || 0,
+      updatedQuote.declaredValue ?? updatedQuote.lot?.value ?? 0,
       updatedQuote.options.insurance,
       updatedQuote.options.insuranceAmount
     );
@@ -2116,7 +2116,7 @@ export default function QuoteDetail() {
             finalShippingPrice = data.standard.price;
             const finalPackagingPrice = updatedQuote.options.packagingPrice ?? 0;
             const insuranceAmount = computeInsuranceAmount(
-              updatedQuote.lot?.value || 0,
+              updatedQuote.declaredValue ?? updatedQuote.lot?.value ?? 0,
               updatedQuote.options?.insurance,
               updatedQuote.options?.insuranceAmount
             );
@@ -2666,15 +2666,37 @@ export default function QuoteDetail() {
                         </div>
                       </div>
                     )}
-                    <div className="flex items-center gap-2">
-                      <Euro className="w-4 h-4 text-muted-foreground" />
-                      <div>
-                        <p className="text-xs text-muted-foreground">Valeur déclarée</p>
-                        <p className="font-medium">
-                          {safeQuote.lot.value && safeQuote.lot.value > 0
-                            ? `${safeQuote.lot.value}€`
-                            : (safeQuote.auctionSheet ? `${safeQuote.lot.value || 0}€` : 'Pas renseigné')}
-                        </p>
+                    <div className="grid grid-cols-2 gap-3">
+                      <div className="flex items-center gap-2">
+                        <Euro className="w-4 h-4 text-muted-foreground" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">
+                            {safeQuote.auctionSheet?.lots && safeQuote.auctionSheet.lots.length > 1 ? 'Somme des prix marteau' : 'Prix marteau'}
+                          </p>
+                          <p className="font-medium">
+                            {safeQuote.lot.value && safeQuote.lot.value > 0
+                              ? `${safeQuote.lot.value}€`
+                              : (safeQuote.auctionSheet ? `${safeQuote.lot.value || 0}€` : 'Pas renseigné')}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <Euro className="w-4 h-4 text-muted-foreground" />
+                        <div>
+                          <p className="text-xs text-muted-foreground">Valeur totale déclarée</p>
+                          <p className="font-medium">
+                            {(() => {
+                              const dv = safeQuote.declaredValue;
+                              if (dv != null && dv > 0) return `${dv.toFixed(2)}€`;
+                              // Fallback : somme des lots
+                              if (safeQuote.auctionSheet?.lots && safeQuote.auctionSheet.lots.length > 0) {
+                                const sum = safeQuote.auctionSheet.lots.reduce((s, l) => s + (l.value ?? (l as any).total ?? 0), 0);
+                                return `${sum.toFixed(2)}€`;
+                              }
+                              return safeQuote.lot.value ? `${safeQuote.lot.value}€` : 'Pas renseigné';
+                            })()}
+                          </p>
+                        </div>
                       </div>
                     </div>
 
@@ -3035,7 +3057,7 @@ export default function QuoteDetail() {
                                               }
                                               setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
                                               await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
-                                              const insuranceAmount = computeInsuranceAmount(quote.lot?.value || 0, quote.options?.insurance, quote.options?.insuranceAmount);
+                                              const insuranceAmount = computeInsuranceAmount(quote.declaredValue ?? quote.lot?.value ?? 0, quote.options?.insurance, quote.options?.insuranceAmount);
                                               const total = pkg + p + insuranceAmount;
                                               const paiements = await getPaiements(quote.id);
                                               const principalTypes = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
@@ -3088,7 +3110,7 @@ export default function QuoteDetail() {
                                               }
                                               setQuote(prev => prev ? { ...prev, options: { ...prev.options, shippingPrice: p } } : prev);
                                               await setDoc(doc(db, 'quotes', quote.id), { options: { ...(quote.options || {}), shippingPrice: p }, updatedAt: Timestamp.now() }, { merge: true });
-                                              const insuranceAmount = computeInsuranceAmount(quote.lot?.value || 0, quote.options?.insurance, quote.options?.insuranceAmount);
+                                              const insuranceAmount = computeInsuranceAmount(quote.declaredValue ?? quote.lot?.value ?? 0, quote.options?.insurance, quote.options?.insuranceAmount);
                                               const total = pkg + p + insuranceAmount;
                                               const paiements = await getPaiements(quote.id);
                                               const principalTypes = ['PRINCIPAL', 'PRINCIPAL_STANDARD', 'PRINCIPAL_EXPRESS'];
@@ -3141,13 +3163,13 @@ export default function QuoteDetail() {
                           <>
                             <div className="flex justify-between text-sm pl-4">
                               <span className="text-muted-foreground">Valeur assurée</span>
-                              <span className="font-medium">{(safeQuote.lot.value || 0).toFixed(2)}€</span>
+                              <span className="font-medium">{(safeQuote.declaredValue ?? safeQuote.lot.value ?? 0).toFixed(2)}€</span>
                             </div>
                             <div className="flex justify-between text-sm pl-4">
-                              <span className="text-muted-foreground">Coût assurance (2.5%{(safeQuote.lot.value || 0) < 500 ? ', min. 12€' : ''})</span>
+                              <span className="text-muted-foreground">Coût assurance (2.5%{(safeQuote.declaredValue ?? safeQuote.lot.value ?? 0) < 500 ? ', min. 12€' : ''})</span>
                               <span className="font-medium">
                                 {computeInsuranceAmount(
-                                  safeQuote.lot.value || 0,
+                                  safeQuote.declaredValue ?? safeQuote.lot.value ?? 0,
                                   safeQuote.options.insurance,
                                   safeQuote.options.insuranceAmount
                                 ).toFixed(2)}€
@@ -3173,7 +3195,7 @@ export default function QuoteDetail() {
                           const packagingPrice = cartonPrice !== null ? cartonPrice : (safeQuote.options.packagingPrice || 0);
                           const shippingPrice = safeQuote.options.shippingPrice || 0;
                           const insuranceAmount = computeInsuranceAmount(
-                            safeQuote.lot.value || 0,
+                            safeQuote.declaredValue ?? safeQuote.lot.value ?? 0,
                             safeQuote.options.insurance,
                             safeQuote.options.insuranceAmount
                           );
@@ -3876,17 +3898,6 @@ export default function QuoteDetail() {
                   });
                   
                   // Construire l'objet auctionSheet pour Firestore
-                  // #region agent log
-                  console.log('[DEBUG-H-D] updatedQuote.auctionSheet reçu dans onSave:', JSON.stringify({
-                    hasBordereauNumber: updatedQuote.auctionSheet?.bordereauNumber !== undefined,
-                    bordereauNumber: updatedQuote.auctionSheet?.bordereauNumber,
-                    hasLots: Array.isArray(updatedQuote.auctionSheet?.lots),
-                    lotsCount: updatedQuote.auctionSheet?.lots?.length,
-                    lotsData: updatedQuote.auctionSheet?.lots,
-                    totalLots: updatedQuote.auctionSheet?.totalLots,
-                    lotInQuote: { number: updatedQuote.lot?.number, description: updatedQuote.lot?.description, value: updatedQuote.lot?.value },
-                  }));
-                  // #endregion
                   const auctionSheetData: any = {};
                   if (updatedQuote.auctionSheet) {
                     if (updatedQuote.auctionSheet.recommendedCarton) {
@@ -3921,17 +3932,6 @@ export default function QuoteDetail() {
                       auctionSheetData.lots = updatedQuote.auctionSheet.lots;
                     }
                   }
-
-                  // #region agent log
-                  console.log('[DEBUG-H-D] auctionSheetData construit (AVANT setDoc) [post-fix]:', JSON.stringify({
-                    keys: Object.keys(auctionSheetData),
-                    hasBordereauNumber: 'bordereauNumber' in auctionSheetData,
-                    bordereauNumber: auctionSheetData.bordereauNumber,
-                    hasLots: 'lots' in auctionSheetData,
-                    lotsCount: auctionSheetData.lots?.length,
-                    auctionSheetData,
-                  }));
-                  // #endregion
 
                   await setDoc(
                     doc(db, "quotes", quote.id),
@@ -3972,6 +3972,8 @@ export default function QuoteDetail() {
                       cartonId: updatedQuote.cartonId || null,
                       // Facture professionnelle
                       wantsProfessionalInvoice: updatedQuote.wantsProfessionalInvoice ?? null,
+                      // Valeur totale déclarée (inclut frais de la salle des ventes, pour assurance)
+                      declaredValue: updatedQuote.declaredValue ?? null,
                       // AuctionSheet avec recommendedCarton
                       ...(Object.keys(auctionSheetData).length > 0 ? { auctionSheet: auctionSheetData } : {}),
                     },
@@ -4344,6 +4346,14 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
     deliveryAddressCountry: safeQuote.delivery.address.country || '',
     wantsProfessionalInvoice: safeQuote.wantsProfessionalInvoice ?? null,
     bordereauNumber: quote.auctionSheet?.bordereauNumber || '',
+    declaredValue: (() => {
+      if (quote.declaredValue != null && quote.declaredValue > 0) return Number(quote.declaredValue);
+      // Fallback : somme des lots du bordereau ou valeur du lot unique
+      if (quote.auctionSheet?.lots && quote.auctionSheet.lots.length > 0) {
+        return quote.auctionSheet.lots.reduce((s, l) => s + (l.value ?? (l as any).total ?? 0), 0);
+      }
+      return Number(safeQuote.lot.value) || 0;
+    })(),
   });
 
   // État pour la liste des lots éditable
@@ -4361,6 +4371,16 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       value: Number(safeQuote.lot.value) || 0,
     }];
   });
+
+  // Flag : l'utilisateur a-t-il surchargé manuellement la valeur totale déclarée ?
+  const [declaredValueManuallyEdited, setDeclaredValueManuallyEdited] = useState(false);
+
+  // Recalcul automatique de declaredValue quand les lots changent (sauf surcharge manuelle)
+  useEffect(() => {
+    if (declaredValueManuallyEdited) return;
+    const sum = formLots.reduce((s, l) => s + (l.value || 0), 0);
+    setFormData((prev) => ({ ...prev, declaredValue: sum }));
+  }, [formLots, declaredValueManuallyEdited]);
 
   // État pour le carton sélectionné
   // Initialiser avec le carton existant depuis auctionSheet.recommendedCarton ou cartonId
@@ -4596,9 +4616,8 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
   const calculateTotal = () => {
     const packagingPrice = formData.packagingPrice || 0;
     const shippingPrice = formData.shippingPrice || 0;
-    const totalLotValue = formLots.reduce((sum, l) => sum + (l.value || 0), 0);
     const insuranceAmount = formData.insurance
-      ? (formData.insuranceAmount > 0 ? formData.insuranceAmount : totalLotValue * 0.025)
+      ? computeInsuranceAmount(formData.declaredValue || 0, true, formData.insuranceAmount > 0 ? formData.insuranceAmount : null)
       : 0;
     return packagingPrice + shippingPrice + insuranceAmount;
   };
@@ -4759,6 +4778,7 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
       totalAmount: newTotal,
       cartonId: selectedCartonId || undefined,
       wantsProfessionalInvoice: formData.wantsProfessionalInvoice,
+      declaredValue: formData.declaredValue || null,
     };
 
     try {
@@ -4993,6 +5013,60 @@ function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated
                   </div>
                 </div>
               ))}
+            </CardContent>
+          </Card>
+
+          {/* Valeur totale déclarée */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Valeur totale déclarée</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Montant total déclaré pour ce devis, incluant les frais de la salle des ventes (buyer's premium, etc.). Utilisé pour le calcul de l'assurance (2,5%).
+              </p>
+              <div className="flex items-center gap-2">
+                <div className="relative flex-1">
+                  <Input
+                    type="number"
+                    step="0.01"
+                    min="0"
+                    value={formData.declaredValue}
+                    onChange={(e) => {
+                      setDeclaredValueManuallyEdited(true);
+                      setFormData({ ...formData, declaredValue: parseFloat(e.target.value) || 0 });
+                    }}
+                    className="pr-8"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground text-sm">€</span>
+                </div>
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    const sum = formLots.reduce((s, l) => s + (l.value || 0), 0);
+                    setFormData({ ...formData, declaredValue: sum });
+                    setDeclaredValueManuallyEdited(false);
+                  }}
+                  title="Recalculer depuis la somme des lots"
+                >
+                  Recalculer
+                </Button>
+              </div>
+              {(() => {
+                const sum = formLots.reduce((s, l) => s + (l.value || 0), 0);
+                const isDifferent = Math.abs((formData.declaredValue || 0) - sum) > 0.01;
+                return isDifferent ? (
+                  <p className="text-xs text-amber-600 dark:text-amber-400">
+                    Somme des lots : {sum.toFixed(2)}€ — valeur surchargée manuellement.
+                  </p>
+                ) : (
+                  <p className="text-xs text-muted-foreground">
+                    Calculée automatiquement depuis la somme des lots ({sum.toFixed(2)}€).
+                  </p>
+                );
+              })()}
             </CardContent>
           </Card>
 
