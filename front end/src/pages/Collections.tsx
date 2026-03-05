@@ -165,6 +165,15 @@ export default function Collections() {
       return;
     }
 
+    // Vérifier que tous les devis ont un numéro de bordereau
+    const quotesWithoutBordereau = selectedQuotesData.filter(
+      q => !q.auctionSheet?.bordereauNumber || !String(q.auctionSheet?.bordereauNumber ?? '').trim()
+    );
+    if (quotesWithoutBordereau.length > 0) {
+      toast.error("Renseignez le numéro de bordereau pour tous les devis sélectionnés avant d'envoyer la demande de collecte.");
+      return;
+    }
+
     // Envoyer un email pour chaque salle des ventes
     const emailPromises = Object.entries(byHouse).map(async ([houseName, houseQuotes]) => {
       // Priorité 1: Email manuel saisi dans le dialogue
@@ -254,13 +263,14 @@ export default function Collections() {
         });
 
         if (!response.ok) {
-          throw new Error('Erreur lors de l\'envoi de l\'email');
+          const errData = await response.json().catch(() => ({}));
+          throw new Error(errData.error || 'Erreur lors de l\'envoi de l\'email');
         }
 
         toast.success(`Email envoyé à ${houseName}`);
       } catch (error) {
         console.error('Erreur envoi email:', error);
-        toast.error(`Erreur lors de l'envoi de l'email à ${houseName}`);
+        toast.error(error instanceof Error ? error.message : `Erreur lors de l'envoi de l'email à ${houseName}`);
       }
     });
 
@@ -462,8 +472,13 @@ export default function Collections() {
         {/* Actions globales */}
         {awaitingCollection.length > 0 && (
           <div className="flex items-center justify-between">
-            <div className="text-sm text-muted-foreground">
-              {selectedQuotes.length > 0 && `${selectedQuotes.length} devis sélectionné(s)`}
+            <div className="flex flex-col gap-1">
+              <div className="text-sm text-muted-foreground">
+                {selectedQuotes.length > 0 && `${selectedQuotes.length} devis sélectionné(s)`}
+              </div>
+              <p className="text-xs text-muted-foreground">
+                Les devis sans numéro de bordereau ne peuvent pas être sélectionnés.
+              </p>
             </div>
             <Dialog open={isPlanningDialogOpen} onOpenChange={setIsPlanningDialogOpen}>
               <DialogTrigger asChild>
@@ -646,10 +661,13 @@ export default function Collections() {
                 {houseQuotes.map((quote) => {
                   const isSelected = selectedQuotes.includes(quote.id);
                   const lotValue = quote.lot.value || 0;
-                  const hasBordereau = !!quote.auctionSheet?.bordereauNumber;
+                  const hasBordereau = !!(quote.auctionSheet?.bordereauNumber && String(quote.auctionSheet.bordereauNumber).trim());
                   
                   return (
-                    <Card key={quote.id} className={`card-hover ${isSelected ? 'ring-2 ring-primary' : ''}`}>
+                    <Card
+                      key={quote.id}
+                      className={`card-hover ${isSelected ? 'ring-2 ring-primary' : ''} ${!hasBordereau ? 'opacity-60' : ''}`}
+                    >
                       <CardHeader className="pb-3">
                         <div className="flex items-start justify-between">
                           <div className="flex-1">
@@ -657,14 +675,16 @@ export default function Collections() {
                               <input
                                 type="checkbox"
                                 checked={isSelected}
+                                disabled={!hasBordereau}
                                 onChange={(e) => {
+                                  if (!hasBordereau) return;
                                   if (e.target.checked) {
                                     setSelectedQuotes([...selectedQuotes, quote.id]);
                                   } else {
                                     setSelectedQuotes(selectedQuotes.filter(id => id !== quote.id));
                                   }
                                 }}
-                                className="rounded"
+                                className={`rounded ${!hasBordereau ? 'cursor-not-allowed' : ''}`}
                               />
                               <CardTitle className="text-base flex items-center gap-2">
                                 <Package className="w-4 h-4" />
@@ -710,12 +730,17 @@ export default function Collections() {
                         </div>
 
                         {/* Bordereau */}
-                        {hasBordereau && (
+                        {hasBordereau ? (
                           <div className="flex items-center gap-2 text-sm">
                             <FileText className="w-4 h-4 text-muted-foreground" />
                             <span className="text-muted-foreground">
                               Bordereau: {quote.auctionSheet?.bordereauNumber}
                             </span>
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-2 text-sm text-amber-600">
+                            <AlertCircle className="w-4 h-4 shrink-0" />
+                            <span>Renseignez le numéro de bordereau dans la page du devis pour pouvoir sélectionner ce devis.</span>
                           </div>
                         )}
 

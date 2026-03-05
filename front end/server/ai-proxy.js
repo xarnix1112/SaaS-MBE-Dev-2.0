@@ -5691,6 +5691,19 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
       });
     }
 
+    // Vérifier que tous les devis ont un numéro de bordereau
+    if (quotes && quotes.length > 0) {
+      const hasMissingBordereau = quotes.some(
+        q => !q.bordereauNumber || !String(q.bordereauNumber || '').trim()
+      );
+      if (hasMissingBordereau) {
+        return res.status(400).json({
+          success: false,
+          error: "Renseignez le numéro de bordereau pour tous les devis avant d'envoyer la demande de collecte."
+        });
+      }
+    }
+
     console.log('[AI Proxy] Envoi email collecte à:', to, 'avec', quotes?.length || 0, 'devis');
 
     // Fonction helper pour formater la date en français (DD/MM/YYYY)
@@ -5713,6 +5726,7 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
     if (quotes && quotes.length > 0) {
       const lotsRows = quotes.map((quote, index) => {
         const lotNumber = quote.lotNumber || quote.lotId || 'Non spécifié';
+        const bordereauNum = (quote.bordereauNumber && String(quote.bordereauNumber).trim()) ? quote.bordereauNumber.trim() : '—';
         
         // Tronquer la description à environ 80 caractères (2 lignes de ~40 caractères)
         let description = quote.description || 'Description non disponible';
@@ -5740,6 +5754,7 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
         
         return `
           <tr style="border-bottom: 1px solid #e5e7eb;">
+            <td style="padding: 12px 8px; text-align: center; font-weight: 600;">${bordereauNum}</td>
             <td style="padding: 12px 8px; text-align: center; font-weight: 600;">${lotNumber}</td>
             <td style="padding: 12px 8px;">${clientName}</td>
             <td style="padding: 12px 8px; max-width: 300px;">${description}</td>
@@ -5755,6 +5770,7 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
         <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
           <thead>
             <tr style="background-color: #f9fafb; border-bottom: 2px solid #e5e7eb;">
+              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">N° Bordereau</th>
               <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">N° Lot</th>
               <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Client</th>
               <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Description</th>
