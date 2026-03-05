@@ -1,5 +1,5 @@
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { collection, getDocs, doc, setDoc, deleteDoc, getDoc, Timestamp, query, orderBy, writeBatch, where } from "firebase/firestore";
+import { collection, getDocs, doc, setDoc, updateDoc, deleteDoc, getDoc, Timestamp, query, orderBy, writeBatch, where } from "firebase/firestore";
 import { db, authReady, auth, firebaseEnabled } from "@/lib/firebase";
 import type { AuctionHouse } from "@/types/quote";
 
@@ -67,6 +67,7 @@ export function useAuctionHouses() {
               contact: data.contact || "",
               email: data.email || undefined,
               website: data.website || undefined,
+              mbeCustomerId: data.mbeCustomerId || undefined,
             });
           }
         });
@@ -134,6 +135,32 @@ export function useAuctionHouses() {
     },
   });
 
+  // Mettre à jour une salle de ventes (ex: mbeCustomerId)
+  const updateHouseMutation = useMutation({
+    mutationFn: async ({ houseId, updates }: { houseId: string; updates: Partial<Omit<AuctionHouse, "id">> }) => {
+      if (!firebaseEnabled) {
+        throw new Error("Firebase non configuré");
+      }
+
+      await authReady;
+      if (!auth.currentUser) {
+        throw new Error("Utilisateur non authentifié");
+      }
+
+      const houseRef = doc(db, AUCTION_HOUSES_COLLECTION, houseId);
+      const updateData = {
+        ...updates,
+        updatedAt: Timestamp.now(),
+      };
+      await updateDoc(houseRef, updateData);
+      console.log("[useAuctionHouses] ✅ Salle mise à jour:", houseId);
+      return { id: houseId, ...updates };
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["auctionHouses"] });
+    },
+  });
+
   // Supprimer une salle de ventes
   const deleteHouseMutation = useMutation({
     mutationFn: async (houseId: string) => {
@@ -159,6 +186,7 @@ export function useAuctionHouses() {
     isLoading,
     isError,
     addHouse: addHouseMutation.mutateAsync,
+    updateHouse: updateHouseMutation.mutateAsync,
     deleteHouse: deleteHouseMutation.mutateAsync,
     isAdding: addHouseMutation.isPending,
     isDeleting: deleteHouseMutation.isPending,

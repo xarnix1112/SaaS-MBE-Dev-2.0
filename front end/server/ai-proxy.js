@@ -12121,6 +12121,38 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
 
     const env = process.env.MBE_HUB_ENV === 'prod' ? 'prod' : 'demo';
 
+    // Resoudre la salle des ventes et son mbeCustomerId (obligatoire pour les expéditions)
+    const auctionHouseName = (quote.lot?.auctionHouse || quote.auctionSheet?.auctionHouse || quote.lotAuctionHouse || '').trim();
+    if (!auctionHouseName) {
+      return res.status(400).json({ error: 'Salle des ventes non renseignée pour ce devis. Renseignez-la dans le lot.' });
+    }
+    const housesSnap = await firestore.collection('auctionHouses')
+      .where('saasAccountId', '==', saasAccountId)
+      .get();
+    const norm = (s) => (s || '').trim().toLowerCase();
+    const matchedHouse = housesSnap.docs.find((d) => norm(d.data().name) === norm(auctionHouseName));
+    if (!matchedHouse) {
+      return res.status(400).json({ error: `Salle des ventes "${auctionHouseName}" non trouvée. Ajoutez-la dans Paramètres → Salles des ventes.` });
+    }
+    const mbeCustomerId = (matchedHouse.data().mbeCustomerId || '').trim();
+    if (!mbeCustomerId) {
+      return res.status(400).json({ error: 'Configurez l\'ID client MBE pour cette salle des ventes (Paramètres → Salles des ventes).' });
+    }
+
+    // Recuperer les adresses expéditeur du MBE Hub
+    let sender = null;
+    try {
+      const pickupAddrs = await mbehubSoap.getPickupAddresses({
+        username: creds.username,
+        password: creds.password,
+        env,
+      });
+      const defaultAddr = pickupAddrs.find((a) => a.IsDefault) || pickupAddrs[0];
+      if (defaultAddr) sender = defaultAddr;
+    } catch (pickupErr) {
+      console.warn('[API] getPickupAddresses échec, expédition sans Sender explicite:', pickupErr?.message);
+    }
+
     // Log pour debug (sans mot de passe) en cas d'erreur SR_006 ou similaire
     const payloadForLog = {
       recipient: { ...recipient, email: recipient?.email ? '[présent]' : undefined, phone: recipient?.phone ? '[présent]' : undefined },
@@ -12138,6 +12170,8 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       password: creds.password,
       env,
       recipient,
+      sender: sender || undefined,
+      customerMbeId: mbeCustomerId || undefined,
       service,
       courierService: courierService || null,
       courierAccount: courierAccount || null,

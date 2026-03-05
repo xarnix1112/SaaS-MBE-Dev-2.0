@@ -131,12 +131,73 @@ async function getShippingOptions({ username, password, env, destination, weight
 }
 
 /**
+ * Appel GetPickupAddressesRequest - récupère les adresses de collecte/expéditeur du centre MBE
+ * @param {Object} params
+ * @param {string} params.username
+ * @param {string} params.password
+ * @param {string} params.env - 'demo' | 'prod'
+ * @returns {Promise<Array<{TradeName, Address1, Address2, ZipCode, City, Province, Country, Phone1, Email1, IsDefault}>>}
+ */
+async function getPickupAddresses({ username, password, env }) {
+  const client = await createMbeSoapClient(env, username, password);
+
+  const args = {
+    RequestContainer: {
+      System: { Value: 'NEW' },
+      Credentials: { Username: username, Passphrase: password },
+      InternalReferenceID: `MBE-SDV-pickup-${Date.now()}`,
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    client.GetPickupAddressesRequest(args, (err, result) => {
+      if (err) return reject(err);
+
+      const container = result?.RequestContainer;
+      if (!container) return reject(new Error('Réponse MBE invalide'));
+
+      if (container.Status === 'ERROR') {
+        const errMsg = container.Errors?.Error
+          ? (Array.isArray(container.Errors.Error) ? container.Errors.Error : [container.Errors.Error])
+            .map((e) => e.ErrorMessage || e.ErrorCode || JSON.stringify(e))
+            .join('; ')
+          : 'Erreur MBE non détaillée';
+        return reject(new Error(errMsg));
+      }
+
+      const addrs = container.PickupAddress || [];
+      const list = Array.isArray(addrs) ? addrs : (addrs ? [addrs] : []);
+      const mapped = list.map((pa) => {
+        const pc = pa.PickupContainer || pa;
+        return {
+          TradeName: pc.TradeName || '',
+          Address1: pc.Address1 || '',
+          Address2: pc.Address2 || '',
+          Address3: pc.Address3 || '',
+          ZipCode: pc.ZipCode || '',
+          City: pc.City || '',
+          Province: pc.Province || '',
+          Country: pc.Country || '',
+          Reference: pc.Reference || '',
+          Phone1: pc.Phone1 || '',
+          Email1: pc.Email1 || '',
+          IsDefault: pc.IsDefault === true || pc.IsDefault === 'true',
+        };
+      });
+      resolve(mapped);
+    });
+  });
+}
+
+/**
  * Appel ShipmentRequest avec IsDraft=true - crée une expédition en brouillon
  * @param {Object} params
  * @param {string} params.username
  * @param {string} params.password
  * @param {string} params.env
  * @param {Object} params.recipient - { name, companyName, address, address2, city, zipCode, state, country, email, phone }
+ * @param {Object} [params.sender] - expéditeur (MBE Hub PickupAddress) - si fourni, remplit la zone Expéditeur
+ * @param {string} [params.customerMbeId] - ID client MBE "Salle - Expéditions clients" - remplit la zone Client
  * @param {string} params.service - ID service depuis ShippingOptionsRequest
  * @param {string} params.courierService
  * @param {string} params.courierAccount
@@ -152,6 +213,8 @@ async function createDraftShipment({
   password,
   env,
   recipient,
+  sender,
+  customerMbeId,
   service,
   courierService,
   courierAccount,
@@ -181,6 +244,28 @@ async function createDraftShipment({
   if (recipientData.Email === undefined || recipientData.Email === '') delete recipientData.Email;
   if (recipientData.Phone === undefined || recipientData.Phone === '') delete recipientData.Phone;
 
+  // Sender (Expéditeur) - depuis GetPickupAddresses, format RecipientType
+  let senderData = null;
+  if (sender && (sender.TradeName || sender.Address1)) {
+    const name = String(sender.TradeName || sender.Address1 || 'MBE').slice(0, 100);
+    senderData = {
+      Name: name,
+      CompanyName: name,
+      Address: String(sender.Address1 || '').slice(0, 200),
+      Address2: sender.Address2 ? String(sender.Address2).trim().slice(0, 100) : undefined,
+      City: String(sender.City || '').slice(0, 100),
+      ZipCode: String(sender.ZipCode || '').slice(0, 12),
+      State: sender.Province ? String(sender.Province).trim().slice(0, 2) : undefined,
+      Country: String(sender.Country || 'FR').slice(0, 2).toUpperCase(),
+      Email: sender.Email1 ? String(sender.Email1).trim().slice(0, 100) : undefined,
+      Phone: sender.Phone1 ? String(sender.Phone1).trim().slice(0, 50) : undefined,
+    };
+    if (!senderData.Address2) delete senderData.Address2;
+    if (!senderData.State) delete senderData.State;
+    if (!senderData.Email) delete senderData.Email;
+    if (!senderData.Phone) delete senderData.Phone;
+  }
+
   // WSDL DimensionsType utilise "Lenght" (typo API) au lieu de "Length", ordre: Lenght, Height, Width
   const items = {
     Item: {
@@ -209,15 +294,20 @@ async function createDraftShipment({
     IsDraft: true, // Brouillon → apparaît dans "En attente" du Hub MBE, pas dans "Historique"
   };
 
-  const args = {
-    RequestContainer: {
-      System: { Value: 'NEW' },
-      Credentials: { Username: username, Passphrase: password },
-      InternalReferenceID: `MBE-SDV-${Date.now()}-${reference || 'draft'}`,
-      Recipient: recipientData,
-      Shipment: shipmentData,
-    },
+  const requestContainer = {
+    System: { Value: 'NEW' },
+    Credentials: { Username: username, Passphrase: password },
+    InternalReferenceID: `MBE-SDV-${Date.now()}-${reference || 'draft'}`,
+    Recipient: recipientData,
+    Shipment: shipmentData,
   };
+  if (customerMbeId && String(customerMbeId).trim()) {
+    requestContainer.CustomerMbeId = String(customerMbeId).trim();
+  }
+  if (senderData) {
+    requestContainer.Sender = senderData;
+  }
+  const args = { RequestContainer: requestContainer };
 
   return new Promise((resolve, reject) => {
     client.ShipmentRequest(args, (err, result) => {
@@ -306,6 +396,7 @@ async function closeShipments({ username, password, env, masterTrackingsMBE }) {
 
 module.exports = {
   getShippingOptions,
+  getPickupAddresses,
   createDraftShipment,
   closeShipments,
 };

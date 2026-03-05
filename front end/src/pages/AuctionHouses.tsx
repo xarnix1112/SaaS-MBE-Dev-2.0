@@ -35,14 +35,17 @@ import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
 
 export default function AuctionHouses() {
-  const { houses, isLoading: isLoadingHouses, addHouse, deleteHouse, isAdding, isDeleting } = useAuctionHouses();
+  const { houses, isLoading: isLoadingHouses, addHouse, updateHouse, deleteHouse, isAdding, isDeleting } = useAuctionHouses();
   const [selectedHouse, setSelectedHouse] = useState<string>("");
+  const [editingMbeId, setEditingMbeId] = useState<Record<string, string>>({});
+  const [savingMbeId, setSavingMbeId] = useState<string | null>(null);
   const [form, setForm] = useState({
     name: "",
     address: "",
     contact: "",
     email: "",
     website: "",
+    mbeCustomerId: "",
   });
   const { data: quotes = [], isLoading: isLoadingQuotes, isError } = useQuotes();
 
@@ -80,6 +83,7 @@ export default function AuctionHouses() {
     const contact = form.contact.trim();
     const email = form.email.trim();
     const website = form.website.trim();
+    const mbeCustomerId = form.mbeCustomerId.trim();
     
     if (!name) {
       toast.error("Le nom de la salle de ventes est requis");
@@ -93,10 +97,11 @@ export default function AuctionHouses() {
         contact,
         email: email || undefined,
         website: website || undefined,
+        mbeCustomerId: mbeCustomerId || undefined,
       });
       
       setSelectedHouse(newHouse.id);
-      setForm({ name: "", address: "", contact: "", email: "", website: "" });
+      setForm({ name: "", address: "", contact: "", email: "", website: "", mbeCustomerId: "" });
       
       // Afficher un message avec le nombre de devis associés
       const associatedCount = (newHouse as any).associatedQuotesCount || 0;
@@ -112,6 +117,25 @@ export default function AuctionHouses() {
     } catch (error) {
       console.error("[AuctionHouses] Erreur lors de l'ajout:", error);
       toast.error("Impossible d'ajouter la salle de ventes");
+    }
+  };
+
+  const handleSaveMbeCustomerId = async (houseId: string) => {
+    const value = (editingMbeId[houseId] ?? houses.find((h) => h.id === houseId)?.mbeCustomerId ?? "").trim();
+    setSavingMbeId(houseId);
+    try {
+      await updateHouse({ houseId, updates: { mbeCustomerId: value || undefined } });
+      setEditingMbeId((prev) => {
+        const next = { ...prev };
+        delete next[houseId];
+        return next;
+      });
+      toast.success("ID client MBE enregistré");
+    } catch (error) {
+      console.error("[AuctionHouses] Erreur lors de la mise à jour:", error);
+      toast.error("Impossible d'enregistrer l'ID client MBE");
+    } finally {
+      setSavingMbeId(null);
     }
   };
 
@@ -208,6 +232,20 @@ export default function AuctionHouses() {
                   }
                 />
               </div>
+              <div className="space-y-2">
+                <Label htmlFor="house-mbeCustomerId">ID client MBE (Expéditions)</Label>
+                <Input
+                  id="house-mbeCustomerId"
+                  placeholder="Ex: 00007891"
+                  value={form.mbeCustomerId}
+                  onChange={(e) =>
+                    setForm((f) => ({ ...f, mbeCustomerId: e.target.value }))
+                  }
+                />
+                <p className="text-xs text-muted-foreground">
+                  ID du client &quot;Salle - Expéditions clients&quot; dans MBE Hub (obligatoire pour les expéditions)
+                </p>
+              </div>
               <div className="md:col-span-3 flex justify-end">
                 <Button type="submit" className="gap-2" disabled={isAdding}>
                   <Plus className="w-4 h-4" />
@@ -287,6 +325,29 @@ export default function AuctionHouses() {
                             Site web
                           </a>
                         )}
+                        <div className="mt-3 flex flex-wrap items-center gap-2">
+                          <Label htmlFor={`mbe-id-${house.id}`} className="text-xs text-muted-foreground">
+                            ID client MBE (Expéditions) :
+                          </Label>
+                          <Input
+                            id={`mbe-id-${house.id}`}
+                            placeholder="00007891"
+                            className="h-8 w-32"
+                            value={editingMbeId[house.id] ?? house.mbeCustomerId ?? ""}
+                            onChange={(e) =>
+                              setEditingMbeId((prev) => ({ ...prev, [house.id]: e.target.value }))
+                            }
+                          />
+                          <Button
+                            size="sm"
+                            variant="secondary"
+                            className="h-8"
+                            disabled={savingMbeId === house.id}
+                            onClick={() => handleSaveMbeCustomerId(house.id)}
+                          >
+                            {savingMbeId === house.id ? "Enregistrement..." : "Enregistrer"}
+                          </Button>
+                        </div>
                       </div>
                       <div className="flex gap-4 items-start">
                         <div className="text-center">

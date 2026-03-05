@@ -261,6 +261,8 @@ export interface AuctionHouse {
   contact: string;
   email?: string; // Email dédié pour les collectes
   website?: string;
+  /** ID client MBE "Salle - Expéditions clients" pour les expéditions vers MBE Hub (ex: 00007891) */
+  mbeCustomerId?: string;
 }
 
 export interface DashboardStats {
