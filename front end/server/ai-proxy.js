@@ -12165,27 +12165,8 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       const defaultAddr = pickupAddrs.find((a) => a.IsDefault) || pickupAddrs[0];
       if (defaultAddr) sender = defaultAddr;
     } catch (pickupErr) {
-      console.warn('[API] getPickupAddresses échec, fallback expéditeur depuis compte SaaS:', pickupErr?.message);
-      const saasData = saasDoc.data();
-      if (saasData?.commercialName && saasData?.address) {
-        const addr = saasData.address;
-        const street = typeof addr === 'object' ? (addr.street || addr.line1 || '') : String(addr || '');
-        const zip = typeof addr === 'object' ? (addr.zip || '') : '';
-        const city = typeof addr === 'object' ? (addr.city || '') : '';
-        const country = typeof addr === 'object' ? (addr.country || 'FR') : 'FR';
-        if (street || zip || city) {
-          sender = {
-            TradeName: String(saasData.commercialName || 'MBE').slice(0, 100),
-            Address1: street.slice(0, 200),
-            ZipCode: String(zip).slice(0, 12),
-            City: String(city).slice(0, 100),
-            Province: zip && zip.length >= 2 ? String(zip).slice(0, 2) : 'XX',
-            Country: String(country).slice(0, 2).toUpperCase(),
-            Phone1: String(saasData.phone || '').trim().slice(0, 50) || undefined,
-            Email1: String(saasData.email || '').trim().slice(0, 100) || undefined,
-          };
-        }
-      }
+      console.warn('[API] getPickupAddresses échec, expédition sans Sender (MBE utilisera adresse Store):', pickupErr?.message);
+      // sender reste null - l'API MBE utilisera l'adresse du centre par défaut (colis toujours au centre MBE)
     }
 
     // Log pour debug (sans mot de passe) en cas d'erreur SR_006 ou similaire
@@ -12258,11 +12239,10 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
         insuranceValue: Number(insuranceValue) || 0,
       });
     } catch (shipErr) {
-      // SR_005 : "The MOL user does not belong to a customer of type AH. The field CustomerMbeId cannot be provided"
-      // Le compte MBE utilisé n'est pas de type AH (Auction House). On réessaie sans CustomerMbeId.
-      const isSR005 = shipErr?.message?.includes('SR_005') || shipErr?.message?.includes('customer of type AH');
-      if (isSR005 && customerMbeId) {
-        console.warn('[API] SR_005 détecté - réessai sans CustomerMbeId (compte MBE non type AH)');
+      // SR_005: "customer of type AH" → réessai sans CustomerMbeId (compte MBE non type AH)
+      const isSR005CustomerAH = shipErr?.message?.includes('SR_005') && shipErr?.message?.includes('customer of type AH');
+      if (isSR005CustomerAH && customerMbeId) {
+        console.warn('[API] SR_005 (customer AH) - réessai sans CustomerMbeId');
         result = await mbehubSoap.createDraftShipment({
           username: creds.username,
           password: creds.password,
