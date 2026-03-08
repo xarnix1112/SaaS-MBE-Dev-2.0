@@ -13,6 +13,7 @@ import sharp from "sharp";
 import { createWorker } from "tesseract.js";
 import Stripe from "stripe";
 import fs from "fs";
+import crypto from "crypto";
 import { spawn } from "child_process";
 import { createRequire } from "module";
 const require = createRequire(import.meta.url);
@@ -11688,6 +11689,21 @@ app.patch("/api/account/plan", requireAuth, async (req, res) => {
 
 const mbehubSoap = require('./mbehub-soap.cjs');
 
+/**
+ * Calcule une clé de cache unique pour un client (nom+adresse+email+téléphone)
+ * @param {{ name?: string, address?: string, email?: string, phone?: string }} client
+ * @returns {string}
+ */
+function computeClientCacheKey(client) {
+  if (!client) return '';
+  const n = (client.name || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const a = (client.address || '').trim().toLowerCase().replace(/\s+/g, ' ');
+  const e = (client.email || '').trim().toLowerCase();
+  const p = (client.phone || '').trim().replace(/\s+/g, '');
+  const concat = `${n}|${a}|${e}|${p}`;
+  return crypto.createHash('sha256').update(concat).digest('hex');
+}
+
 function hasMbeHubPlan(saasData) {
   const planId = saasData?.planId || saasData?.plan || 'starter';
   return planId === 'pro' || planId === 'ultra';
@@ -12149,7 +12165,27 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       const defaultAddr = pickupAddrs.find((a) => a.IsDefault) || pickupAddrs[0];
       if (defaultAddr) sender = defaultAddr;
     } catch (pickupErr) {
-      console.warn('[API] getPickupAddresses échec, expédition sans Sender explicite:', pickupErr?.message);
+      console.warn('[API] getPickupAddresses échec, fallback expéditeur depuis compte SaaS:', pickupErr?.message);
+      const saasData = saasDoc.data();
+      if (saasData?.commercialName && saasData?.address) {
+        const addr = saasData.address;
+        const street = typeof addr === 'object' ? (addr.street || addr.line1 || '') : String(addr || '');
+        const zip = typeof addr === 'object' ? (addr.zip || '') : '';
+        const city = typeof addr === 'object' ? (addr.city || '') : '';
+        const country = typeof addr === 'object' ? (addr.country || 'FR') : 'FR';
+        if (street || zip || city) {
+          sender = {
+            TradeName: String(saasData.commercialName || 'MBE').slice(0, 100),
+            Address1: street.slice(0, 200),
+            ZipCode: String(zip).slice(0, 12),
+            City: String(city).slice(0, 100),
+            Province: zip && zip.length >= 2 ? String(zip).slice(0, 2) : 'XX',
+            Country: String(country).slice(0, 2).toUpperCase(),
+            Phone1: String(saasData.phone || '').trim().slice(0, 50) || undefined,
+            Email1: String(saasData.email || '').trim().slice(0, 100) || undefined,
+          };
+        }
+      }
     }
 
     // Log pour debug (sans mot de passe) en cas d'erreur SR_006 ou similaire
@@ -12164,6 +12200,45 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
     };
     console.log('[API] mbehub/create-draft payload:', JSON.stringify(payloadForLog));
 
+    // Create/find client MBE (acheteur) via CreateCustomerRequest + cache. Fallback sur mbeCustomerId (salle) si échec.
+    let customerMbeId = mbeCustomerId || undefined;
+    const quoteClient = quote.client || {};
+    const clientAddr = typeof quoteClient.address === 'string'
+      ? quoteClient.address
+      : (quoteClient.address && typeof quoteClient.address === 'object'
+        ? [quoteClient.address.line1, quoteClient.address.street, quoteClient.address.zip, quoteClient.address.city, quoteClient.address.country].filter(Boolean).join(', ')
+        : '');
+    const clientForCreate = quoteClient.name && clientAddr && quoteClient.email && quoteClient.phone
+      ? { name: quoteClient.name, address: clientAddr, email: quoteClient.email, phone: quoteClient.phone }
+      : null;
+    if (clientForCreate) {
+      const parsed = mbehubSoap.parseClientAddress(clientAddr);
+      if (parsed.street && parsed.zip && parsed.city && parsed.country) {
+        const cacheKey = computeClientCacheKey(clientForCreate);
+        const cacheRef = firestore.collection('mbeCustomerCache').doc(saasAccountId).collection('entries').doc(cacheKey);
+        try {
+          const cacheDoc = await cacheRef.get();
+          if (cacheDoc.exists && cacheDoc.data()?.mbeCustomerId) {
+            customerMbeId = cacheDoc.data().mbeCustomerId;
+          } else {
+            const createResp = await mbehubSoap.createCustomerRequest({
+              username: creds.username,
+              password: creds.password,
+              env,
+              client: clientForCreate,
+              auctionHouseMbeId: mbeCustomerId || undefined,
+            });
+            if (createResp?.customerMbeId) {
+              customerMbeId = createResp.customerMbeId;
+              await cacheRef.set({ mbeCustomerId: customerMbeId, createdAt: Timestamp.now() });
+            }
+          }
+        } catch (createErr) {
+          console.warn('[API] CreateCustomerRequest échec, fallback mbeCustomerId salle:', createErr?.message);
+        }
+      }
+    }
+
     let result;
     try {
       result = await mbehubSoap.createDraftShipment({
@@ -12172,7 +12247,7 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
         env,
         recipient,
         sender: sender || undefined,
-        customerMbeId: mbeCustomerId || undefined,
+        customerMbeId: customerMbeId || undefined,
         service,
         courierService: courierService || null,
         courierAccount: courierAccount || null,
@@ -12186,7 +12261,7 @@ app.post('/api/mbehub/create-draft', requireAuth, async (req, res) => {
       // SR_005 : "The MOL user does not belong to a customer of type AH. The field CustomerMbeId cannot be provided"
       // Le compte MBE utilisé n'est pas de type AH (Auction House). On réessaie sans CustomerMbeId.
       const isSR005 = shipErr?.message?.includes('SR_005') || shipErr?.message?.includes('customer of type AH');
-      if (isSR005 && mbeCustomerId) {
+      if (isSR005 && customerMbeId) {
         console.warn('[API] SR_005 détecté - réessai sans CustomerMbeId (compte MBE non type AH)');
         result = await mbehubSoap.createDraftShipment({
           username: creds.username,

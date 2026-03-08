@@ -190,6 +190,120 @@ async function getPickupAddresses({ username, password, env }) {
 }
 
 /**
+ * Parse une adresse string en composants pour CreateCustomerRequest
+ * @param {string} raw - adresse brute (ex: "10 rue Example, 75001 Paris, France")
+ * @returns {{ street: string, zip: string, city: string, province: string, country: string }}
+ */
+function parseClientAddress(raw) {
+  const s = (raw || '').trim();
+  if (!s) return { street: '', zip: '', city: '', province: 'XX', country: 'FR' };
+
+  const countryMap = { france: 'FR', italie: 'IT', italia: 'IT', allemagne: 'DE', espagne: 'ES', portugal: 'PT', belgique: 'BE', suisse: 'CH', 'pays-bas': 'NL', luxembourg: 'LU', uk: 'GB', 'royaume-uni': 'GB' };
+  let country = '';
+  const twoLetter = s.match(/\b([A-Z]{2})\s*$/i);
+  if (twoLetter) country = twoLetter[1].toUpperCase();
+  else {
+    const lower = s.toLowerCase();
+    for (const [name, code] of Object.entries(countryMap)) {
+      if (lower.includes(name)) { country = code; break; }
+    }
+  }
+  if (!country) country = 'FR';
+
+  const zipMatch = s.match(/\b(\d{5})\b/);
+  const zip = zipMatch ? zipMatch[1] : '';
+  const province = zip && zip.length >= 2 ? zip.slice(0, 2) : 'XX';
+
+  let city = '';
+  let street = s;
+  if (zipMatch) {
+    const afterZip = s.substring(zipMatch.index + zipMatch[0].length).trim();
+    const cityMatch = afterZip.match(/^[\s,]*([A-Za-zÀ-ÿ\s\-']+?)(?:\s*,\s*|\s*$)/);
+    if (cityMatch) city = cityMatch[1].trim();
+    street = s.substring(0, zipMatch.index).trim().replace(/,+\s*$/, '').trim();
+  }
+
+  return { street: street || s, zip, city: city || '', province, country };
+}
+
+/**
+ * Appel CreateCustomerRequest - crée ou met à jour un client MBE (CustomerSource=AH)
+ * @param {Object} params
+ * @param {string} params.username
+ * @param {string} params.password
+ * @param {string} params.env - 'demo' | 'prod'
+ * @param {Object} params.client - { name, address, email, phone }
+ * @param {string} [params.auctionHouseMbeId] - ID salle des ventes pour CustomerSourceInternalReference
+ * @returns {Promise<{customerMbeId: string, status: 'CREATED'|'UPDATED'}>}
+ */
+async function createCustomerRequest({ username, password, env, client, auctionHouseMbeId }) {
+  const soapClient = await createMbeSoapClient(env, username, password);
+
+  const parts = (client.name || 'Client').trim().split(/\s+/);
+  const firstName = parts.length > 1 ? parts[0] : '-';
+  const lastName = parts.length > 1 ? parts.slice(1).join(' ') : (parts[0] || 'Client');
+  const parsed = parseClientAddress(client.address || '');
+
+  const customerData = {
+    CustomerSource: 'AH',
+    CustomerType: 'OCCASIONAL',
+    B2B: false,
+    TradingName: String(client.name || 'Client').slice(0, 100),
+    FirstName: String(firstName).slice(0, 50),
+    LastName: String(lastName).slice(0, 50),
+    Address1: String(parsed.street || 'N/A').slice(0, 200),
+    ZipCode: String(parsed.zip || '00000').slice(0, 12),
+    City: String(parsed.city || 'N/A').slice(0, 100),
+    Province: String(parsed.province || 'XX').slice(0, 2),
+    Country: String(parsed.country || 'FR').slice(0, 2).toUpperCase(),
+    Phone: String(client.phone || '-').slice(0, 50),
+    Email: String(client.email || 'noreply@example.com').slice(0, 100),
+  };
+  if (auctionHouseMbeId && String(auctionHouseMbeId).trim()) {
+    customerData.CustomerSourceInternalReference = String(auctionHouseMbeId).trim();
+  }
+
+  const args = {
+    RequestContainer: {
+      System: { Value: 'NEW' },
+      Credentials: { Username: username, Passphrase: password },
+      InternalReferenceID: `MBE-SDV-createcust-${Date.now()}`,
+      Customer: customerData,
+      PrivacyPolicyAcknowledgement: 'TRUE',
+      ConsentMktCenter: 'FALSE',
+      ConsentMktCorporate: 'FALSE',
+      ConsentProfiling: 'FALSE',
+      ConsentThirdParty: 'FALSE',
+    },
+  };
+
+  return new Promise((resolve, reject) => {
+    soapClient.CreateCustomerRequest(args, (err, result) => {
+      if (err) return reject(err);
+
+      const container = result?.RequestContainer;
+      if (!container) return reject(new Error('Réponse MBE invalide'));
+
+      if (container.Status === 'ERROR') {
+        const errList = container.Errors?.Error
+          ? (Array.isArray(container.Errors.Error) ? container.Errors.Error : [container.Errors.Error])
+          : [];
+        const errMsg = errList.length > 0
+          ? errList
+              .map((e) => e.ErrorMessage || e.Description || e.ErrorCode || JSON.stringify(e))
+              .join('; ')
+          : 'Erreur MBE non détaillée';
+        return reject(new Error(errMsg));
+      }
+
+      const customerMbeId = container.CustomerMBEID || '';
+      const status = (container.CustomerStatus || 'CREATED').toUpperCase();
+      resolve({ customerMbeId, status: status === 'UPDATED' ? 'UPDATED' : 'CREATED' });
+    });
+  });
+}
+
+/**
  * Appel ShipmentRequest avec IsDraft=true - crée une expédition en brouillon
  * @param {Object} params
  * @param {string} params.username
@@ -397,6 +511,8 @@ async function closeShipments({ username, password, env, masterTrackingsMBE }) {
 module.exports = {
   getShippingOptions,
   getPickupAddresses,
+  createCustomerRequest,
+  parseClientAddress,
   createDraftShipment,
   closeShipments,
 };
