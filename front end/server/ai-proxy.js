@@ -6283,13 +6283,25 @@ app.get('/auth/team-profiles', async (req, res) => {
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
 
   try {
+    // #region agent log
+    console.log('[DEBUG team-profiles] email=', email);
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:team-profiles',message:'team-profiles called',data:{email},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
     const saasDoc = await findSaasAccountByEmail(email);
+    // #region agent log
+    console.log('[DEBUG team-profiles] findSaasAccountByEmail found=', !!saasDoc, 'saasAccountId=', saasDoc?.id);
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:findSaasAccountByEmail',message:'findSaasAccountByEmail result',data:{found:!!saasDoc,saasAccountId:saasDoc?.id},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+    // #endregion
     if (!saasDoc) {
       return res.json({ multiUser: false });
     }
 
     const saasData = saasDoc.data();
     const planId = (saasData.planId || saasData.plan || '').toLowerCase();
+    // #region agent log
+    console.log('[DEBUG team-profiles] planId=', planId, 'isProOrUltra=', ['pro', 'ultra'].includes(planId));
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:planId',message:'planId check',data:{planId,isProOrUltra:['pro','ultra'].includes(planId)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+    // #endregion
     if (!['pro', 'ultra'].includes(planId)) {
       return res.json({ multiUser: false });
     }
@@ -6323,7 +6335,10 @@ app.get('/auth/team-profiles', async (req, res) => {
         useFirebase: true,
       });
     }
-
+    // #region agent log
+    console.log('[DEBUG team-profiles] membersCount=', membersSnap.docs.length, 'profilesCount=', profiles.length, 'multiUser=', profiles.length > 0);
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:profiles',message:'profiles built',data:{membersCount:membersSnap.docs.length,profilesCount:profiles.length,multiUser:profiles.length>0},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+    // #endregion
     if (profiles.length === 0) {
       return res.json({ multiUser: false });
     }
