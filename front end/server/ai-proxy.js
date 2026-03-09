@@ -7647,12 +7647,36 @@ app.post('/api/quotes/:quoteId/mark-paid-manually', requireAuth, async (req, res
       user: 'Utilisateur',
     };
 
+    // Désactiver les liens de paiement (virement/CB = pas de double paiement par lien)
+    const existingLinks = data.paymentLinks || [];
+    const updatedPaymentLinks = existingLinks.map((link) => {
+      const l = link && typeof link === 'object' ? link : {};
+      const status = l.status || 'active';
+      if (status === 'active' || status === 'pending') {
+        return { ...l, status: 'expired' };
+      }
+      return l;
+    });
+
+    // Annuler les paiements PENDING dans la collection paiements (Stripe Connect)
+    const paiementsSnap = await firestore.collection('paiements').where('devisId', '==', quoteId).get();
+    const batch = firestore.batch();
+    let hasUpdates = false;
+    paiementsSnap.docs.forEach((d) => {
+      if (d.data().status === 'PENDING') {
+        batch.update(d.ref, { status: 'CANCELLED', updatedAt: Timestamp.now() });
+        hasUpdates = true;
+      }
+    });
+    if (hasUpdates) await batch.commit();
+
     await ref.update({
       paymentStatus: 'paid',
       status: 'awaiting_collection',
       manualPaymentMethod: paymentMethod,
       manualPaymentDate: paymentDateTimestamp,
       paidAmount: totalAmount,
+      paymentLinks: updatedPaymentLinks,
       timeline: FieldValue.arrayUnion(timelineEvent),
       updatedAt: Timestamp.now(),
     });
