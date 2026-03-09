@@ -61,7 +61,12 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
           <CardContent className="p-4">
             <div className="flex items-center justify-between mb-2">
               <span className="font-medium text-sm">{safeQuote.reference}</span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                {quote.surchargePending && (
+                  <Badge variant="outline" className="text-[10px] bg-warning/10 text-warning-foreground border-warning/30">
+                    Surcoût envoyé – en attente
+                  </Badge>
+                )}
                 {safeQuote.shipmentGroupId && (
                   <GroupBadge
                     groupId={safeQuote.shipmentGroupId}
@@ -81,6 +86,15 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
 
   return (
     <Card className={cn('card-hover', hasIssues && 'border-warning/50')}>
+      {quote.surchargePending && (
+        <div className="alert-banner alert-warning rounded-t-lg rounded-b-none border-l-0 border-t-0 border-r-0">
+          <AlertTriangle className="w-4 h-4 flex-shrink-0" />
+          <div className="flex-1">
+            <p className="text-sm font-medium">Surcoût envoyé – en attente de paiement</p>
+            <p className="text-xs mt-0.5">Le client doit régler le surcoût avant expédition.</p>
+          </div>
+        </div>
+      )}
       {hasIssues && (
         <div className="alert-banner alert-warning rounded-t-lg rounded-b-none border-l-0 border-t-0 border-r-0">
           <AlertTriangle className="w-4 h-4 flex-shrink-0" />

@@ -283,6 +283,14 @@ export default function Preparation() {
 
   const handleSendSurchargeEmail = async () => {
     if (!selectedQuoteForSurcharge || !createdSurcharge) return;
+    const rd = selectedQuoteForSurcharge.lot?.realDimensions;
+    const hasRealDimensions = rd &&
+      (rd.length ?? 0) > 0 && (rd.width ?? 0) > 0 &&
+      (rd.height ?? 0) > 0 && (rd.weight ?? 0) > 0;
+    if (!hasRealDimensions) {
+      toast.error('Saisissez les dimensions réelles avant d\'envoyer le surcoût');
+      return;
+    }
     const description =
       surchargeReason === 'autre'
         ? surchargeReasonOther.trim()
@@ -313,15 +321,21 @@ export default function Preparation() {
         }),
       });
       const quoteDoc = await getDoc(doc(db, 'quotes', selectedQuoteForSurcharge.id));
-      const existingTimeline = quoteDoc.data()?.timeline || [];
+      const existingData = quoteDoc.data() || {};
+      const existingTimeline = existingData.timeline || [];
       const timelineEvent = createTimelineEvent(
-        selectedQuoteForSurcharge.status || 'preparation',
+        'awaiting_shipment',
         `Email surcoût envoyé au client (${clientEmail}) - ${createdSurcharge.amount.toFixed(2)}€`
       );
       const updatedTimeline = [...existingTimeline, timelineEventToFirestore(timelineEvent)];
       await setDoc(
         doc(db, 'quotes', selectedQuoteForSurcharge.id),
-        { timeline: updatedTimeline, updatedAt: Timestamp.now() },
+        {
+          status: 'awaiting_shipment',
+          surchargePending: true,
+          timeline: updatedTimeline,
+          updatedAt: Timestamp.now(),
+        },
         { merge: true }
       );
       queryClient.invalidateQueries({ queryKey: ['quotes'] });

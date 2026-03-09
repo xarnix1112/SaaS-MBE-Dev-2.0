@@ -244,6 +244,9 @@ export interface Quote {
 
   /** Valeur totale déclarée du devis (inclut les frais de la salle des ventes). Distinct de la somme des prix marteau des lots. Utilisé pour le calcul de l'assurance. */
   declaredValue?: number | null;
+
+  /** Surcoût envoyé au client, en attente de paiement (devis en preparation/awaiting_shipment) */
+  surchargePending?: boolean;
 }
 
 export interface TimelineEvent {

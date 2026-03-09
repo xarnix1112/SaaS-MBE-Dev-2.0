@@ -446,11 +446,18 @@ export default function Shipments() {
                         )}
                       </TableCell>
                       <TableCell>
-                        <StatusBadge status={quote.status} />
+                        <div className="flex flex-col gap-1">
+                          <StatusBadge status={quote.status} />
+                          {quote.surchargePending && (
+                            <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning-foreground border-warning/30">
+                              Surcoût envoyé – en attente
+                            </Badge>
+                          )}
+                        </div>
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
-                          {quote.status === 'awaiting_shipment' && (
+                          {quote.status === 'awaiting_shipment' && !quote.surchargePending && (
                             canShowMbeHubButton ? (
                               <Button size="sm" className="h-7 gap-1" onClick={() => handleOpenShipmentDialog(quote)}>
                                 <Globe className="w-3 h-3" />

@@ -47,7 +47,7 @@ import { MarkPaidManualDialog } from '@/components/quotes/MarkPaidManualDialog';
 import { authenticatedFetch } from '@/lib/api';
 import { Quote } from '@/types/quote';
 
-type PaymentFilter = 'all' | 'pending' | 'link_sent' | 'partial' | 'paid' | 'cancelled';
+type PaymentFilter = 'all' | 'pending' | 'link_sent' | 'partial' | 'paid' | 'cancelled' | 'principal' | 'surcharge';
 
 export default function Payments() {
   const [search, setSearch] = useState('');
@@ -89,7 +89,14 @@ export default function Payments() {
       (quote.client?.name?.toLowerCase() || '').includes(searchLower) ||
       (quote.client?.email?.toLowerCase() || '').includes(searchLower);
     
-    const matchesFilter = filter === 'all' || quote.paymentStatus === filter;
+    let matchesFilter = true;
+    if (filter === 'principal') {
+      matchesFilter = (quote.paymentStatus === 'pending' || quote.paymentStatus === 'link_sent') && !quote.surchargePending;
+    } else if (filter === 'surcharge') {
+      matchesFilter = !!quote.surchargePending;
+    } else if (filter !== 'all') {
+      matchesFilter = quote.paymentStatus === filter;
+    }
     
     return matchesSearch && matchesFilter;
   });
@@ -99,6 +106,7 @@ export default function Payments() {
     pending: quotesWithPayment.filter(q => q.paymentStatus === 'pending').length,
     linkSent: quotesWithPayment.filter(q => q.paymentStatus === 'link_sent').length,
     paid: quotesWithPayment.filter(q => q.paymentStatus === 'paid').length,
+    surchargePending: quotesWithPayment.filter(q => q.surchargePending).length,
     totalAmount: quotesWithPayment.reduce((sum, q) => sum + q.totalAmount, 0),
     paidAmount: quotesWithPayment
       .filter(q => q.paymentStatus === 'paid')
@@ -155,7 +163,7 @@ export default function Payments() {
           </div>
         )}
         {/* Stats */}
-        <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
           <Card>
             <CardContent className="p-4">
               <div className="flex items-center gap-3">
@@ -208,6 +216,19 @@ export default function Payments() {
               </div>
             </CardContent>
           </Card>
+          <Card>
+            <CardContent className="p-4">
+              <div className="flex items-center gap-3">
+                <div className="p-2 rounded-lg bg-warning/10">
+                  <AlertTriangle className="w-5 h-5 text-warning" />
+                </div>
+                <div>
+                  <p className="text-2xl font-bold">{stats.surchargePending}</p>
+                  <p className="text-sm text-muted-foreground">Surcoût en attente</p>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
         </div>
 
         {/* Filters */}
@@ -228,6 +249,8 @@ export default function Payments() {
             </SelectTrigger>
             <SelectContent>
               <SelectItem value="all">Tous</SelectItem>
+              <SelectItem value="principal">Principal en attente</SelectItem>
+              <SelectItem value="surcharge">Surcoût en attente</SelectItem>
               <SelectItem value="pending">En attente</SelectItem>
               <SelectItem value="link_sent">Lien envoyé</SelectItem>
               <SelectItem value="partial">Paiement partiel</SelectItem>
@@ -285,7 +308,14 @@ export default function Payments() {
                       })()}
                     </TableCell>
                     <TableCell>
-                      <StatusBadge status={quote.paymentStatus} type="payment" />
+                      <div className="flex flex-col gap-1">
+                        <StatusBadge status={quote.paymentStatus} type="payment" />
+                        {quote.surchargePending && (
+                          <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning-foreground border-warning/30">
+                            Surcoût envoyé – en attente
+                          </Badge>
+                        )}
+                      </div>
                     </TableCell>
                     <TableCell>
                       {quote.paymentLinks.length > 0 ? (

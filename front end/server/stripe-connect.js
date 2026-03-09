@@ -339,20 +339,31 @@ async function updateDevisStatus(firestore, devisId) {
     paymentStatus = "pending";
   }
 
+  // Récupérer le devis pour connaître son statut actuel
+  const devisDoc = await firestore.collection("quotes").doc(devisId).get();
+  const currentStatus = devisDoc.exists ? (devisDoc.data().status || "new") : "new";
+  const surchargePending = devisDoc.exists ? devisDoc.data().surchargePending : false;
+
   // Mettre à jour le devis dans la collection "quotes"
   const updateData = {
     paymentStatus,
     updatedAt: Timestamp.now(),
   };
 
-  // Si le paiement PRINCIPAL est payé, passer le devis en "awaiting_collection"
-  // (même si des surcoûts ne sont pas encore payés)
-  if (principalIsPaid) {
+  // Cas : devis déjà en préparation ou attente d'expédition (passé le stade awaiting_collection)
+  // Ne pas le faire revenir en awaiting_collection. Gérer le paiement du surcoût.
+  if (currentStatus === "preparation" || currentStatus === "awaiting_shipment") {
+    if (allPaid && surchargePending) {
+      updateData.status = "awaiting_shipment";
+      updateData.surchargePending = false;
+      console.log(`[stripe-connect] 💰 Surcoût payé → Status: awaiting_shipment, surchargePending: false`);
+    }
+    // Sinon : ne pas toucher au status (rester en preparation ou awaiting_shipment)
+  } else if (principalIsPaid) {
+    // Cas normal : passer en awaiting_collection quand le principal est payé
     updateData.status = "awaiting_collection";
-    
     console.log(`[stripe-connect] 💰 Paiement principal payé → Status: awaiting_collection`);
     
-    // Ajouter un événement à l'historique uniquement si tous les paiements sont payés
     if (allPaid) {
       await addTimelineEventToQuote(firestore, devisId, {
         id: `tl-${Date.now()}-${Math.random().toString(36).substring(2, 9)}`,
