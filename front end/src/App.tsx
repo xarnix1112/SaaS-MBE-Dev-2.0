@@ -33,6 +33,7 @@ import PaymentSuccess from "./pages/PaymentSuccess";
 import PaymentCancel from "./pages/PaymentCancel";
 import Settings from "./pages/Settings";
 import Account from "./pages/Account";
+import Help from "./pages/Help";
 import { loadShippingRates, loadCartonPrices } from "./lib/pricing";
 import { useAuth } from "./hooks/useAuth";
 
@@ -139,6 +140,7 @@ const App = () => {
               <Route path="/quotes/shipped" element={<ShippedQuotes />} />
               <Route path="/settings" element={<Settings />} />
               <Route path="/settings/emails" element={<Settings />} />
+              <Route path="/help" element={<Help />} />
               <Route path="/account" element={<Account />} />
             </Route>
             

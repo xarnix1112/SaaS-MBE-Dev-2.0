@@ -9,6 +9,8 @@ lerna-debug.log*
 
 # Build / deps
 node_modules/
+__pycache__/
+*.pyc
 .venv-pdf/
 dist/
 dist-ssr

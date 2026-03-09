@@ -388,7 +388,8 @@ export default function Settings() {
     }
   };
 
-  // Redirection auto-emails → modeles-emails (onglet supprimé)
+  // Lire l'onglet depuis l'URL et redirection auto-emails → modeles-emails
+  const validTabs = ['emails', 'modeles-emails', 'messages-personnalises', 'google-sheets', 'google-drive', 'typeform', 'paiements', 'mbehub', 'cartons', 'expedition'];
   useEffect(() => {
     if (settingsTab === 'auto-emails') {
       setSettingsTab('modeles-emails');
@@ -400,6 +401,8 @@ export default function Settings() {
       newParams.set('tab', 'modeles-emails');
       window.history.replaceState({}, '', `${window.location.pathname}?${newParams.toString()}`);
       setSettingsTab('modeles-emails');
+    } else if (tab && validTabs.includes(tab)) {
+      setSettingsTab(tab);
     }
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
