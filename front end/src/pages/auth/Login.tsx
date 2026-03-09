@@ -16,7 +16,6 @@ import {
 } from '@/lib/firebase';
 import { setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
 import { publicFetch } from '@/lib/api';
-import { getApiBaseUrl } from '@/lib/api-base';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -64,14 +63,8 @@ export default function Login() {
     setTeamProfiles(null);
     setSelectedProfileId(null);
     try {
-      // #region agent log
-      fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'Login.tsx:fetchTeamProfiles',message:'fetching team-profiles',data:{trimmed,apiBase:getApiBaseUrl()},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-      // #endregion
       const res = await publicFetch(`/auth/team-profiles?email=${encodeURIComponent(trimmed)}`);
       const data = (await res.json()) as TeamProfilesResponse & { error?: string };
-      // #region agent log
-      fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'Login.tsx:response',message:'team-profiles response',data:{ok:res.ok,status:res.status,multiUser:data?.multiUser,profilesCount:data?.profiles?.length},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-      // #endregion
       if (!res.ok) {
         console.warn('[Login] team-profiles erreur:', res.status, data?.error);
         setTeamProfiles({ multiUser: false });
@@ -82,9 +75,6 @@ export default function Login() {
         setSelectedProfileId(data.profiles[0].id);
       }
     } catch (err) {
-      // #region agent log
-      fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'Login.tsx:catch',message:'fetch failed',data:{err:String(err)},timestamp:Date.now(),hypothesisId:'H4'})}).catch(()=>{});
-      // #endregion
       console.warn('[Login] team-profiles fetch failed:', err);
       setTeamProfiles(null);
     } finally {
@@ -168,11 +158,6 @@ export default function Login() {
 
   const isMultiUser = teamProfiles?.multiUser && (teamProfiles.profiles?.length ?? 0) > 0;
   const canSubmit = email.trim() && password && (!isMultiUser || selectedProfileId);
-  // #region agent log
-  if (email.trim() && teamProfiles !== null) {
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'Login.tsx:isMultiUser',message:'render isMultiUser',data:{isMultiUser,profilesLength:teamProfiles?.profiles?.length},timestamp:Date.now(),hypothesisId:'H5'})}).catch(()=>{});
-  }
-  // #endregion
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">

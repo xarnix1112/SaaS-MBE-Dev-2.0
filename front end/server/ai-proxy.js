@@ -6257,17 +6257,32 @@ app.get('/api/health', (req, res) => {
 // TEAM AUTH (sans requireAuth - connexion multi-user Pro/Ultra)
 // ============================================================================
 
-/** Trouve un saasAccount par email (comparaison insensible à la casse). Retourne le doc ou null. */
+/** Trouve un saasAccount par email (insensible à la casse). Si plusieurs comptes, privilégie Pro/Ultra avec membres. */
 async function findSaasAccountByEmail(emailLower) {
   if (!firestore || !emailLower) return null;
-  let doc = null;
-  const snapExact = await firestore.collection('saasAccounts').where('email', '==', emailLower).limit(1).get();
-  if (!snapExact.empty) return snapExact.docs[0];
-  const snapLower = await firestore.collection('saasAccounts').where('emailLower', '==', emailLower).limit(1).get();
-  if (!snapLower.empty) return snapLower.docs[0];
-  const allSnap = await firestore.collection('saasAccounts').limit(500).get();
-  doc = allSnap.docs.find((d) => (d.data().email || '').trim().toLowerCase() === emailLower);
-  return doc || null;
+  const candidates = [];
+  const snapExact = await firestore.collection('saasAccounts').where('email', '==', emailLower).get();
+  snapExact.docs.forEach((d) => candidates.push(d));
+  const snapLower = await firestore.collection('saasAccounts').where('emailLower', '==', emailLower).get();
+  snapLower.docs.forEach((d) => {
+    if (!candidates.find((c) => c.id === d.id)) candidates.push(d);
+  });
+  if (candidates.length === 0) {
+    const allSnap = await firestore.collection('saasAccounts').limit(500).get();
+    allSnap.docs.forEach((d) => {
+      if ((d.data().email || '').trim().toLowerCase() === emailLower) candidates.push(d);
+    });
+  }
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0];
+  for (const doc of candidates) {
+    const d = doc.data();
+    const planId = (d.planId || d.plan || '').toLowerCase();
+    if (!['pro', 'ultra'].includes(planId)) continue;
+    const membersSnap = await firestore.collection('saasAccounts').doc(doc.id).collection('teamMembers').where('isActive', '==', true).limit(1).get();
+    if (!membersSnap.empty) return doc;
+  }
+  return candidates[0];
 }
 
 /**
@@ -6283,25 +6298,13 @@ app.get('/auth/team-profiles', async (req, res) => {
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
 
   try {
-    // #region agent log
-    console.log('[DEBUG team-profiles] email=', email);
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:team-profiles',message:'team-profiles called',data:{email},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     const saasDoc = await findSaasAccountByEmail(email);
-    // #region agent log
-    console.log('[DEBUG team-profiles] findSaasAccountByEmail found=', !!saasDoc, 'saasAccountId=', saasDoc?.id);
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:findSaasAccountByEmail',message:'findSaasAccountByEmail result',data:{found:!!saasDoc,saasAccountId:saasDoc?.id},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
-    // #endregion
     if (!saasDoc) {
       return res.json({ multiUser: false });
     }
 
     const saasData = saasDoc.data();
     const planId = (saasData.planId || saasData.plan || '').toLowerCase();
-    // #region agent log
-    console.log('[DEBUG team-profiles] planId=', planId, 'isProOrUltra=', ['pro', 'ultra'].includes(planId));
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:planId',message:'planId check',data:{planId,isProOrUltra:['pro','ultra'].includes(planId)},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
-    // #endregion
     if (!['pro', 'ultra'].includes(planId)) {
       return res.json({ multiUser: false });
     }
@@ -6335,10 +6338,6 @@ app.get('/auth/team-profiles', async (req, res) => {
         useFirebase: true,
       });
     }
-    // #region agent log
-    console.log('[DEBUG team-profiles] membersCount=', membersSnap.docs.length, 'profilesCount=', profiles.length, 'multiUser=', profiles.length > 0);
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:profiles',message:'profiles built',data:{membersCount:membersSnap.docs.length,profilesCount:profiles.length,multiUser:profiles.length>0},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
-    // #endregion
     if (profiles.length === 0) {
       return res.json({ multiUser: false });
     }
