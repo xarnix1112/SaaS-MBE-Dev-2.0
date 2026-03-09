@@ -45,6 +45,12 @@ export default function Pipeline() {
       if (status === 'completed') {
         return s === 'completed' || s === 'sent_to_mbe_hub';
       }
+      if (status === 'preparation') {
+        return s === 'preparation' || (s === 'awaiting_shipment' && q.surchargePending);
+      }
+      if (status === 'awaiting_shipment') {
+        return s === 'awaiting_shipment' && !q.surchargePending;
+      }
       return s === status;
     });
   };

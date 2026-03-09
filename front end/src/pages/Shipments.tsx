@@ -75,7 +75,8 @@ export default function Shipments() {
   const [insurance, setInsurance] = useState(false);
   const [insuranceValue, setInsuranceValue] = useState(0);
 
-  const awaitingShipment = quotes.filter(q => q.status === 'awaiting_shipment');
+  // Exclure les devis en attente de paiement du surcoût (visibles en Préparation)
+  const awaitingShipment = quotes.filter(q => q.status === 'awaiting_shipment' && !q.surchargePending);
   const shipmentQuotesForTable = awaitingShipment;
   const shipped = quotes.filter(q => q.status === 'shipped');
   const completed = quotes.filter(q => q.status === 'completed');
@@ -449,7 +450,7 @@ export default function Shipments() {
                         <div className="flex flex-col gap-1">
                           <StatusBadge status={quote.status} />
                           {quote.surchargePending && (
-                            <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning-foreground border-warning/30">
+                            <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning border-warning/30">
                               Surcoût envoyé – en attente
                             </Badge>
                           )}

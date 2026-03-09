@@ -63,7 +63,7 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
               <span className="font-medium text-sm">{safeQuote.reference}</span>
               <div className="flex items-center gap-2 flex-wrap">
                 {quote.surchargePending && (
-                  <Badge variant="outline" className="text-[10px] bg-warning/10 text-warning-foreground border-warning/30">
+                  <Badge variant="outline" className="text-[10px] bg-warning/10 text-warning border-warning/30">
                     Surcoût envoyé – en attente
                   </Badge>
                 )}

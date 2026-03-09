@@ -76,10 +76,16 @@ export default function Preparation() {
   const [selectedQuoteForBypass, setSelectedQuoteForBypass] = useState<Quote | null>(null);
   const [isBypassing, setIsBypassing] = useState(false);
   
-  // Inclure les colis collectés (en attente de préparation) ET en cours de préparation
-  const preparationQuotes = quotes.filter(q => q.status === 'collected' || q.status === 'preparation');
+  // Inclure les colis collectés, en préparation, ou en attente de surcoût (awaiting_shipment + surchargePending)
+  const preparationQuotes = quotes.filter(q =>
+    q.status === 'collected' ||
+    q.status === 'preparation' ||
+    (q.status === 'awaiting_shipment' && q.surchargePending)
+  );
   const collectedQuotes = preparationQuotes.filter(q => q.status === 'collected');
-  const inPreparationQuotes = preparationQuotes.filter(q => q.status === 'preparation');
+  const inPreparationQuotes = preparationQuotes.filter(q =>
+    q.status === 'preparation' || (q.status === 'awaiting_shipment' && q.surchargePending)
+  );
 
   const handleOpenDimensionsDialog = (quoteId: string, isEdit: boolean = false) => {
     const quote = quotes.find(q => q.id === quoteId);
@@ -324,14 +330,14 @@ export default function Preparation() {
       const existingData = quoteDoc.data() || {};
       const existingTimeline = existingData.timeline || [];
       const timelineEvent = createTimelineEvent(
-        'awaiting_shipment',
-        `Email surcoût envoyé au client (${clientEmail}) - ${createdSurcharge.amount.toFixed(2)}€`
+        'preparation',
+        `Email surcoût envoyé au client (${clientEmail}) - ${createdSurcharge.amount.toFixed(2)}€ - En attente de paiement`
       );
       const updatedTimeline = [...existingTimeline, timelineEventToFirestore(timelineEvent)];
       await setDoc(
         doc(db, 'quotes', selectedQuoteForSurcharge.id),
         {
-          status: 'awaiting_shipment',
+          status: 'preparation',
           surchargePending: true,
           timeline: updatedTimeline,
           updatedAt: Timestamp.now(),

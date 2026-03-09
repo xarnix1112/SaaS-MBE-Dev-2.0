@@ -311,7 +311,7 @@ export default function Payments() {
                       <div className="flex flex-col gap-1">
                         <StatusBadge status={quote.paymentStatus} type="payment" />
                         {quote.surchargePending && (
-                          <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning-foreground border-warning/30">
+                          <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning border-warning/30">
                             Surcoût envoyé – en attente
                           </Badge>
                         )}
