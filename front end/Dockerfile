@@ -1,5 +1,5 @@
-# Dockerfile optimisé pour Railway - évite le timeout Nixpacks (10 min)
-# Utilise l'image Node officielle, build beaucoup plus rapide que nix-env
+# syntax=docker/dockerfile:1
+# Dockerfile optimisé pour Railway - cache BuildKit pour accélérer les builds
 FROM node:20-bookworm-slim
 
 WORKDIR /app
@@ -12,11 +12,11 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # Copier les fichiers de dépendances
 COPY package.json package-lock.json* ./
 
-# Installer les dépendances
-RUN npm ci
+# Cache npm entre les builds (Railway BuildKit) — évite de re-télécharger les packages
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --prefer-offline --no-audit
 
 # Installer les dépendances Python pour OCR (pdf2image)
-# --break-system-packages: requis sur Debian 12+ (PEP 668) pour pip en container
 COPY requirements-ocr.txt ./
 RUN pip3 install --no-cache-dir --break-system-packages -r requirements-ocr.txt
 
@@ -24,6 +24,7 @@ RUN pip3 install --no-cache-dir --break-system-packages -r requirements-ocr.txt
 COPY . .
 
 # Build du frontend Vite
+ENV NODE_ENV=production
 RUN npm run build
 
 # Port exposé (Railway injecte PORT)

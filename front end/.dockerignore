@@ -1,4 +1,4 @@
-# Réduire le contexte de build
+# Réduire le contexte de build (accélère COPY et push vers Railway)
 node_modules
 dist
 .git
@@ -6,3 +6,10 @@ dist
 .env*.local
 *.log
 .temp-pdf-*.pdf
+server/.temp-pdf-*.pdf
+.cursor
+coverage
+*.md
+__pycache__
+.pytest_cache
+*.pyc
