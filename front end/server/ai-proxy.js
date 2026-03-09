@@ -11413,7 +11413,7 @@ function invalidateSaasAccountCache(uid) {
  * Middleware optionnel : vérifie la permission zone/action pour les team members.
  * Si pas de teamMemberId (owner) → autorise tout.
  */
-async function requireTeamPermission(zone, action) {
+function requireTeamPermission(zone, action) {
   return async (req, res, next) => {
     if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
     if (!req.teamMemberId) return next(); // Owner → tout autorisé
