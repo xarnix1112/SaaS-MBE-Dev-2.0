@@ -24,9 +24,9 @@ function resolvePlanId(raw) {
 
 /** Valeurs par défaut si la collection plans n'est pas initialisée (ex: Firebase prod) */
 const DEFAULT_PLANS = {
-  starter: { name: "Starter", limits: { quotesPerYear: 2000 }, features: { customizeAutoEmails: true } },
-  pro: { name: "Pro", limits: { quotesPerYear: 5000 }, features: { customizeAutoEmails: true } },
-  ultra: { name: "Ultra", limits: { quotesPerYear: 12000 }, features: { customizeAutoEmails: true } },
+  starter: { name: "Starter", limits: { quotesPerYear: 2000 }, features: {} },
+  pro: { name: "Pro", limits: { quotesPerYear: 6000 }, features: { smartChoiceShipping: true } },
+  ultra: { name: "Ultra", limits: { quotesPerYear: -1 }, features: { customizeAutoEmails: true, smartChoiceShipping: true } },
 };
 
 /**

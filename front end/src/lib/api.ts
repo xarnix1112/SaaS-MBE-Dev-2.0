@@ -6,6 +6,24 @@ import { auth } from './firebase';
 import { getApiBaseUrl } from './api-base';
 
 /**
+ * Effectue une requête fetch SANS authentification (pour auth team-profiles, team-login).
+ */
+export async function publicFetch(
+  url: string,
+  options: RequestInit = {}
+): Promise<Response> {
+  const API_BASE = getApiBaseUrl();
+  const fullUrl = url.startsWith('/') ? `${API_BASE}${url}` : url;
+  return fetch(fullUrl, {
+    ...options,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(options.headers as Record<string, string>),
+    },
+  });
+}
+
+/**
  * Récupère le token Firebase actuel pour l'authentification
  * @param forceRefresh - si true, force un nouveau token (utile après réauthentification)
  */

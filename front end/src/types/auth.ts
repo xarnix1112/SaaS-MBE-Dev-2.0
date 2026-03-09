@@ -35,5 +35,8 @@ export interface UserDoc {
   saasAccountId: string;
   role: 'owner' | 'admin' | 'operator' | 'viewer';
   createdAt: Date | string;
+  /** Présent si connexion via profil équipe (Pro/Ultra) */
+  teamMemberId?: string;
+  type?: 'owner' | 'team';
 }
 

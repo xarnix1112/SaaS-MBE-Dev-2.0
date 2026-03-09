@@ -55,7 +55,7 @@ const db = getFirestore();
 const PLANS = {
   starter: {
     name: "Starter",
-    price: 50,
+    price: 45,
     queuePriority: "standard",
     features: {
       createQuote: true,
@@ -78,7 +78,7 @@ const PLANS = {
   },
   pro: {
     name: "Pro",
-    price: 100,
+    price: 85,
     queuePriority: "medium",
     features: {
       createQuote: true,
@@ -90,9 +90,10 @@ const PLANS = {
       supportPrioritaire: true,
       supportVisioOnboarding: false,
       supportContactDirect: false,
+      smartChoiceShipping: true,
     },
     limits: {
-      quotesPerYear: 5000,
+      quotesPerYear: 6000,
       usersMax: 3,
       auctionHousesMax: 5,
       customEmailsMax: 3,
@@ -101,7 +102,7 @@ const PLANS = {
   },
   ultra: {
     name: "Ultra",
-    price: 250,
+    price: 150,
     queuePriority: "high",
     features: {
       createQuote: true,
@@ -114,9 +115,10 @@ const PLANS = {
       supportVisioOnboarding: true,
       supportContactDirect: true,
       customizeAutoEmails: true,
+      smartChoiceShipping: true,
     },
     limits: {
-      quotesPerYear: 12000,
+      quotesPerYear: -1,
       usersMax: -1,
       auctionHousesMax: -1,
       customEmailsMax: 10,
@@ -149,9 +151,9 @@ async function initPlans() {
     await batch.commit();
     console.log("\n✅ Collection plans créée avec succès!");
     console.log("\n📋 Plans disponibles:");
-    console.log("   - starter (50€): 2000 devis/an, 1 user, 2 salles des ventes");
-    console.log("   - pro (100€): 5000 devis/an, 3 users, 5 salles des ventes");
-    console.log("   - ultra (250€): 12000 devis/an, illimité\n");
+    console.log("   - starter (45€): 2000 devis/an, 1 user, 2 salles des ventes");
+    console.log("   - pro (85€): 6000 devis/an, 3 users, 5 salles des ventes");
+    console.log("   - ultra (150€): devis illimités\n");
     console.log("📝 Prochaine étape: les saasAccounts utiliseront planId pour charger leur plan.");
   } catch (error) {
     console.error("❌ Erreur:", error);

@@ -1,21 +1,43 @@
 /**
  * Page de connexion
- * 
- * Permet de se connecter avec email et mot de passe
+ *
+ * Flux :
+ * 1. Saisie email → debounce 300ms → GET /auth/team-profiles
+ * 2. Si multiUser: false → formulaire classique (email + mot de passe) → signInWithEmailAndPassword
+ * 3. Si multiUser: true → dropdown profils + mot de passe → POST /auth/team-login → signInWithCustomToken
  */
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, Link } from 'react-router-dom';
-import { loginWithEmail } from '@/lib/firebase';
+import {
+  auth,
+  loginWithEmail,
+  signInWithCustomTokenAuth,
+} from '@/lib/firebase';
+import { setPersistence, browserLocalPersistence, browserSessionPersistence } from 'firebase/auth';
+import { publicFetch } from '@/lib/api';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Checkbox } from '@/components/ui/checkbox';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { toast } from 'sonner';
-import { Mail, Lock, Building2 } from 'lucide-react';
+import { Mail, Lock, Building2, User } from 'lucide-react';
 import { useAuth } from '@/hooks/useAuth';
+import type { TeamProfile } from '@/types/team';
+
+interface TeamProfilesResponse {
+  multiUser: boolean;
+  profiles?: TeamProfile[];
+}
 
 export default function Login() {
   const navigate = useNavigate();
@@ -27,25 +49,54 @@ export default function Login() {
   const [error, setError] = useState<string | null>(null);
   const [loginSuccess, setLoginSuccess] = useState(false);
 
-  // Rediriger automatiquement après connexion réussie une fois que useAuth est prêt
+  const [teamProfiles, setTeamProfiles] = useState<TeamProfilesResponse | null>(null);
+  const [profilesLoading, setProfilesLoading] = useState(false);
+  const [selectedProfileId, setSelectedProfileId] = useState<string | null>(null);
+
+  const fetchTeamProfiles = useCallback(async (emailVal: string) => {
+    const trimmed = emailVal.trim().toLowerCase();
+    if (!trimmed || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+      setTeamProfiles(null);
+      return;
+    }
+    setProfilesLoading(true);
+    setTeamProfiles(null);
+    setSelectedProfileId(null);
+    try {
+      const res = await publicFetch(`/auth/team-profiles?email=${encodeURIComponent(trimmed)}`);
+      const data = (await res.json()) as TeamProfilesResponse;
+      setTeamProfiles(data);
+      if (data.multiUser && data.profiles && data.profiles.length > 0) {
+        setSelectedProfileId(data.profiles[0].id);
+      }
+    } catch {
+      setTeamProfiles(null);
+    } finally {
+      setProfilesLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const trimmed = email.trim().toLowerCase();
+    if (!trimmed) {
+      setTeamProfiles(null);
+      setProfilesLoading(false);
+      return;
+    }
+    const t = setTimeout(() => fetchTeamProfiles(trimmed), 300);
+    return () => clearTimeout(t);
+  }, [email, fetchTeamProfiles]);
+
   useEffect(() => {
     if (loginSuccess && !authLoading && user && !user.isAnonymous) {
-      // Attendre un peu pour que useAuth charge les données Firestore
       const timer = setTimeout(() => {
-        // Si l'utilisateur a un document user et le setup est terminé, aller au dashboard
         if (userDoc && isSetupComplete) {
           navigate('/dashboard', { replace: true });
         } else {
-          // Si pas de document user OU setup non terminé, aller au setup-mbe
-          // Cela inclut les cas où :
-          // - L'utilisateur vient de se connecter mais n'a pas encore de document user (userDoc === null)
-          // - L'utilisateur a un document user mais pas de saasAccountId (userDoc existe mais isSetupComplete === false)
-          console.log('[Login] Redirection vers /choose-plan pour compléter le setup');
           navigate('/choose-plan', { replace: true });
         }
-        setLoginSuccess(false); // Reset pour éviter les redirections multiples
-      }, 1500); // Attendre 1.5 secondes pour que useAuth charge les données
-      
+        setLoginSuccess(false);
+      }, 1500);
       return () => clearTimeout(timer);
     }
   }, [loginSuccess, authLoading, user, isSetupComplete, userDoc, navigate]);
@@ -54,36 +105,50 @@ export default function Login() {
     e.preventDefault();
     setError(null);
 
-    if (!email || !password) {
+    const emailTrimmed = email.trim();
+    if (!emailTrimmed || !password) {
       setError('Veuillez remplir tous les champs');
       return;
     }
 
     setIsLoading(true);
     try {
-      await loginWithEmail(email, password, rememberMe);
-      toast.success('Connexion réussie !');
-      setLoginSuccess(true); // Déclencher la redirection via useEffect
-    } catch (err: any) {
-      console.error('[Login] Erreur:', err);
-      let errorMessage = 'Erreur lors de la connexion';
-      
-      if (err.code === 'auth/user-not-found') {
-        errorMessage = 'Aucun compte trouvé avec cet email';
-      } else if (err.code === 'auth/wrong-password') {
-        errorMessage = 'Mot de passe incorrect';
-      } else if (err.code === 'auth/invalid-email') {
-        errorMessage = 'Email invalide';
-      } else if (err.code === 'auth/invalid-credential') {
-        errorMessage = 'Email ou mot de passe incorrect';
+      if (teamProfiles?.multiUser && teamProfiles.profiles && selectedProfileId) {
+        const res = await publicFetch('/auth/team-login', {
+          method: 'POST',
+          body: JSON.stringify({
+            email: emailTrimmed.toLowerCase(),
+            teamMemberId: selectedProfileId,
+            password,
+          }),
+        });
+        const json = await res.json();
+        if (!res.ok) {
+          throw new Error(json.error || 'Erreur lors de la connexion');
+        }
+        await setPersistence(
+          auth,
+          rememberMe ? browserLocalPersistence : browserSessionPersistence
+        );
+        await signInWithCustomTokenAuth(json.token);
+        toast.success('Connexion réussie !');
+        setLoginSuccess(true);
+      } else {
+        await loginWithEmail(emailTrimmed, password, rememberMe);
+        toast.success('Connexion réussie !');
+        setLoginSuccess(true);
       }
-      
-      setError(errorMessage);
-      toast.error(errorMessage);
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : 'Erreur lors de la connexion';
+      setError(message);
+      toast.error(message);
     } finally {
       setIsLoading(false);
     }
   };
+
+  const isMultiUser = teamProfiles?.multiUser && (teamProfiles.profiles?.length ?? 0) > 0;
+  const canSubmit = email.trim() && password && (!isMultiUser || selectedProfileId);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
@@ -95,9 +160,7 @@ export default function Login() {
             </div>
           </div>
           <CardTitle className="text-2xl font-bold">Connexion</CardTitle>
-          <CardDescription>
-            Accédez à votre espace Mirai
-          </CardDescription>
+          <CardDescription>Accédez à votre espace Mirai</CardDescription>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleLogin} className="space-y-4">
@@ -122,7 +185,34 @@ export default function Login() {
                   disabled={isLoading}
                 />
               </div>
+              {profilesLoading && (
+                <p className="text-xs text-muted-foreground">Vérification du compte...</p>
+              )}
             </div>
+
+            {isMultiUser && teamProfiles?.profiles && (
+              <div className="space-y-2">
+                <Label htmlFor="profile">Profil</Label>
+                <Select
+                  value={selectedProfileId ?? ''}
+                  onValueChange={(v) => setSelectedProfileId(v || null)}
+                  disabled={isLoading}
+                >
+                  <SelectTrigger id="profile" className="pl-10">
+                    <User className="absolute left-3 top-3 h-4 w-4 text-muted-foreground" />
+                    <SelectValue placeholder="Choisir un profil" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {teamProfiles.profiles.map((p) => (
+                      <SelectItem key={p.id} value={p.id}>
+                        {p.displayName}
+                        {p.isOwner ? ' (Propriétaire)' : ''}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+            )}
 
             <div className="space-y-2">
               <Label htmlFor="password">Mot de passe</Label>
@@ -149,26 +239,25 @@ export default function Login() {
                   onCheckedChange={(checked) => setRememberMe(checked === true)}
                   disabled={isLoading}
                 />
-                <Label
-                  htmlFor="rememberMe"
-                  className="text-sm font-normal cursor-pointer"
-                >
+                <Label htmlFor="rememberMe" className="text-sm font-normal cursor-pointer">
                   Se souvenir de moi
                 </Label>
               </div>
-              <Link
-                to="/forgot-password"
-                className="text-sm text-blue-600 hover:underline"
-              >
-                Mot de passe oublié ?
-              </Link>
+              {!isMultiUser && (
+                <Link
+                  to="/forgot-password"
+                  className="text-sm text-blue-600 hover:underline"
+                >
+                  Mot de passe oublié ?
+                </Link>
+              )}
             </div>
 
             <Button
               type="submit"
               className="w-full"
               size="lg"
-              disabled={isLoading}
+              disabled={isLoading || !canSubmit}
             >
               {isLoading ? 'Connexion...' : 'Se connecter'}
             </Button>
@@ -185,4 +274,3 @@ export default function Login() {
     </div>
   );
 }
-

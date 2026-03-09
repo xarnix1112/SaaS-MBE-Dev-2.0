@@ -122,9 +122,9 @@ app.get("/china-workflow", requireAuth, checkFeature(firestore, "chinaWorkflow")
 
 | Plan    | Prix | quotesPerYear | usersMax | auctionHousesMax | pushToMbeHub | multiAgency |
 |---------|------|---------------|----------|------------------|--------------|-------------|
-| starter | 50€  | 2000          | 1        | 2                | non          | non         |
-| pro     | 100€ | 5000          | 3        | 5                | oui          | oui         |
-| ultra   | 250€ | 12000         | illimité | illimité         | oui          | oui         |
+| starter | 45€  | 2000          | 1        | 2                | non          | non         |
+| pro     | 85€  | 6000          | 3        | 5                | oui          | oui         |
+| ultra   | 150€ | illimité      | illimité | illimité         | oui          | oui         |
 
 **Limites supplémentaires :**
 - customEmailsMax : 0 (starter), 3 (pro), 10 (ultra)

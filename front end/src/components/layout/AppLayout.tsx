@@ -1,10 +1,18 @@
-import { Outlet } from 'react-router-dom';
+import { Outlet, useLocation, Navigate } from 'react-router-dom';
 import { AppSidebar } from './AppSidebar';
 import { useDocumentTitle } from '@/hooks/useDocumentTitle';
+import { usePermissions } from '@/hooks/usePermissions';
+import { getZoneForPath } from '@/types/team';
 
 export function AppLayout() {
-  // Mettre à jour le titre de la page avec le nom commercial
   useDocumentTitle();
+  const location = useLocation();
+  const { can } = usePermissions();
+
+  const zone = getZoneForPath(location.pathname);
+  if (zone && !can(zone, 'read')) {
+    return <Navigate to="/" replace />;
+  }
 
   return (
     <div className="flex h-screen w-full bg-background overflow-hidden">

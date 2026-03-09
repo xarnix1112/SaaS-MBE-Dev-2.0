@@ -18,22 +18,24 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 import { useAuth } from '@/hooks/useAuth';
+import { usePermissions } from '@/hooks/usePermissions';
+import type { Zone } from '@/types/team';
 
-const navigation = [
-  { name: 'Tableau de bord', href: '/', icon: LayoutDashboard },
-  { name: 'Nouveaux devis', href: '/quotes/new', icon: FileText },
-  { name: 'Refusés / abandonnés', href: '/quotes/refused', icon: XCircle },
-  { name: 'Paiements', href: '/payments', icon: CreditCard },
-  { name: 'Salles des ventes', href: '/auction-houses', icon: Building2 },
-  { name: 'Collectes', href: '/collections', icon: Truck },
-  { name: 'Préparation', href: '/preparation', icon: Package },
-  { name: 'Expéditions', href: '/shipments', icon: Send },
-  { name: 'Expédiés', href: '/quotes/shipped', icon: CheckCircle2 },
-  { name: 'Pipeline', href: '/pipeline', icon: Kanban },
+const navigation: { name: string; href: string; icon: typeof LayoutDashboard; zone: Zone }[] = [
+  { name: 'Tableau de bord', href: '/', icon: LayoutDashboard, zone: 'dashboard' },
+  { name: 'Nouveaux devis', href: '/quotes/new', icon: FileText, zone: 'quotes' },
+  { name: 'Refusés / abandonnés', href: '/quotes/refused', icon: XCircle, zone: 'quotes' },
+  { name: 'Paiements', href: '/payments', icon: CreditCard, zone: 'payments' },
+  { name: 'Salles des ventes', href: '/auction-houses', icon: Building2, zone: 'auctionHouses' },
+  { name: 'Collectes', href: '/collections', icon: Truck, zone: 'collections' },
+  { name: 'Préparation', href: '/preparation', icon: Package, zone: 'preparation' },
+  { name: 'Expéditions', href: '/shipments', icon: Send, zone: 'shipments' },
+  { name: 'Expédiés', href: '/quotes/shipped', icon: CheckCircle2, zone: 'quotes' },
+  { name: 'Pipeline', href: '/pipeline', icon: Kanban, zone: 'quotes' },
 ];
 
-const secondaryNavigation = [
-  { name: 'Paramètres', href: '/settings', icon: Settings },
+const secondaryNavigation: { name: string; href: string; icon: typeof Settings; zone?: Zone }[] = [
+  { name: 'Paramètres', href: '/settings', icon: Settings, zone: 'settings' },
   { name: 'Aide', href: '/help', icon: HelpCircle },
 ];
 
@@ -41,6 +43,10 @@ export function AppSidebar() {
   const location = useLocation();
   const [collapsed, setCollapsed] = useState(false);
   const { saasAccount, isLoading } = useAuth();
+  const { can } = usePermissions();
+
+  const filteredNavigation = navigation.filter((item) => can(item.zone, 'read'));
+  const filteredSecondary = secondaryNavigation.filter((item) => !item.zone || can(item.zone, 'read'));
 
   // Récupérer le nom commercial ou utiliser un fallback
   const commercialName = saasAccount?.commercialName || 'MBE';
@@ -80,7 +86,7 @@ export function AppSidebar() {
 
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1 overflow-y-auto scrollbar-thin">
-        {navigation.map((item) => {
+        {filteredNavigation.map((item) => {
           const isActive = location.pathname === item.href || 
             (item.href !== '/' && location.pathname.startsWith(item.href));
           
@@ -104,7 +110,7 @@ export function AppSidebar() {
 
       {/* Secondary Navigation */}
       <div className="px-3 py-4 border-t border-sidebar-border space-y-1">
-        {secondaryNavigation.map((item) => (
+        {filteredSecondary.map((item) => (
           <NavLink
             key={item.name}
             to={item.href}

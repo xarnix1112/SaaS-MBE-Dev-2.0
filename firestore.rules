@@ -190,10 +190,22 @@ service cloud.firestore {
     }
     
     match /saasAccounts/{accountId} {
-      allow read, update, delete: if request.auth != null 
+      // Lecture : owner (ownerUid) ou team member (users/{uid}.saasAccountId)
+      allow read: if request.auth != null 
+        && (resource.data.ownerUid == request.auth.uid 
+            || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.saasAccountId == accountId);
+      allow update, delete: if request.auth != null 
         && resource.data.ownerUid == request.auth.uid;
       allow create: if request.auth != null 
         && request.resource.data.ownerUid == request.auth.uid;
+    }
+
+    // Members d'équipe (Pro/Ultra) : lecture par les utilisateurs du compte (owner + team)
+    // Écriture via backend uniquement (Admin SDK)
+    match /saasAccounts/{accountId}/teamMembers/{memberId} {
+      allow read: if request.auth != null 
+        && getUserSaasAccountId() == accountId;
+      allow write: if false;
     }
 
     // Secrets (clés API Paytweak, MBE Hub, etc.) : refus explicite aux clients (RGPD)

@@ -19,6 +19,7 @@ import { createRequire } from "module";
 const require = createRequire(import.meta.url);
 // pdfjs+canvas chargés uniquement dans ocr-pdf-worker.mjs (process séparé) pour éviter conflit sharp/canvas
 import XLSX from "xlsx";
+import bcrypt from "bcrypt";
 import { Resend } from "resend";
 import { initializeApp, cert } from "firebase-admin/app";
 import { getFirestore, Timestamp, FieldValue } from "firebase-admin/firestore";
@@ -6267,6 +6268,137 @@ app.get('/api/health', (req, res) => {
 });
 
 // ============================================================================
+// TEAM AUTH (sans requireAuth - connexion multi-user Pro/Ultra)
+// ============================================================================
+
+/**
+ * GET /auth/team-profiles?email=xxx
+ * Cherche un saasAccount où email correspond et planId in ['pro','ultra'].
+ * Si au moins 1 teamMember actif → multiUser: true + liste des profils.
+ * Sinon → multiUser: false.
+ */
+app.get('/auth/team-profiles', async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const email = (req.query.email || '').trim().toLowerCase();
+  if (!email) return res.status(400).json({ error: 'Paramètre email requis' });
+  if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
+
+  try {
+    const saasSnap = await firestore.collection('saasAccounts')
+      .where('email', '==', email)
+      .limit(1)
+      .get();
+
+    if (saasSnap.empty) {
+      return res.json({ multiUser: false });
+    }
+
+    const saasDoc = saasSnap.docs[0];
+    const saasData = saasDoc.data();
+    const planId = (saasData.planId || saasData.plan || '').toLowerCase();
+    if (!['pro', 'ultra'].includes(planId)) {
+      return res.json({ multiUser: false });
+    }
+
+    const saasAccountId = saasDoc.id;
+    const membersSnap = await firestore
+      .collection('saasAccounts')
+      .doc(saasAccountId)
+      .collection('teamMembers')
+      .where('isActive', '==', true)
+      .get();
+
+    if (membersSnap.empty) {
+      return res.json({ multiUser: false });
+    }
+
+    const profiles = membersSnap.docs.map((doc) => {
+      const d = doc.data();
+      return {
+        id: doc.id,
+        displayName: [d.firstName, d.lastName].filter(Boolean).join(' ').trim() || d.username,
+        isOwner: !!d.isOwner,
+      };
+    });
+
+    return res.json({ multiUser: true, profiles });
+  } catch (err) {
+    console.error('[auth/team-profiles] Erreur:', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+/**
+ * POST /auth/team-login
+ * Body: { email, teamMemberId, password }
+ * Vérifie bcrypt, crée/met à jour users/{syntheticUid}, retourne custom token Firebase.
+ */
+app.post('/auth/team-login', async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: 'Firestore non configuré' });
+  const { email, teamMemberId, password } = req.body || {};
+  if (!email || !teamMemberId || !password) {
+    return res.status(400).json({ error: 'email, teamMemberId et password requis' });
+  }
+
+  const emailNorm = String(email).trim().toLowerCase();
+  if (!isValidEmail(emailNorm)) return res.status(400).json({ error: 'Email invalide' });
+
+  try {
+    const saasSnap = await firestore.collection('saasAccounts')
+      .where('email', '==', emailNorm)
+      .limit(1)
+      .get();
+
+    if (saasSnap.empty) {
+      return res.status(401).json({ error: 'Identifiants incorrects' });
+    }
+
+    const saasDoc = saasSnap.docs[0];
+    const saasAccountId = saasDoc.id;
+    const memberRef = firestore
+      .collection('saasAccounts')
+      .doc(saasAccountId)
+      .collection('teamMembers')
+      .doc(teamMemberId);
+
+    const memberSnap = await memberRef.get();
+    if (!memberSnap.exists) {
+      return res.status(401).json({ error: 'Identifiants incorrects' });
+    }
+
+    const memberData = memberSnap.data();
+    if (!memberData.isActive) {
+      return res.status(401).json({ error: 'Compte désactivé' });
+    }
+
+    const passwordHash = memberData.passwordHash;
+    if (!passwordHash) {
+      return res.status(401).json({ error: 'Mot de passe non configuré' });
+    }
+
+    const match = await bcrypt.compare(password, passwordHash);
+    if (!match) {
+      return res.status(401).json({ error: 'Identifiants incorrects' });
+    }
+
+    const syntheticUid = `team_${saasAccountId}_${teamMemberId}`;
+    const userRef = firestore.collection('users').doc(syntheticUid);
+    await userRef.set({
+      saasAccountId,
+      teamMemberId,
+      type: 'team',
+      updatedAt: Timestamp.now(),
+    }, { merge: true });
+
+    const customToken = await getAuth().createCustomToken(syntheticUid);
+    return res.json({ token: customToken });
+  } catch (err) {
+    console.error('[auth/team-login] Erreur:', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+// ============================================================================
 // GMAIL OAUTH & SYNC
 // ============================================================================
 
@@ -11223,7 +11355,8 @@ async function requireAuth(req, res, next) {
     if (cached && (now - cached.timestamp) < CACHE_TTL) {
       // Utiliser le cache
       req.saasAccountId = cached.saasAccountId;
-      // console.log(`[requireAuth] 🚀 Cache hit pour uid: ${decodedToken.uid}`);
+      req.teamMemberId = cached.teamMemberId || null;
+      req.userDoc = cached.userDoc || null;
       return next();
     }
     
@@ -11233,10 +11366,14 @@ async function requireAuth(req, res, next) {
       if (userDoc.exists) {
         const userData = userDoc.data();
         req.saasAccountId = userData.saasAccountId || null;
+        req.teamMemberId = userData.teamMemberId || null;
+        req.userDoc = userData;
         
         // Mettre en cache
         saasAccountCache.set(decodedToken.uid, {
           saasAccountId: req.saasAccountId,
+          teamMemberId: req.teamMemberId,
+          userDoc: req.userDoc,
           timestamp: now
         });
         
@@ -11248,6 +11385,8 @@ async function requireAuth(req, res, next) {
       } else {
         console.warn(`[requireAuth] ⚠️  Document user non trouvé pour ${decodedToken.uid}`);
         req.saasAccountId = null;
+        req.teamMemberId = null;
+        req.userDoc = null;
       }
     } catch (error) {
       console.error('[requireAuth] Erreur récupération saasAccountId:', error);
@@ -11269,6 +11408,198 @@ function invalidateSaasAccountCache(uid) {
   saasAccountCache.delete(uid);
   console.log(`[requireAuth] 🗑️  Cache invalidé pour uid: ${uid}`);
 }
+
+/**
+ * Middleware optionnel : vérifie la permission zone/action pour les team members.
+ * Si pas de teamMemberId (owner) → autorise tout.
+ */
+async function requireTeamPermission(zone, action) {
+  return async (req, res, next) => {
+    if (!req.saasAccountId) return res.status(400).json({ error: 'Compte SaaS non configuré' });
+    if (!req.teamMemberId) return next(); // Owner → tout autorisé
+    try {
+      const memberSnap = await firestore
+        .collection('saasAccounts')
+        .doc(req.saasAccountId)
+        .collection('teamMembers')
+        .doc(req.teamMemberId)
+        .get();
+      if (!memberSnap.exists) return res.status(403).json({ error: 'Accès refusé' });
+      const member = memberSnap.data();
+      if (member.isOwner) return next(); // Owner profile
+      const actions = member.permissions?.[zone] || [];
+      if (!actions.includes(action)) {
+        return res.status(403).json({ error: 'Permission insuffisante' });
+      }
+      next();
+    } catch (err) {
+      console.error('[requireTeamPermission]', err);
+      return res.status(500).json({ error: 'Erreur vérification permissions' });
+    }
+  };
+}
+
+// ===== ROUTES TEAM (CRUD members) =====
+
+app.get('/api/team/members', requireAuth, requireTeamPermission('team', 'read'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  try {
+    const snap = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').get();
+    const members = snap.docs.map((d) => {
+      const data = d.data();
+      return {
+        id: d.id,
+        username: data.username,
+        firstName: data.firstName || '',
+        lastName: data.lastName || '',
+        isOwner: !!data.isOwner,
+        isActive: data.isActive !== false,
+        permissions: data.permissions || {},
+        createdAt: data.createdAt?.toDate?.()?.toISOString?.() || data.createdAt,
+        createdBy: data.createdBy,
+      };
+    });
+    return res.json(members);
+  } catch (err) {
+    console.error('[GET /api/team/members]', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/team/members', requireAuth, requireTeamPermission('team', 'create'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { username, password, firstName, lastName, permissions } = req.body || {};
+  if (!username || !password) return res.status(400).json({ error: 'username et password requis' });
+  try {
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const planId = (saasDoc.data().planId || saasDoc.data().plan || 'starter').toLowerCase();
+    const maxMembers = planId === 'ultra' ? 999 : planId === 'pro' ? 3 : 1;
+    const membersSnap = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('isActive', '==', true).get();
+    if (membersSnap.size >= maxMembers) {
+      return res.status(400).json({ error: `Limite atteinte (${maxMembers} utilisateurs pour le plan ${planId})` });
+    }
+    const existing = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('username', '==', username.trim()).limit(1).get();
+    if (!existing.empty) return res.status(400).json({ error: 'Ce nom d\'utilisateur existe déjà' });
+    const passwordHash = await bcrypt.hash(password, 10);
+    const memberRef = firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').doc();
+    const memberData = {
+      username: username.trim(),
+      passwordHash,
+      firstName: (firstName || '').trim(),
+      lastName: (lastName || '').trim(),
+      isOwner: false,
+      isActive: true,
+      permissions: permissions || {},
+      createdAt: Timestamp.now(),
+      createdBy: req.uid,
+    };
+    await memberRef.set(memberData);
+    return res.json({
+      id: memberRef.id,
+      username: memberData.username,
+      firstName: memberData.firstName,
+      lastName: memberData.lastName,
+      isOwner: false,
+      isActive: true,
+      permissions: memberData.permissions,
+      createdAt: memberData.createdAt.toDate().toISOString(),
+    });
+  } catch (err) {
+    console.error('[POST /api/team/members]', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.put('/api/team/members/:id', requireAuth, requireTeamPermission('team', 'update'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { id } = req.params;
+  const { firstName, lastName, password, permissions, isActive } = req.body || {};
+  const memberRef = firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').doc(id);
+  const memberSnap = await memberRef.get();
+  if (!memberSnap.exists) return res.status(404).json({ error: 'Membre non trouvé' });
+  const memberData = memberSnap.data();
+  if (memberData.isOwner && req.teamMemberId && req.teamMemberId !== id) {
+    return res.status(403).json({ error: 'Impossible de modifier le profil propriétaire ainsi' });
+  }
+  try {
+    const updates = {};
+    if (firstName !== undefined) updates.firstName = String(firstName).trim();
+    if (lastName !== undefined) updates.lastName = String(lastName).trim();
+    if (permissions !== undefined) updates.permissions = permissions;
+    if (isActive !== undefined) updates.isActive = !!isActive;
+    if (password && String(password).length >= 6) {
+      updates.passwordHash = await bcrypt.hash(password, 10);
+    }
+    if (Object.keys(updates).length === 0) return res.json(memberSnap.data());
+    updates.updatedAt = Timestamp.now();
+    await memberRef.update(updates);
+    const updated = await memberRef.get();
+    const d = updated.data();
+    return res.json({
+      id: updated.id,
+      username: d.username,
+      firstName: d.firstName || '',
+      lastName: d.lastName || '',
+      isOwner: !!d.isOwner,
+      isActive: d.isActive !== false,
+      permissions: d.permissions || {},
+    });
+  } catch (err) {
+    console.error('[PUT /api/team/members]', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.post('/api/team/create-owner-profile', requireAuth, async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  if (req.teamMemberId) return res.status(403).json({ error: 'Déjà connecté en tant que membre d\'équipe' });
+  const { password } = req.body || {};
+  if (!password || String(password).length < 6) return res.status(400).json({ error: 'Mot de passe requis (min 6 caractères)' });
+  try {
+    const ownerSnap = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('isOwner', '==', true).limit(1).get();
+    if (!ownerSnap.empty) return res.status(400).json({ error: 'Profil propriétaire déjà créé' });
+    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
+    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
+    const planId = (saasDoc.data().planId || saasDoc.data().plan || 'starter').toLowerCase();
+    if (!['pro', 'ultra'].includes(planId)) return res.status(400).json({ error: 'Fonctionnalité réservée aux plans Pro et Ultra' });
+    const passwordHash = await bcrypt.hash(password, 10);
+    const memberRef = firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').doc();
+    const fullPerms = {};
+    ['dashboard', 'quotes', 'payments', 'auctionHouses', 'collections', 'preparation', 'shipments', 'settings', 'team'].forEach((z) => { fullPerms[z] = ['read', 'create', 'update', 'delete']; });
+    await memberRef.set({
+      username: 'owner',
+      passwordHash,
+      firstName: '',
+      lastName: 'Propriétaire',
+      isOwner: true,
+      isActive: true,
+      permissions: fullPerms,
+      createdAt: Timestamp.now(),
+      createdBy: req.uid,
+    });
+    return res.json({ id: memberRef.id, success: true });
+  } catch (err) {
+    console.error('[POST /api/team/create-owner-profile]', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
+
+app.delete('/api/team/members/:id', requireAuth, requireTeamPermission('team', 'delete'), async (req, res) => {
+  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
+  const { id } = req.params;
+  const memberRef = firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').doc(id);
+  const memberSnap = await memberRef.get();
+  if (!memberSnap.exists) return res.status(404).json({ error: 'Membre non trouvé' });
+  if (memberSnap.data().isOwner) return res.status(400).json({ error: 'Impossible de supprimer le profil propriétaire' });
+  try {
+    await memberRef.update({ isActive: false, updatedAt: Timestamp.now() });
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('[DELETE /api/team/members]', err);
+    return res.status(500).json({ error: 'Erreur serveur' });
+  }
+});
 
 // ===== ROUTES COMPTES SAAS =====
 

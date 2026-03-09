@@ -1,7 +1,7 @@
 import { initializeApp } from "firebase/app";
 import { initializeFirestore } from "firebase/firestore";
 import { getAnalytics, isSupported } from "firebase/analytics";
-import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signOut, deleteUser, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
+import { getAuth, onAuthStateChanged, signInAnonymously, createUserWithEmailAndPassword, signInWithEmailAndPassword, signInWithCustomToken, signOut, deleteUser, User, setPersistence, browserLocalPersistence, browserSessionPersistence, sendPasswordResetEmail, EmailAuthProvider, reauthenticateWithCredential } from "firebase/auth";
 
 const env = import.meta.env as Record<string, string | undefined>;
 
@@ -152,6 +152,14 @@ export const logout = async () => {
 
 export const resetPassword = async (email: string) => {
   return await sendPasswordResetEmail(auth, email);
+};
+
+/**
+ * Connexion via custom token (utilisé pour le flux équipe Pro/Ultra).
+ * Le backend génère un token après vérification bcrypt du mot de passe du team member.
+ */
+export const signInWithCustomTokenAuth = async (token: string) => {
+  return await signInWithCustomToken(auth, token);
 };
 
 export const deleteCurrentUser = async () => {

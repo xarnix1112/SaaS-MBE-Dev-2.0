@@ -38,6 +38,8 @@ interface AuthState {
   isLoading: boolean;
   isSetupComplete: boolean;
   hasActiveSubscription: boolean;
+  teamMemberId: string | null;
+  isTeamMember: boolean;
 }
 
 export function useAuth() {
@@ -48,6 +50,8 @@ export function useAuth() {
     isLoading: true,
     isSetupComplete: false,
     hasActiveSubscription: false,
+    teamMemberId: null,
+    isTeamMember: false,
   });
 
   useEffect(() => {
@@ -61,6 +65,8 @@ export function useAuth() {
           isLoading: false,
           isSetupComplete: false,
           hasActiveSubscription: false,
+          teamMemberId: null,
+          isTeamMember: false,
         });
         return;
       }
@@ -87,6 +93,8 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
           return;
         }
@@ -103,6 +111,8 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
           return;
         }
@@ -121,12 +131,16 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
           return;
         }
 
         const saasAccountData = saasAccountSnap.data() as SaasAccount;
         const hasActiveSubscription = !!(saasAccountData?.stripeSubscriptionId);
+        const teamMemberId = userDocData.teamMemberId ?? null;
+        const isTeamMember = !!(userDocData.type === 'team' && teamMemberId);
 
         setAuthState({
           user,
@@ -135,6 +149,8 @@ export function useAuth() {
           isLoading: false,
           isSetupComplete: true,
           hasActiveSubscription,
+          teamMemberId,
+          isTeamMember,
         });
       } catch (error: any) {
         console.error('[useAuth] Erreur lors du chargement:', error);
@@ -169,6 +185,8 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
         } else if (isUnavailable) {
           // Firestore injoignable (réseau, proxy, etc.) — garder l'utilisateur connecté
@@ -181,6 +199,8 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
         } else {
           setAuthState({
@@ -190,6 +210,8 @@ export function useAuth() {
             isLoading: false,
             isSetupComplete: false,
             hasActiveSubscription: false,
+            teamMemberId: null,
+            isTeamMember: false,
           });
         }
       }

@@ -21,6 +21,7 @@ import {
 import { Progress } from '@/components/ui/progress';
 import { Separator } from '@/components/ui/separator';
 import { Building2, Mail, Phone, MapPin, LogOut, Loader2, Trash2, ArrowRightCircle } from 'lucide-react';
+import { TeamSection } from '@/components/account/TeamSection';
 import { toast } from 'sonner';
 import { AppHeader } from '@/components/layout/AppHeader';
 
@@ -277,6 +278,9 @@ export default function Account() {
               </div>
             </CardContent>
           </Card>
+
+          {/* Équipe (Pro/Ultra) */}
+          <TeamSection />
 
           {/* Compte utilisateur */}
           {user && (
