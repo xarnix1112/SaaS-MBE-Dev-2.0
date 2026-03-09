@@ -64,12 +64,18 @@ export default function Login() {
     setSelectedProfileId(null);
     try {
       const res = await publicFetch(`/auth/team-profiles?email=${encodeURIComponent(trimmed)}`);
-      const data = (await res.json()) as TeamProfilesResponse;
+      const data = (await res.json()) as TeamProfilesResponse & { error?: string };
+      if (!res.ok) {
+        console.warn('[Login] team-profiles erreur:', res.status, data?.error);
+        setTeamProfiles({ multiUser: false });
+        return;
+      }
       setTeamProfiles(data);
       if (data.multiUser && data.profiles && data.profiles.length > 0) {
         setSelectedProfileId(data.profiles[0].id);
       }
-    } catch {
+    } catch (err) {
+      console.warn('[Login] team-profiles fetch failed:', err);
       setTeamProfiles(null);
     } finally {
       setProfilesLoading(false);

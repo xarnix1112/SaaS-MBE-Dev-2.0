@@ -4,7 +4,7 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/com
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send, ExternalLink } from 'lucide-react';
+import { Settings as SettingsIcon, Mail, CheckCircle2, XCircle, RefreshCw, AlertTriangle, LogOut, CreditCard, Loader2, FileSpreadsheet, Folder, FolderOpen, Package, Truck, FormInput, KeyRound, Globe, Send, ExternalLink, Shield } from 'lucide-react';
 import { toast } from 'sonner';
 import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeConnect';
 import type { StripeStatusResponse } from '@/types/stripe';
@@ -124,6 +124,7 @@ export default function Settings() {
       tabs: [
         { id: 'cartons', label: 'Cartons', icon: Package },
         { id: 'expedition', label: 'Expédition', icon: Truck },
+        { id: 'assurance', label: 'Assurance', icon: Shield },
       ],
     },
   } as const;
@@ -390,7 +391,7 @@ export default function Settings() {
   };
 
   // Lire l'onglet depuis l'URL et redirection auto-emails → modeles-emails
-  const validTabs = ['emails', 'modeles-emails', 'messages-personnalises', 'google-sheets', 'google-drive', 'typeform', 'paiements', 'mbehub', 'cartons', 'expedition'];
+  const validTabs = ['emails', 'modeles-emails', 'messages-personnalises', 'google-sheets', 'google-drive', 'typeform', 'paiements', 'mbehub', 'cartons', 'expedition', 'assurance'];
   useEffect(() => {
     if (settingsTab === 'auto-emails') {
       setSettingsTab('modeles-emails');
@@ -1688,8 +1689,11 @@ export default function Settings() {
           </TabsContent>
 
           <TabsContent value="expedition" className="space-y-6">
-            <InsuranceSettings />
             <ShippingRatesSettings />
+          </TabsContent>
+
+          <TabsContent value="assurance" className="space-y-6">
+            <InsuranceSettings />
           </TabsContent>
 
           <TabsContent value="paiements" className="space-y-6">

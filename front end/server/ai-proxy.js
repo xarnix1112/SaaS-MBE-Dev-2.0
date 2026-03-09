@@ -6257,9 +6257,22 @@ app.get('/api/health', (req, res) => {
 // TEAM AUTH (sans requireAuth - connexion multi-user Pro/Ultra)
 // ============================================================================
 
+/** Trouve un saasAccount par email (comparaison insensible à la casse). Retourne le doc ou null. */
+async function findSaasAccountByEmail(emailLower) {
+  if (!firestore || !emailLower) return null;
+  let doc = null;
+  const snapExact = await firestore.collection('saasAccounts').where('email', '==', emailLower).limit(1).get();
+  if (!snapExact.empty) return snapExact.docs[0];
+  const snapLower = await firestore.collection('saasAccounts').where('emailLower', '==', emailLower).limit(1).get();
+  if (!snapLower.empty) return snapLower.docs[0];
+  const allSnap = await firestore.collection('saasAccounts').limit(500).get();
+  doc = allSnap.docs.find((d) => (d.data().email || '').trim().toLowerCase() === emailLower);
+  return doc || null;
+}
+
 /**
  * GET /auth/team-profiles?email=xxx
- * Cherche un saasAccount où email correspond et planId in ['pro','ultra'].
+ * Cherche un saasAccount où email correspond (comparaison insensible à la casse) et planId in ['pro','ultra'].
  * Si au moins 1 teamMember actif → multiUser: true + liste des profils.
  * Sinon → multiUser: false.
  */
@@ -6270,16 +6283,11 @@ app.get('/auth/team-profiles', async (req, res) => {
   if (!isValidEmail(email)) return res.status(400).json({ error: 'Email invalide' });
 
   try {
-    const saasSnap = await firestore.collection('saasAccounts')
-      .where('email', '==', email)
-      .limit(1)
-      .get();
-
-    if (saasSnap.empty) {
+    const saasDoc = await findSaasAccountByEmail(email);
+    if (!saasDoc) {
       return res.json({ multiUser: false });
     }
 
-    const saasDoc = saasSnap.docs[0];
     const saasData = saasDoc.data();
     const planId = (saasData.planId || saasData.plan || '').toLowerCase();
     if (!['pro', 'ultra'].includes(planId)) {
@@ -6343,16 +6351,10 @@ app.post('/auth/team-login', async (req, res) => {
   if (!isValidEmail(emailNorm)) return res.status(400).json({ error: 'Email invalide' });
 
   try {
-    const saasSnap = await firestore.collection('saasAccounts')
-      .where('email', '==', emailNorm)
-      .limit(1)
-      .get();
-
-    if (saasSnap.empty) {
+    const saasDoc = await findSaasAccountByEmail(emailNorm);
+    if (!saasDoc) {
       return res.status(401).json({ error: 'Identifiants incorrects' });
     }
-
-    const saasDoc = saasSnap.docs[0];
     const saasAccountId = saasDoc.id;
     const memberRef = firestore
       .collection('saasAccounts')
@@ -11641,6 +11643,7 @@ app.post("/api/saas-account/create", requireAuth, async (req, res) => {
       },
       phone,
       email,
+      emailLower: (email || '').trim().toLowerCase(),
       createdAt: Timestamp.now(),
       isActive: true,
       plan: 'free',
