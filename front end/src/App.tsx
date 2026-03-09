@@ -35,11 +35,11 @@ import Settings from "./pages/Settings";
 import Account from "./pages/Account";
 import Help from "./pages/Help";
 import { loadShippingRates, loadCartonPrices } from "./lib/pricing";
-import { useAuth } from "./hooks/useAuth";
+import { AuthProvider, useAuth } from "./contexts/AuthContext";
 
 const queryClient = new QueryClient();
 
-const App = () => {
+const AppContent = () => {
   const { user, isSetupComplete, isLoading: authLoading } = useAuth();
 
   useEffect(() => {
@@ -97,12 +97,11 @@ const App = () => {
   }, [user, isSetupComplete, authLoading]);
 
   return (
-    <QueryClientProvider client={queryClient}>
-      <TooltipProvider>
-        <Toaster />
-        <Sonner />
-        <BrowserRouter>
-          <Routes>
+    <TooltipProvider>
+      <Toaster />
+      <Sonner />
+      <BrowserRouter>
+        <Routes>
             {/* Route racine - Redirige selon l'état d'authentification */}
             <Route path="/" element={<HomeRedirect />} />
             
@@ -145,11 +144,18 @@ const App = () => {
             </Route>
             
             <Route path="*" element={<NotFound />} />
-          </Routes>
-        </BrowserRouter>
-      </TooltipProvider>
-    </QueryClientProvider>
+        </Routes>
+      </BrowserRouter>
+    </TooltipProvider>
   );
 };
+
+const App = () => (
+  <QueryClientProvider client={queryClient}>
+    <AuthProvider>
+      <AppContent />
+    </AuthProvider>
+  </QueryClientProvider>
+);
 
 export default App;
