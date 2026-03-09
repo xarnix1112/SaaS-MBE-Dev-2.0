@@ -305,6 +305,21 @@ const app = express();
 // Note: Dans Sentry v10+, les handlers Express sont configurés automatiquement
 // via setupExpressErrorHandler() après toutes les routes (voir plus bas)
 
+// CORS en PREMIER (avant tout body parsing) - requis pour Railway qui peut renvoyer 502 sur OPTIONS sinon
+const corsHeaders = (res) => {
+  res.set('Access-Control-Allow-Origin', '*');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
+  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Dev');
+  res.set('Access-Control-Max-Age', '86400');
+};
+app.use((req, res, next) => {
+  corsHeaders(res);
+  if (req.method === 'OPTIONS') {
+    return res.sendStatus(200);
+  }
+  next();
+});
+
 // IMPORTANT: Ne pas parser le body JSON pour les routes webhook Stripe
 // Stripe a besoin du body brut (Buffer) pour vérifier la signature
 // On applique express.raw() pour les routes webhook AVANT express.json()
@@ -319,20 +334,6 @@ app.use((req, res, next) => {
 
 // Puis appliquer express.json() pour toutes les autres routes
 app.use(express.json());
-
-// CORS pour permettre les requêtes depuis le frontend (toujours envoyer, même en erreur)
-const corsHeaders = (res) => {
-  res.set('Access-Control-Allow-Origin', '*');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
-  res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Client-Dev');
-};
-app.use((req, res, next) => {
-  corsHeaders(res);
-  if (req.method === 'OPTIONS') {
-    return res.sendStatus(200);
-  }
-  next();
-});
 
 // Middleware pour logger toutes les requêtes (très tôt pour debug)
 app.use((req, res, next) => {

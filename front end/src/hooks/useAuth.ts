@@ -146,7 +146,14 @@ export function useAuth() {
         // 1. Les règles Firestore ne sont pas déployées correctement
         // 2. Les restrictions de la clé API Firebase bloquent Cloud Firestore API
         // 3. Le document user n'existe vraiment pas
-        const isUnavailable = error?.code === 'unavailable' || error?.message?.includes('client is offline');
+        const isUnavailable =
+          error?.code === 'unavailable' ||
+          error?.message?.includes('client is offline') ||
+          error?.message?.includes('Load failed') ||
+          error?.message?.includes('Failed to fetch') ||
+          error?.message?.includes('NetworkError') ||
+          error?.message?.toLowerCase?.().includes('access control') ||
+          error?.message?.toLowerCase?.().includes('network request failed');
 
         if (error?.code === 'permission-denied') {
           console.error('[useAuth] ⚠️ ERREUR DE PERMISSIONS FIRESTORE');
