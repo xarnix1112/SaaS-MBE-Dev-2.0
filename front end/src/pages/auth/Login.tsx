@@ -113,7 +113,10 @@ export default function Login() {
 
     setIsLoading(true);
     try {
-      if (teamProfiles?.multiUser && teamProfiles.profiles && selectedProfileId) {
+      const selectedProfile = teamProfiles?.profiles?.find((p) => p.id === selectedProfileId);
+      const useFirebase = selectedProfile?.useFirebase;
+
+      if (teamProfiles?.multiUser && teamProfiles.profiles && selectedProfileId && !useFirebase) {
         const res = await publicFetch('/auth/team-login', {
           method: 'POST',
           body: JSON.stringify({
@@ -243,7 +246,7 @@ export default function Login() {
                   Se souvenir de moi
                 </Label>
               </div>
-              {!isMultiUser && (
+              {(!isMultiUser || teamProfiles?.profiles?.find((p) => p.id === selectedProfileId)?.useFirebase) && (
                 <Link
                   to="/forgot-password"
                   className="text-sm text-blue-600 hover:underline"

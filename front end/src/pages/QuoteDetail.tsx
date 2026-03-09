@@ -101,28 +101,7 @@ function cleanForFirestore<T extends Record<string, any>>(obj: T): T {
   return cleaned;
 }
 
-// Arrondi assurance : 13,50 => 14 ; 13,49 => 13,5
-function roundInsurance(value: number) {
-  if (Number.isNaN(value)) return 0;
-  const decimal = value % 1;
-  if (decimal >= 0.5) return Math.ceil(value);
-  if (decimal > 0) return Math.floor(value) + 0.5;
-  return value;
-}
-
-// Calcule le montant d'assurance en appliquant le minimum et l'arrondi
-function computeInsuranceAmount(
-  lotValue: number,
-  insuranceEnabled?: boolean,
-  explicitAmount?: number | null
-) {
-  if (!insuranceEnabled) return 0;
-  if (explicitAmount !== null && explicitAmount !== undefined && explicitAmount > 0) {
-    return roundInsurance(explicitAmount);
-  }
-  const raw = Math.max(lotValue * 0.025, lotValue < 500 ? 12 : 0);
-  return roundInsurance(raw);
-}
+import { computeInsuranceWithConfig } from "@/lib/insurance";
 import { getCartonPrice, calculateShippingPrice, calculateVolumetricWeight, cleanCartonRef } from "@/lib/pricing";
 import { setDoc, doc, Timestamp, getDoc } from "firebase/firestore";
 import { db } from "@/lib/firebase";
@@ -155,6 +134,7 @@ const DEFAULT_POPUP_MESSAGES = {
 };
 import type { Paiement } from "@/types/stripe";
 import { useFeatures } from "@/hooks/use-features";
+import { useInsuranceSettings } from "@/hooks/use-insurance-settings";
 import { useQuery } from "@tanstack/react-query";
 
 export default function QuoteDetail() {
@@ -163,6 +143,12 @@ export default function QuoteDetail() {
   const { houses: auctionHouses = [] } = useAuctionHouses();
   const queryClient = useQueryClient();
   const { data: featuresData } = useFeatures();
+  const { data: insuranceConfig } = useInsuranceSettings();
+  const computeInsuranceAmount = useCallback(
+    (lotValue: number, insuranceEnabled?: boolean, explicitAmount?: number | null) =>
+      computeInsuranceWithConfig(insuranceConfig ?? null, lotValue, insuranceEnabled, explicitAmount),
+    [insuranceConfig]
+  );
   const { data: mbehubStatus } = useQuery({
     queryKey: ['mbehub-status'],
     queryFn: async () => {
@@ -3186,7 +3172,7 @@ export default function QuoteDetail() {
                               <span className="font-medium">{(safeQuote.declaredValue ?? safeQuote.lot.value ?? 0).toFixed(2)}€</span>
                             </div>
                             <div className="flex justify-between text-sm pl-4">
-                              <span className="text-muted-foreground">Coût assurance (2.5%{(safeQuote.declaredValue ?? safeQuote.lot.value ?? 0) < 500 ? ', min. 12€' : ''})</span>
+                              <span className="text-muted-foreground">Coût assurance</span>
                               <span className="font-medium">
                                 {computeInsuranceAmount(
                                   safeQuote.declaredValue ?? safeQuote.lot.value ?? 0,

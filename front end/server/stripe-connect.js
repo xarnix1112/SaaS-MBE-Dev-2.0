@@ -17,6 +17,7 @@ import { fileURLToPath } from "url";
 import fs from "fs";
 import { createNotification, NOTIFICATION_TYPES } from "./notifications.js";
 import { sendPaymentReceivedEmail } from "./quote-automatic-emails.js";
+import { computeInsuranceAmount as computeInsuranceFromSettings } from "./insurance-settings.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -840,33 +841,19 @@ export async function handleGetPaiements(req, res, firestore) {
 }
 
 /**
- * Calcule le montant d'assurance (même logique que QuotePaiements)
- */
-function computeInsuranceAmount(lotValue = 0, insuranceEnabled, explicitAmount) {
-  if (!insuranceEnabled) return 0;
-  if (explicitAmount !== null && explicitAmount !== undefined && explicitAmount > 0) {
-    const decimal = explicitAmount % 1;
-    if (decimal >= 0.5) return Math.ceil(explicitAmount);
-    if (decimal > 0) return Math.floor(explicitAmount) + 0.5;
-    return explicitAmount;
-  }
-  const raw = Math.max(lotValue * 0.025, lotValue < 500 ? 12 : 0);
-  const decimal = raw % 1;
-  if (decimal >= 0.5) return Math.ceil(raw);
-  if (decimal > 0) return Math.floor(raw) + 0.5;
-  return raw;
-}
-
-/**
  * Calcule le montant attendu pour le paiement principal (emballage + expédition + assurance).
  * Les surcoûts sont des paiements séparés (type SURCOUT), donc exclus du principal.
+ * Utilise les paramètres d'assurance configurés par compte (insuranceSettings).
  */
-function computeExpectedPrincipalAmount(devis) {
+async function computeExpectedPrincipalAmount(firestore, devis) {
   const carton = devis.auctionSheet?.recommendedCarton;
   const cartonPrice = carton?.price ?? carton?.priceTTC ?? null;
   const packagingPrice = cartonPrice !== null ? cartonPrice : (devis.options?.packagingPrice || 0);
   const shippingPrice = devis.options?.shippingPrice || 0;
-  const insuranceAmount = computeInsuranceAmount(
+  const saasAccountId = devis.saasAccountId;
+  const insuranceAmount = await computeInsuranceFromSettings(
+    firestore,
+    saasAccountId,
     devis.lot?.value || 0,
     devis.options?.insurance,
     devis.options?.insuranceAmount
@@ -888,7 +875,7 @@ export async function handleSyncPaymentAmount(req, res, firestore) {
     const { id: devisId } = req.params;
     const devis = await getDevisById(firestore, devisId);
     const paiements = await getPaiementsByDevisId(firestore, devisId);
-    const expectedTotal = computeExpectedPrincipalAmount(devis);
+    const expectedTotal = await computeExpectedPrincipalAmount(firestore, devis);
 
     if (expectedTotal <= 0) {
       return res.status(400).json({ error: "Total du devis invalide (0 ou négatif)" });

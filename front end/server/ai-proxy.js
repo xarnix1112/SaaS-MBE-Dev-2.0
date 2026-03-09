@@ -5073,24 +5073,10 @@ app.post('/api/send-quote-email', async (req, res) => {
       ? lots.reduce((sum, lot) => sum + (lot.total || lot.value || 0), 0)
       : 0;
     
-    // Calcul de l'assurance si nécessaire (2.5% de la valeur, min 12€ si valeur < 500€)
-    const calculateInsurancePrice = (value) => {
-      // 2.5% de la valeur, avec un minimum de 12€ si valeur < 500€
-      // Arrondi au supérieur : 13,50 = 14, 13,49 = 13,5
-      let calculated = value < 500 ? Math.max(value * 0.025, 12) : value * 0.025;
-      
-      // Arrondi au supérieur : si >= 0,50, arrondir à l'entier supérieur, sinon arrondir à 0,5 supérieur
-      const decimal = calculated % 1;
-      if (decimal >= 0.50) {
-        calculated = Math.ceil(calculated);
-      } else if (decimal > 0) {
-        calculated = Math.floor(calculated) + 0.5;
-      }
-      
-      return calculated;
-    };
+    // Calcul de l'assurance via paramètres configurés par compte (insuranceSettings)
+    const saasAccountIdForInsurance = quote.saasAccountId || req.saasAccountId;
     const finalInsuranceAmount = insuranceEnabled 
-      ? (insuranceAmount > 0 ? insuranceAmount : calculateInsurancePrice(lotValue))
+      ? (insuranceAmount > 0 ? insuranceAmount : await computeInsuranceAmountFromSettings(firestore, saasAccountIdForInsurance, lotValue, true, 0))
       : 0;
     
     // Calcul du total : emballage + transport + assurance (si activée)
@@ -5254,7 +5240,7 @@ Emballage${(() => {
 Expédition (Express)${quote.delivery?.address?.country ? ` (${quote.delivery.address.country})` : ''} : ${shippingPrice.toFixed(2)}€
 Assurance : ${insuranceEnabled ? 'Oui' : 'Non'}${insuranceEnabled ? `
   - Valeur assurée : ${lotValue.toFixed(2)}€
-  - Coût assurance (2.5%${lotValue < 500 ? ', min. 12€' : ''}) : ${finalInsuranceAmount.toFixed(2)}€` : ''}
+  - Coût assurance : ${finalInsuranceAmount.toFixed(2)}€` : ''}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 💰 MONTANT TOTAL : ${finalTotal.toFixed(2)}€
@@ -6301,6 +6287,7 @@ app.get('/auth/team-profiles', async (req, res) => {
     }
 
     const saasAccountId = saasDoc.id;
+    const saasEmail = (saasData.email || '').trim().toLowerCase();
     const membersSnap = await firestore
       .collection('saasAccounts')
       .doc(saasAccountId)
@@ -6308,18 +6295,30 @@ app.get('/auth/team-profiles', async (req, res) => {
       .where('isActive', '==', true)
       .get();
 
-    if (membersSnap.empty) {
-      return res.json({ multiUser: false });
+    const profiles = membersSnap.docs
+      .filter((doc) => !doc.data().isOwner)
+      .map((doc) => {
+        const d = doc.data();
+        return {
+          id: doc.id,
+          displayName: [d.firstName, d.lastName].filter(Boolean).join(' ').trim() || d.username,
+          isOwner: false,
+          useFirebase: false,
+        };
+      });
+
+    if (email === saasEmail) {
+      profiles.unshift({
+        id: 'owner',
+        displayName: 'Administrateur',
+        isOwner: true,
+        useFirebase: true,
+      });
     }
 
-    const profiles = membersSnap.docs.map((doc) => {
-      const d = doc.data();
-      return {
-        id: doc.id,
-        displayName: [d.firstName, d.lastName].filter(Boolean).join(' ').trim() || d.username,
-        isOwner: !!d.isOwner,
-      };
-    });
+    if (profiles.length === 0) {
+      return res.json({ multiUser: false });
+    }
 
     return res.json({ multiUser: true, profiles });
   } catch (err) {
@@ -10880,10 +10879,10 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
       console.warn('[Calcul] ⚠️  Pas de destination renseignée, prix d\'expédition = 0€');
     }
 
-    // 6. Assurance (2% de la valeur si demandée)
+    // 6. Assurance (paramètres configurables par compte : taux, seuil, min, arrondi)
     let insuranceAmount = 0;
     if (devis.options?.insurance && ocrResult.total) {
-      insuranceAmount = Math.round(ocrResult.total * 0.02 * 100) / 100;
+      insuranceAmount = await computeInsuranceAmountFromSettings(firestore, saasAccountId, ocrResult.total, true, 0);
     }
 
     // 7. Total
@@ -11474,10 +11473,11 @@ app.post('/api/team/members', requireAuth, requireTeamPermission('team', 'create
     const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
     if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
     const planId = (saasDoc.data().planId || saasDoc.data().plan || 'starter').toLowerCase();
-    const maxMembers = planId === 'ultra' ? 999 : planId === 'pro' ? 3 : 1;
+    const maxMembers = planId === 'ultra' ? 999 : planId === 'pro' ? 2 : 0;
     const membersSnap = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('isActive', '==', true).get();
-    if (membersSnap.size >= maxMembers) {
-      return res.status(400).json({ error: `Limite atteinte (${maxMembers} utilisateurs pour le plan ${planId})` });
+    const memberCount = membersSnap.docs.filter((d) => !d.data().isOwner).length;
+    if (memberCount >= maxMembers) {
+      return res.status(400).json({ error: `Limite atteinte (${maxMembers} membre(s) pour le plan ${planId})` });
     }
     const existing = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('username', '==', username.trim()).limit(1).get();
     if (!existing.empty) return res.status(400).json({ error: 'Ce nom d\'utilisateur existe déjà' });
@@ -11547,40 +11547,6 @@ app.put('/api/team/members/:id', requireAuth, requireTeamPermission('team', 'upd
     });
   } catch (err) {
     console.error('[PUT /api/team/members]', err);
-    return res.status(500).json({ error: 'Erreur serveur' });
-  }
-});
-
-app.post('/api/team/create-owner-profile', requireAuth, async (req, res) => {
-  if (!firestore || !req.saasAccountId) return res.status(400).json({ error: 'Compte non configuré' });
-  if (req.teamMemberId) return res.status(403).json({ error: 'Déjà connecté en tant que membre d\'équipe' });
-  const { password } = req.body || {};
-  if (!password || String(password).length < 6) return res.status(400).json({ error: 'Mot de passe requis (min 6 caractères)' });
-  try {
-    const ownerSnap = await firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').where('isOwner', '==', true).limit(1).get();
-    if (!ownerSnap.empty) return res.status(400).json({ error: 'Profil propriétaire déjà créé' });
-    const saasDoc = await firestore.collection('saasAccounts').doc(req.saasAccountId).get();
-    if (!saasDoc.exists) return res.status(404).json({ error: 'Compte non trouvé' });
-    const planId = (saasDoc.data().planId || saasDoc.data().plan || 'starter').toLowerCase();
-    if (!['pro', 'ultra'].includes(planId)) return res.status(400).json({ error: 'Fonctionnalité réservée aux plans Pro et Ultra' });
-    const passwordHash = await bcrypt.hash(password, 10);
-    const memberRef = firestore.collection('saasAccounts').doc(req.saasAccountId).collection('teamMembers').doc();
-    const fullPerms = {};
-    ['dashboard', 'quotes', 'payments', 'auctionHouses', 'collections', 'preparation', 'shipments', 'settings', 'team'].forEach((z) => { fullPerms[z] = ['read', 'create', 'update', 'delete']; });
-    await memberRef.set({
-      username: 'owner',
-      passwordHash,
-      firstName: '',
-      lastName: 'Propriétaire',
-      isOwner: true,
-      isActive: true,
-      permissions: fullPerms,
-      createdAt: Timestamp.now(),
-      createdBy: req.uid,
-    });
-    return res.json({ id: memberRef.id, success: true });
-  } catch (err) {
-    console.error('[POST /api/team/create-owner-profile]', err);
     return res.status(500).json({ error: 'Erreur serveur' });
   }
 });
@@ -12399,18 +12365,11 @@ app.post('/api/mbehub/prepare-quote-email', requireAuth, async (req, res) => {
       return res.status(400).json({ error: 'Aucun tarif Standard ou Express trouvé pour cette destination' });
     }
 
-    // 2. Calculer emballage + assurance
+    // 2. Calculer emballage + assurance (paramètres configurables par compte)
     const carton = quote.auctionSheet?.recommendedCarton;
     const packagingPrice = carton?.price ?? carton?.priceTTC ?? quote.options?.packagingPrice ?? 0;
-    const insuranceAmount = (() => {
-      if (!quote.options?.insurance) return 0;
-      const v = quote.lot?.value || 0;
-      const raw = Math.max(v * 0.025, v < 500 ? 12 : 0);
-      const d = raw % 1;
-      if (d >= 0.5) return Math.ceil(raw);
-      if (d > 0) return Math.floor(raw) + 0.5;
-      return raw;
-    })();
+    const lotValue = quote.lot?.value || 0;
+    const insuranceAmount = await computeInsuranceAmountFromSettings(firestore, saasAccountId, lotValue, quote.options?.insurance, quote.options?.insuranceAmount);
     if (packagingPrice <= 0) {
       return res.status(400).json({ error: 'Prix d\'emballage manquant. Renseignez un carton pour ce devis.' });
     }
@@ -13525,6 +13484,12 @@ import {
   calculateShippingPriceFromGrid,
   mapCountryToCode,
 } from './shipping-rates.js';
+import {
+  handleGetSettings as handleGetInsuranceSettings,
+  handleUpdateSettings as handleUpdateInsuranceSettings,
+  computeInsuranceAmount as computeInsuranceAmountFromSettings,
+  getInsuranceConfig,
+} from './insurance-settings.js';
 
 // Zones d'expédition
 app.get('/api/shipping/zones', requireAuth, (req, res) => {
@@ -13615,6 +13580,14 @@ app.put('/api/shipping/settings', requireAuth, (req, res) => {
 app.get('/api/shipping/grid', requireAuth, (req, res) => {
   console.log('[AI Proxy] 📥 GET /api/shipping/grid appelé');
   handleGetGrid(req, res, firestore);
+});
+
+// Paramètres assurance (configurable par compte)
+app.get('/api/insurance/settings', requireAuth, (req, res) => {
+  handleGetInsuranceSettings(req, res, firestore);
+});
+app.put('/api/insurance/settings', requireAuth, (req, res) => {
+  handleUpdateInsuranceSettings(req, res, firestore);
 });
 
   console.log('[AI Proxy] ✅ Routes grille tarifaire d\'expédition ajoutées');

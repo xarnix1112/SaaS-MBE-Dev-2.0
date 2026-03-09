@@ -10,6 +10,7 @@ import { connectStripe, getStripeStatus, disconnectStripe } from '@/lib/stripeCo
 import type { StripeStatusResponse } from '@/types/stripe';
 import CartonsSettings from '@/components/settings/CartonsSettings';
 import { ShippingRatesSettings } from '@/components/settings/ShippingRatesSettings';
+import { InsuranceSettings } from '@/components/settings/InsuranceSettings';
 import EmailTemplatesSettings from '@/components/settings/EmailTemplatesSettings';
 import CustomQuoteMessagesSettings from '@/components/settings/CustomQuoteMessagesSettings';
 import { useFeatures } from '@/hooks/use-features';
@@ -1686,7 +1687,8 @@ export default function Settings() {
             <CartonsSettings />
           </TabsContent>
 
-          <TabsContent value="expedition">
+          <TabsContent value="expedition" className="space-y-6">
+            <InsuranceSettings />
             <ShippingRatesSettings />
           </TabsContent>
 

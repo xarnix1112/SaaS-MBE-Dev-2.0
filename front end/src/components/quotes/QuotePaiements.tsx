@@ -45,6 +45,8 @@ import type { Paiement, PaiementType } from '@/types/stripe';
 import { Quote } from '@/types/quote';
 import { doc, getDoc } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { useInsuranceSettings } from '@/hooks/use-insurance-settings';
+import { computeInsuranceWithConfig } from '@/lib/insurance';
 
 interface QuotePaiementsProps {
   devisId: string;
@@ -52,27 +54,14 @@ interface QuotePaiementsProps {
   refreshKey?: number; // Clé pour forcer le rechargement des paiements
 }
 
-// Calcul du montant d'assurance (même logique que QuoteDetail)
-function computeInsuranceAmount(
-  lotValue: number,
-  insuranceEnabled?: boolean,
-  explicitAmount?: number | null
-) {
-  if (!insuranceEnabled) return 0;
-  if (explicitAmount !== null && explicitAmount !== undefined && explicitAmount > 0) {
-    const decimal = explicitAmount % 1;
-    if (decimal >= 0.5) return Math.ceil(explicitAmount);
-    if (decimal > 0) return Math.floor(explicitAmount) + 0.5;
-    return explicitAmount;
-  }
-  const raw = Math.max(lotValue * 0.025, lotValue < 500 ? 12 : 0);
-  const decimal = raw % 1;
-  if (decimal >= 0.5) return Math.ceil(raw);
-  if (decimal > 0) return Math.floor(raw) + 0.5;
-  return raw;
-}
-
 export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: QuotePaiementsProps) {
+  const { data: insuranceConfig } = useInsuranceSettings();
+  const computeInsuranceAmount = (
+    lotValue: number,
+    insuranceEnabled?: boolean,
+    explicitAmount?: number | null
+  ) =>
+    computeInsuranceWithConfig(insuranceConfig ?? null, lotValue, insuranceEnabled, explicitAmount);
   const [paiements, setPaiements] = useState<Paiement[]>([]);
   const [isLoading, setIsLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);

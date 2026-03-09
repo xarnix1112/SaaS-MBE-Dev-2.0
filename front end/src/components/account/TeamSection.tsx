@@ -29,7 +29,7 @@ import {
   TableHeader,
   TableRow,
 } from '@/components/ui/table';
-import { Users, Loader2, Plus, Pencil, UserPlus, Lock } from 'lucide-react';
+import { Users, Loader2, Plus, Pencil } from 'lucide-react';
 import { toast } from 'sonner';
 import {
   ZONES,
@@ -44,7 +44,7 @@ import {
 const planId = (saasAccount: { planId?: string; plan?: string } | null) =>
   (saasAccount?.planId || saasAccount?.plan || 'starter').toLowerCase();
 
-const maxMembers = (p: string) => (p === 'ultra' ? 999 : p === 'pro' ? 3 : 1);
+const maxMembers = (p: string) => (p === 'ultra' ? 999 : p === 'pro' ? 2 : 0);
 
 function PermissionGrid({
   value,
@@ -127,9 +127,6 @@ export function TeamSection() {
   const canUpdateTeam = can('team', 'update');
   const canDeleteTeam = can('team', 'delete');
 
-  const [ownerPassword, setOwnerPassword] = useState('');
-  const [ownerDialogOpen, setOwnerDialogOpen] = useState(false);
-  const [ownerCreating, setOwnerCreating] = useState(false);
   const [createOpen, setCreateOpen] = useState(false);
   const [editMember, setEditMember] = useState<TeamMember | null>(null);
   const [form, setForm] = useState<Partial<TeamMemberCreate>>({
@@ -140,35 +137,6 @@ export function TeamSection() {
     permissions: {},
   });
   const [editForm, setEditForm] = useState<Partial<TeamMember>>({});
-
-  const hasOwnerProfile = members.some((m) => m.isOwner);
-  const isOwnerUser = !teamMemberId;
-
-  const handleCreateOwnerProfile = async () => {
-    if (!ownerPassword || ownerPassword.length < 6) {
-      toast.error('Mot de passe requis (min 6 caractères)');
-      return;
-    }
-    setOwnerCreating(true);
-    try {
-      const res = await authenticatedFetch('/api/team/create-owner-profile', {
-        method: 'POST',
-        body: JSON.stringify({ password: ownerPassword }),
-      });
-      if (!res.ok) {
-        const d = await res.json().catch(() => ({}));
-        throw new Error(d.error || 'Erreur');
-      }
-      toast.success('Profil propriétaire créé. Utilisez l\'email du compte + ce mot de passe pour vous connecter.');
-      setOwnerDialogOpen(false);
-      setOwnerPassword('');
-      window.location.reload();
-    } catch (e: unknown) {
-      toast.error(e instanceof Error ? e.message : 'Erreur');
-    } finally {
-      setOwnerCreating(false);
-    }
-  };
 
   const handleCreateMember = async () => {
     if (!form.username || !form.password || form.password.length < 6) {
@@ -233,9 +201,8 @@ export function TeamSection() {
     );
   }
 
-  const needsOwnerProfile = isOwnerUser && !hasOwnerProfile;
   const limit = maxMembers(plan);
-  const currentCount = members.filter((m) => m.isActive).length;
+  const currentCount = members.filter((m) => m.isActive && !m.isOwner).length;
   const canAddMore = currentCount < limit && canCreateTeam;
 
   return (
@@ -255,41 +222,10 @@ export function TeamSection() {
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
-        {needsOwnerProfile && (
-          <div className="rounded-lg border border-amber-200 bg-amber-50 dark:border-amber-800 dark:bg-amber-950/30 p-4">
-            <div className="flex items-start gap-3">
-              <Lock className="h-5 w-5 text-amber-600 mt-0.5" />
-              <div>
-                <p className="font-medium text-amber-900 dark:text-amber-100">
-                  Créer votre profil de connexion équipe
-                </p>
-                <p className="text-sm text-amber-800 dark:text-amber-200 mt-1">
-                  Pour activer la connexion multi-utilisateurs, définissez un mot de passe qui sera
-                  utilisé avec l&apos;email du compte pour vous connecter.
-                </p>
-                <Button
-                  className="mt-3"
-                  onClick={() => setOwnerDialogOpen(true)}
-                  disabled={ownerCreating}
-                >
-                  {ownerCreating ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <>
-                      <UserPlus className="mr-2 h-4 w-4" />
-                      Définir mon mot de passe
-                    </>
-                  )}
-                </Button>
-              </div>
-            </div>
-          </div>
-        )}
-
         <div className="space-y-2">
           <div className="flex items-center justify-between">
             <h4 className="font-medium">Membres</h4>
-            {canAddMore && !needsOwnerProfile && (
+            {canAddMore && (
               <Button variant="outline" size="sm" onClick={() => setCreateOpen(true)} disabled={isCreating}>
                 <Plus className="mr-1.5 h-4 w-4" />
                 Ajouter
@@ -366,39 +302,6 @@ export function TeamSection() {
           )}
         </div>
       </CardContent>
-
-      {/* Dialog création profil owner */}
-      <Dialog open={ownerDialogOpen} onOpenChange={setOwnerDialogOpen}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Définir votre mot de passe de connexion équipe</DialogTitle>
-            <DialogDescription>
-              Ce mot de passe sera utilisé avec l&apos;email du compte ({saasAccount?.email}) pour
-              vous connecter. Vous pourrez le modifier plus tard.
-            </DialogDescription>
-          </DialogHeader>
-          <div className="py-4">
-            <Label htmlFor="owner-password">Mot de passe</Label>
-            <Input
-              id="owner-password"
-              type="password"
-              value={ownerPassword}
-              onChange={(e) => setOwnerPassword(e.target.value)}
-              placeholder="Min. 6 caractères"
-              className="mt-2"
-              minLength={6}
-            />
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setOwnerDialogOpen(false)}>
-              Annuler
-            </Button>
-            <Button onClick={handleCreateOwnerProfile} disabled={ownerCreating || ownerPassword.length < 6}>
-              {ownerCreating ? <Loader2 className="h-4 w-4 animate-spin" /> : 'Créer'}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
 
       {/* Dialog création membre */}
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>

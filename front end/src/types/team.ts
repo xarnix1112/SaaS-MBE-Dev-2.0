@@ -53,6 +53,8 @@ export interface TeamProfile {
   id: string;
   displayName: string;
   isOwner: boolean;
+  /** Si true, connexion via Firebase (admin) au lieu de team-login */
+  useFirebase?: boolean;
 }
 
 export const ZONE_LABELS: Record<Zone, string> = {
