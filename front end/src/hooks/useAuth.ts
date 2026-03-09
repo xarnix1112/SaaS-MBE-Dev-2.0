@@ -72,6 +72,10 @@ export function useAuth() {
       }
 
       try {
+        // #region agent log
+        const isTeamUid = user.uid.startsWith('team_');
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'useAuth.ts:entry',message:'onAuthStateChanged callback',data:{uid:user.uid,isTeamUid,projectId:import.meta.env.VITE_FIREBASE_PROJECT_ID},timestamp:Date.now(),hypothesisId:'A,B,D,E'})}).catch(()=>{});
+        // #endregion
         // Log pour diagnostiquer le projet Firebase utilisé
         console.log('[useAuth] Tentative de chargement du document user:', {
           uid: user.uid,
@@ -82,7 +86,14 @@ export function useAuth() {
         const userDocRef = doc(db, 'users', user.uid);
         const userDocSnap = await getDocWithRetry(userDocRef);
 
+        // #region agent log
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'useAuth.ts:getDoc-result',message:'getDoc result',data:{uid:user.uid,exists:userDocSnap.exists(),isTeamUid},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+
         if (!userDocSnap.exists()) {
+          // #region agent log
+          fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'useAuth.ts:doc-not-exists',message:'Document user non trouvé',data:{uid:user.uid,isTeamUid},timestamp:Date.now(),hypothesisId:'A,C'})}).catch(()=>{});
+          // #endregion
           // User existe mais pas de document user → utilisateur vient de se connecter mais n'a pas encore complété le setup MBE
           // Garder l'utilisateur connecté pour permettre la redirection vers /setup-mbe
           console.log('[useAuth] Document user non trouvé - utilisateur doit compléter le setup MBE');
@@ -142,6 +153,10 @@ export function useAuth() {
         const teamMemberId = userDocData.teamMemberId ?? null;
         const isTeamMember = !!(userDocData.type === 'team' && teamMemberId);
 
+        // #region agent log
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'useAuth.ts:success',message:'Auth loaded OK',data:{uid:user.uid,isTeamMember,saasAccountId:saasAccountSnap.id},timestamp:Date.now(),hypothesisId:'A'})}).catch(()=>{});
+        // #endregion
+
         setAuthState({
           user,
           saasAccount: { id: saasAccountSnap.id, ...saasAccountData },
@@ -153,6 +168,11 @@ export function useAuth() {
           isTeamMember,
         });
       } catch (error: any) {
+        // #region agent log
+        const errCode = error?.code;
+        const errBranch = errCode === 'permission-denied' ? 'permission-denied' : (['unavailable','client is offline','Load failed','Failed to fetch','NetworkError','access control','network request failed'].some(k=>String(error?.message||'').toLowerCase().includes(k.toLowerCase())) ? 'isUnavailable' : 'other');
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'useAuth.ts:catch',message:'getDoc error',data:{uid:user?.uid,errCode,errBranch,willSetUserNull:errBranch==='other'},timestamp:Date.now(),hypothesisId:'B'})}).catch(()=>{});
+        // #endregion
         console.error('[useAuth] Erreur lors du chargement:', error);
         console.error('[useAuth] Code erreur:', error?.code);
         console.error('[useAuth] Message erreur:', error?.message);
