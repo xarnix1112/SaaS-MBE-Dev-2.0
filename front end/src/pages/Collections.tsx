@@ -56,6 +56,9 @@ export default function Collections() {
   const [collectionFailedReason, setCollectionFailedReason] = useState('');
   const [isSendingCollectionFailed, setIsSendingCollectionFailed] = useState(false);
   const [isSendingCollection, setIsSendingCollection] = useState(false);
+  // Modal PDF liste de collecte (évite le blocage des popups)
+  const [collectionPdfUrls, setCollectionPdfUrls] = useState<string[]>([]);
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
 
   // Inclure uniquement les devis en attente de collecte (pas encore collectés)
   // Exclure les devis avec le statut 'collected' car ils doivent apparaître dans "Préparation"
@@ -129,13 +132,10 @@ export default function Collections() {
       return;
     }
     setIsSendingCollection(true);
-    // Ouvrir une fenêtre immédiatement (geste utilisateur) pour éviter le blocage des popups
-    const pdfWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
     try {
     const selectedQuotesData = collectionQuotes.filter(q => selectedQuotes.includes(q.id));
     if (selectedQuotesData.length === 0) {
       toast.error("Aucun devis sélectionné");
-      pdfWindow?.close?.();
       return;
     }
 
@@ -158,19 +158,16 @@ export default function Collections() {
 
     if (missingEmails.length > 0) {
       toast.error(`Veuillez saisir un email pour: ${missingEmails.join(', ')}`);
-      pdfWindow?.close?.();
       return;
     }
 
     if (!plannedDate?.trim()) {
       toast.error("Veuillez sélectionner une date pour la collecte");
-      pdfWindow?.close?.();
       return;
     }
 
     if (!plannedTime?.trim()) {
       toast.error("Veuillez sélectionner une heure pour la collecte");
-      pdfWindow?.close?.();
       return;
     }
 
@@ -180,7 +177,6 @@ export default function Collections() {
     );
     if (quotesWithoutBordereau.length > 0) {
       toast.error("Renseignez le numéro de bordereau pour tous les devis sélectionnés avant d'envoyer la demande de collecte.");
-      pdfWindow?.close?.();
       return;
     }
 
@@ -288,17 +284,10 @@ export default function Collections() {
 
     const results = await Promise.all(emailPromises);
     const pdfUrls = results.filter((r): r is { pdfUrl: string } => r?.pdfUrl && typeof r.pdfUrl === 'string').map(r => r.pdfUrl);
-    if (pdfUrls.length > 0 && pdfWindow && !pdfWindow.closed) {
-      if (pdfUrls.length === 1) {
-        pdfWindow.location.href = pdfUrls[0];
-      } else {
-        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Listes de collecte</title></head><body style="font-family:sans-serif;padding:20px"><p>Listes de collecte générées :</p>${pdfUrls.map((url, i) => `<p><a href="${url}" target="_blank" rel="noopener">Ouvrir la liste PDF ${i + 1}</a></p>`).join('')}</body></html>`;
-        pdfWindow.document.write(html);
-        pdfWindow.document.close();
-      }
-      toast.success('Liste PDF générée et ouverte', { duration: 2000 });
-    } else if (pdfUrls.length > 0 && (!pdfWindow || pdfWindow.closed)) {
-      toast.success(`Liste PDF générée. Ouvrez ce lien : ${pdfUrls[0]}`, { duration: 5000 });
+    if (pdfUrls.length > 0) {
+      setCollectionPdfUrls(pdfUrls);
+      setIsPdfModalOpen(true);
+      toast.success('Liste PDF générée', { duration: 2000 });
     }
 
     queryClient.invalidateQueries({ queryKey: ['quotes'] });
@@ -309,7 +298,6 @@ export default function Collections() {
     setCollectionNote('');
     setManualEmails({});
     } catch (err) {
-    pdfWindow?.close?.();
     console.error('[Collections] Erreur demande collecte:', err);
     toast.error(err instanceof Error ? err.message : 'Erreur lors de l\'envoi de la demande de collecte');
     } finally {
@@ -677,6 +665,52 @@ export default function Collections() {
                 )}
               </Button>
             </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        {/* Modal PDF liste de collecte - affichage direct (évite blocage popups) */}
+        <Dialog open={isPdfModalOpen} onOpenChange={(open) => { setIsPdfModalOpen(open); if (!open) setCollectionPdfUrls([]); }}>
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2">
+                <FileText className="w-5 h-5" />
+                Liste de collecte
+              </DialogTitle>
+              <DialogDescription>
+                Imprimez cette feuille pour la remettre à la salle des ventes lors de la collecte
+              </DialogDescription>
+            </DialogHeader>
+            <div className="flex-1 min-h-0 flex flex-col gap-3">
+              {collectionPdfUrls.length === 1 ? (
+                <iframe
+                  src={collectionPdfUrls[0]}
+                  title="Liste de collecte PDF"
+                  className="w-full flex-1 min-h-[60vh] rounded border"
+                />
+              ) : (
+                <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto">
+                  {collectionPdfUrls.map((url, i) => (
+                    <div key={i} className="border rounded p-2">
+                      <iframe src={url} title={`Liste collecte ${i + 1}`} className="w-full h-[40vh] rounded" />
+                    </div>
+                  ))}
+                </div>
+              )}
+              <div className="flex gap-2 justify-end">
+                {collectionPdfUrls.map((url, i) => (
+                  <Button
+                    key={i}
+                    variant="outline"
+                    size="sm"
+                    asChild
+                  >
+                    <a href={url} target="_blank" rel="noopener noreferrer">
+                      Ouvrir dans un nouvel onglet
+                    </a>
+                  </Button>
+                ))}
+              </div>
+            </div>
           </DialogContent>
         </Dialog>
 
