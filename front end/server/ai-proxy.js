@@ -6841,6 +6841,8 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
     });
 
     const headers = msg.data.payload.headers || [];
+    const labelIds = msg.data.labelIds || [];
+    const isOutgoing = labelIds.includes('SENT');
     const from = getHeader(headers, 'From');
     const to = getHeader(headers, 'To');
     const subject = getHeader(headers, 'Subject');
@@ -6898,7 +6900,7 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
       saasAccountId: saasAccountId, // CRITIQUE: Lier le message au compte SaaS
       devisId: devisId,
       quoteReference: refFromSubject || null,
-      direction: 'IN',
+      direction: isOutgoing ? 'OUT' : 'IN',
       source: 'GMAIL',
       from: from,
       to: to,
@@ -6921,8 +6923,9 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
       saasAccountId: saasAccountId
     });
 
-    // Créer une notification si le message est lié à un devis
-    if (devisId) {
+    // Créer une notification uniquement si le message est INCOMING (du client) et lié à un devis
+    // Ne pas notifier pour les messages sortants (envois de devis, messages automatiques)
+    if (devisId && !isOutgoing) {
       try {
         // Récupérer le devis pour vérifier le saasAccountId
         const devisDoc = await firestore.collection('quotes').doc(devisId).get();
@@ -6939,11 +6942,13 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
             message: `Le client a répondu au devis ${devis.reference || devisId}`,
           });
 
-          console.log('[Gmail Sync] 🔔 Notification créée pour nouveau message');
+          console.log('[Gmail Sync] 🔔 Notification créée pour nouveau message client (IN)');
         }
       } catch (notifError) {
         console.error('[Gmail Sync] Erreur création notification:', notifError);
       }
+    } else if (devisId && isOutgoing) {
+      console.log('[Gmail Sync] ⏭️ Pas de notification: message sortant (nos envois)');
     }
   } catch (error) {
     console.error('[Gmail Sync] Erreur lors du stockage du message:', error);
