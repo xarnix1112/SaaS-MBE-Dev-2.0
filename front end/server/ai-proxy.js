@@ -6684,6 +6684,11 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
       };
     });
 
+    // #region agent log
+    const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:api-messages',message:'API /devis/:devisId/messages',data:{devisId,quoteClientEmail,messageCount:messagesData.length,samples:messagesData.slice(0,5).map(m=>({dir:m.direction,from:(m.from||'').slice(0,60),to:Array.isArray(m.to)?m.to.join(','):String(m.to||'').slice(0,60),subject:(m.subject||'').slice(0,50)})),hypothesisId:'H3,H5'},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
+
     // Trier par date (plus récent en premier)
     messagesData.sort((a, b) => {
       const dateA = a.receivedAt || a.createdAt;
@@ -6829,6 +6834,10 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
     if (!devisId && fromEmail) {
       devisId = await findDevisByClientEmail(fromEmail, saasAccountId);
     }
+
+    // #region agent log
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:fetchAndStoreMessage',message:'Gmail sync: message association',data:{refFromSubject:refFromSubject||null,fromEmail:fromEmail||null,devisId:devisId||null,subject:(subject||'').slice(0,60),hypothesisId:'H1,H2,H4'},timestamp:Date.now()})}).catch(()=>{});
+    // #endregion
 
     // Vérifier si le message existe déjà (pour ce saasAccountId)
     const existing = await firestore
