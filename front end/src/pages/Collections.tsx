@@ -31,6 +31,7 @@ import {
   FileText,
   Building2,
   AlertCircle,
+  Loader2,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { useState, useMemo } from 'react';
@@ -54,6 +55,7 @@ export default function Collections() {
   const [collectionFailedQuoteId, setCollectionFailedQuoteId] = useState<string | null>(null);
   const [collectionFailedReason, setCollectionFailedReason] = useState('');
   const [isSendingCollectionFailed, setIsSendingCollectionFailed] = useState(false);
+  const [isSendingCollection, setIsSendingCollection] = useState(false);
 
   // Inclure uniquement les devis en attente de collecte (pas encore collectés)
   // Exclure les devis avec le statut 'collected' car ils doivent apparaître dans "Préparation"
@@ -126,10 +128,14 @@ export default function Collections() {
       toast.error("Veuillez sélectionner au moins un devis");
       return;
     }
-
+    setIsSendingCollection(true);
+    // Ouvrir une fenêtre immédiatement (geste utilisateur) pour éviter le blocage des popups
+    const pdfWindow = window.open('about:blank', '_blank', 'noopener,noreferrer');
+    try {
     const selectedQuotesData = collectionQuotes.filter(q => selectedQuotes.includes(q.id));
     if (selectedQuotesData.length === 0) {
       toast.error("Aucun devis sélectionné");
+      pdfWindow?.close?.();
       return;
     }
 
@@ -152,16 +158,19 @@ export default function Collections() {
 
     if (missingEmails.length > 0) {
       toast.error(`Veuillez saisir un email pour: ${missingEmails.join(', ')}`);
+      pdfWindow?.close?.();
       return;
     }
 
     if (!plannedDate?.trim()) {
       toast.error("Veuillez sélectionner une date pour la collecte");
+      pdfWindow?.close?.();
       return;
     }
 
     if (!plannedTime?.trim()) {
       toast.error("Veuillez sélectionner une heure pour la collecte");
+      pdfWindow?.close?.();
       return;
     }
 
@@ -171,6 +180,7 @@ export default function Collections() {
     );
     if (quotesWithoutBordereau.length > 0) {
       toast.error("Renseignez le numéro de bordereau pour tous les devis sélectionnés avant d'envoyer la demande de collecte.");
+      pdfWindow?.close?.();
       return;
     }
 
@@ -181,7 +191,7 @@ export default function Collections() {
       const houseEmail = manualEmails[houseName] || getAuctionHouseEmail(houseName);
       if (!houseEmail || !houseEmail.trim()) {
         console.warn(`Email manquant pour ${houseName}`);
-        return;
+        return null;
       }
 
       // Préparer les données des lots pour l'email
@@ -262,19 +272,35 @@ export default function Collections() {
           }),
         });
 
+        const data = await response.json().catch(() => ({}));
         if (!response.ok) {
-          const errData = await response.json().catch(() => ({}));
-          throw new Error(errData.error || 'Erreur lors de l\'envoi de l\'email');
+          throw new Error(data.error || 'Erreur lors de l\'envoi de l\'email');
         }
 
         toast.success(`Email envoyé à ${houseName}`);
+        return { pdfUrl: data.pdfUrl };
       } catch (error) {
         console.error('Erreur envoi email:', error);
         toast.error(error instanceof Error ? error.message : `Erreur lors de l'envoi de l'email à ${houseName}`);
+        return null;
       }
     });
 
-    await Promise.all(emailPromises);
+    const results = await Promise.all(emailPromises);
+    const pdfUrls = results.filter((r): r is { pdfUrl: string } => r?.pdfUrl && typeof r.pdfUrl === 'string').map(r => r.pdfUrl);
+    if (pdfUrls.length > 0 && pdfWindow && !pdfWindow.closed) {
+      if (pdfUrls.length === 1) {
+        pdfWindow.location.href = pdfUrls[0];
+      } else {
+        const html = `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Listes de collecte</title></head><body style="font-family:sans-serif;padding:20px"><p>Listes de collecte générées :</p>${pdfUrls.map((url, i) => `<p><a href="${url}" target="_blank" rel="noopener">Ouvrir la liste PDF ${i + 1}</a></p>`).join('')}</body></html>`;
+        pdfWindow.document.write(html);
+        pdfWindow.document.close();
+      }
+      toast.success('Liste PDF générée et ouverte', { duration: 2000 });
+    } else if (pdfUrls.length > 0 && (!pdfWindow || pdfWindow.closed)) {
+      toast.success(`Liste PDF générée. Ouvrez ce lien : ${pdfUrls[0]}`, { duration: 5000 });
+    }
+
     queryClient.invalidateQueries({ queryKey: ['quotes'] });
     setIsPlanningDialogOpen(false);
     setSelectedQuotes([]);
@@ -282,6 +308,13 @@ export default function Collections() {
     setPlannedTime('');
     setCollectionNote('');
     setManualEmails({});
+    } catch (err) {
+    pdfWindow?.close?.();
+    console.error('[Collections] Erreur demande collecte:', err);
+    toast.error(err instanceof Error ? err.message : 'Erreur lors de l\'envoi de la demande de collecte');
+    } finally {
+    setIsSendingCollection(false);
+    }
   };
 
   // Marquer un devis comme collecté (API → mise à jour Firestore + email automatique client)
@@ -581,12 +614,21 @@ export default function Collections() {
                   </div>
                 </div>
                 <DialogFooter>
-                  <Button variant="outline" onClick={() => setIsPlanningDialogOpen(false)}>
+                  <Button variant="outline" onClick={() => setIsPlanningDialogOpen(false)} disabled={isSendingCollection}>
                     Annuler
                   </Button>
-                  <Button onClick={handlePlanCollection}>
-                    <Mail className="w-4 h-4 mr-2" />
-                    Envoyer la demande
+                  <Button onClick={handlePlanCollection} disabled={isSendingCollection}>
+                    {isSendingCollection ? (
+                      <>
+                        <Loader2 className="w-4 h-4 mr-2 animate-spin" />
+                        Envoi en cours...
+                      </>
+                    ) : (
+                      <>
+                        <Mail className="w-4 h-4 mr-2" />
+                        Envoyer la demande
+                      </>
+                    )}
                   </Button>
                 </DialogFooter>
               </DialogContent>

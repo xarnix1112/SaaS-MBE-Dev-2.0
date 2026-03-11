@@ -215,6 +215,9 @@ export interface Quote {
   /** Date d'envoi du devis au client (email avec lien de paiement) */
   quoteSentAt?: Date | { toDate: () => Date } | null;
 
+  /** Message personnalisé envoyé lors de l'envoi du devis au client (affiché dans le PDF liste de collecte) */
+  quoteSentCustomMessage?: string | null;
+
   /** Paiement manuel (virement / CB téléphone) - permet d'annuler */
   manualPaymentMethod?: 'virement' | 'cb_telephone';
   manualPaymentDate?: Date | { toDate: () => Date } | null;
