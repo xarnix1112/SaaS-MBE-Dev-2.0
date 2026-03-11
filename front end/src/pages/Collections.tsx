@@ -687,8 +687,8 @@ export default function Collections() {
 
         {/* Modal PDF liste de collecte - affichage direct (évite blocage popups) */}
         <Dialog open={isPdfModalOpen} onOpenChange={(open) => { setIsPdfModalOpen(open); if (!open) { setCollectionPdfUrls([]); setCollectionBordereaux([]); } }}>
-          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
-            <DialogHeader>
+          <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col overflow-hidden p-0">
+            <DialogHeader className="flex-shrink-0 px-6 pt-6 pb-4">
               <DialogTitle className="flex items-center gap-2">
                 <FileText className="w-5 h-5" />
                 Liste de collecte
@@ -697,15 +697,15 @@ export default function Collections() {
                 Imprimez cette feuille pour la remettre à la salle des ventes lors de la collecte
               </DialogDescription>
             </DialogHeader>
-            <div className="flex-1 min-h-0 flex flex-col gap-3">
+            <div className="flex-1 min-h-0 overflow-y-auto px-6 pb-6 space-y-4">
               {collectionPdfUrls.length === 1 ? (
                 <iframe
                   src={collectionPdfUrls[0]}
                   title="Liste de collecte PDF"
-                  className="w-full flex-1 min-h-[60vh] rounded border"
+                  className="w-full h-[50vh] min-h-[300px] rounded border"
                 />
               ) : (
-                <div className="flex flex-col gap-2 max-h-[60vh] overflow-y-auto">
+                <div className="flex flex-col gap-2">
                   {collectionPdfUrls.map((url, i) => (
                     <div key={i} className="border rounded p-2">
                       <iframe src={url} title={`Liste collecte ${i + 1}`} className="w-full h-[40vh] rounded" />
@@ -730,7 +730,7 @@ export default function Collections() {
 
               {/* Section Bordereaux des devis */}
               {collectionBordereaux.length > 0 && (
-                <div className="border-t pt-4 mt-2 space-y-2">
+                <div className="border-t pt-4 space-y-2">
                   <h4 className="font-medium flex items-center gap-2 text-sm">
                     <FolderOpen className="w-4 h-4" />
                     Bordereaux des devis
@@ -738,7 +738,7 @@ export default function Collections() {
                   <p className="text-xs text-muted-foreground">
                     Ouvrez chaque bordereau dans un nouvel onglet pour l'imprimer
                   </p>
-                  <div className="flex flex-col gap-1 max-h-[20vh] overflow-y-auto">
+                  <div className="flex flex-col gap-1">
                     {collectionBordereaux.map(({ quoteId, reference, bordereauUrl }) => (
                       <div key={quoteId} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded hover:bg-muted/50">
                         <span className="text-sm font-mono truncate">{reference}</span>
