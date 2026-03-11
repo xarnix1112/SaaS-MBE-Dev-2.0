@@ -1,4 +1,4 @@
-import { addDoc, Timestamp } from 'firebase/firestore';
+import { addDoc, collection, Timestamp } from 'firebase/firestore';
 import { db } from './firebase';
 import { EmailMessage } from '@/types/quote';
 
@@ -46,15 +46,14 @@ export async function saveEmailMessage(emailData: {
 
 /**
  * Récupère tous les messages d'un devis depuis l'API backend
- * (Combine les messages RESEND et Gmail)
+ * (Combine les messages RESEND et Gmail) - authentification requise
  * @param devisId ID du devis
  * @returns Liste des messages triés par date (plus récent en premier)
  */
 export async function getEmailMessagesForQuote(devisId: string): Promise<EmailMessage[]> {
   try {
-    const { getApiBaseUrl } = await import('./api-base');
-    const API_BASE = getApiBaseUrl() || 'http://localhost:5174';
-    const response = await fetch(`${API_BASE}/api/devis/${devisId}/messages`);
+    const { authenticatedFetch } = await import('./api');
+    const response = await authenticatedFetch(`/api/devis/${devisId}/messages`);
     if (!response.ok) {
       throw new Error('Erreur lors de la récupération des messages');
     }

@@ -5283,12 +5283,14 @@ L'équipe MBE
     // Sauvegarder l'email dans Firestore (collection emailMessages)
     try {
       if (firestore && quote.id) {
+        const saasAccountIdForSave = quote.saasAccountId || saasAccountId;
         const emailMessageData = {
+          saasAccountId: saasAccountIdForSave,
           devisId: quote.id,
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: result.source || 'RESEND',
+          source: result.source || 'GMAIL',
           from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: emailSubject,
@@ -5566,12 +5568,14 @@ L'équipe MBE
     // Sauvegarder l'email dans Firestore (collection emailMessages)
     try {
       if (firestore && quote.id) {
+        const saasAccountIdForSave = quote.saasAccountId || saasAccountId;
         const emailMessageData = {
+          saasAccountId: saasAccountIdForSave,
           devisId: quote.id,
           clientId: quote.client?.id || null,
           clientEmail: clientEmail,
           direction: 'OUT',
-          source: result.source || 'RESEND',
+          source: result.source || 'GMAIL',
           from: result.from || EMAIL_FROM || 'devis@mbe-sdv.fr',
           to: [clientEmail],
           subject: emailSubject,
@@ -6633,32 +6637,43 @@ app.delete('/api/email-accounts/:accountId', requireAuth, async (req, res) => {
   }
 });
 
-// Route: Récupérer les messages d'un devis
-app.get('/api/devis/:devisId/messages', async (req, res) => {
+// Route: Récupérer les messages d'un devis (requireAuth pour saasAccountId)
+app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
   if (!firestore) {
     return res.status(500).json({ error: 'Firestore non configuré' });
   }
 
   const { devisId } = req.params;
+  const saasAccountId = req.saasAccountId;
+
+  if (!saasAccountId) {
+    return res.status(401).json({ error: 'Non authentifié' });
+  }
 
   try {
-    // Récupérer les messages Gmail pour ce devis
-    let messagesQuery = firestore
-      .collection('emailMessages')
-      .where('userId', '==', CURRENT_USER_ID)
-      .where('devisId', '==', devisId);
-
-    // Essayer avec orderBy, mais si l'index n'existe pas, récupérer sans tri et trier en mémoire
-    let messages;
-    try {
-      messages = await messagesQuery.orderBy('createdAt', 'desc').get();
-    } catch (orderByError) {
-      // Si l'index n'existe pas, récupérer sans orderBy et trier en mémoire
-      console.warn('[API] Index Firestore manquant, tri en mémoire:', orderByError.message);
-      messages = await messagesQuery.get();
+    // Vérifier que le devis appartient au compte
+    const quoteDoc = await firestore.collection('quotes').doc(devisId).get();
+    if (!quoteDoc.exists) {
+      return res.status(404).json({ error: 'Devis introuvable' });
+    }
+    const quoteData = quoteDoc.data();
+    if (quoteData.saasAccountId !== saasAccountId) {
+      return res.status(403).json({ error: 'Accès refusé à ce devis' });
     }
 
-    const messagesData = messages.docs.map(doc => {
+    // Récupérer les messages par devisId (inclut messages avec ou sans saasAccountId pour rétrocompatibilité)
+    const messagesSnap = await firestore
+      .collection('emailMessages')
+      .where('devisId', '==', devisId)
+      .get();
+
+    // Filtrer par saasAccountId : garder les messages du compte ou les anciens sans saasAccountId (rattachés au devis vérifié)
+    const messagesData = messagesSnap.docs
+      .filter(doc => {
+        const d = doc.data();
+        return !d.saasAccountId || d.saasAccountId === saasAccountId;
+      })
+      .map(doc => {
       const data = doc.data();
       return {
         id: doc.id,
@@ -6669,19 +6684,15 @@ app.get('/api/devis/:devisId/messages', async (req, res) => {
       };
     });
 
-    // Trier par date si orderBy a échoué (plus récent en premier)
-    if (messagesData.length > 0 && !messagesData[0].createdAt) {
-      // Les dates sont déjà des Date objects
-    } else {
-      messagesData.sort((a, b) => {
-        const dateA = a.receivedAt || a.createdAt;
-        const dateB = b.receivedAt || b.createdAt;
-        if (!dateA || !dateB) return 0;
-        const timeA = dateA instanceof Date ? dateA.getTime() : new Date(dateA).getTime();
-        const timeB = dateB instanceof Date ? dateB.getTime() : new Date(dateB).getTime();
-        return timeB - timeA; // Inversé pour avoir les plus récents en premier
-      });
-    }
+    // Trier par date (plus récent en premier)
+    messagesData.sort((a, b) => {
+      const dateA = a.receivedAt || a.createdAt;
+      const dateB = b.receivedAt || b.createdAt;
+      if (!dateA || !dateB) return 0;
+      const timeA = dateA instanceof Date ? dateA.getTime() : new Date(dateA).getTime();
+      const timeB = dateB instanceof Date ? dateB.getTime() : new Date(dateB).getTime();
+      return timeB - timeA;
+    });
 
     res.json(messagesData);
   } catch (error) {

@@ -4119,15 +4119,22 @@ export default function QuoteDetail() {
   );
 }
 
-// Composant pour l'onglet Messages
+// Composant pour l'onglet Messages (style messagerie: reçus à gauche, envoyés à droite)
 interface EmailMessagesTabProps {
   quoteId: string;
   clientEmail: string;
   onSendEmail: () => void;
 }
 
+function getMessagePreview(message: EmailMessage, maxLines = 2): string {
+  const text = message.bodyText || message.bodyHtml?.replace(/<[^>]*>/g, '') || '';
+  const lines = text.split('\n').filter(Boolean);
+  return lines.slice(0, maxLines).join(' ').slice(0, 120) + (lines.length > maxLines || text.length > 120 ? '…' : '');
+}
+
 function EmailMessagesTab({ quoteId, clientEmail, onSendEmail }: EmailMessagesTabProps) {
   const { data: messages = [], isLoading, isError } = useEmailMessages(quoteId);
+  const [selectedMessage, setSelectedMessage] = useState<EmailMessage | null>(null);
 
   if (isLoading) {
     return (
@@ -4143,92 +4150,119 @@ function EmailMessagesTab({ quoteId, clientEmail, onSendEmail }: EmailMessagesTa
     return (
       <Card>
         <CardContent className="p-6">
-          <p className="text-sm text-destructive text-center">Erreur lors du chargement des messages</p>
+          <p className="text-sm text-destructive text-center" role="alert">
+            Erreur lors du chargement des messages
+          </p>
         </CardContent>
       </Card>
     );
   }
 
   return (
-    <Card>
-      <CardHeader className="pb-3">
-        <div className="flex items-center justify-between">
-          <CardTitle className="text-base flex items-center gap-2">
-            <MessageSquare className="w-4 h-4" />
-            Historique des messages
-          </CardTitle>
-          <Button size="sm" className="gap-1" onClick={onSendEmail}>
-            <Mail className="w-4 h-4" />
-            Envoyer email
-          </Button>
-        </div>
-      </CardHeader>
-      <CardContent>
-        {messages.length === 0 ? (
-          <p className="text-sm text-muted-foreground text-center py-4">
-            Aucun message
-          </p>
-        ) : (
-          <div className="space-y-3">
-            {messages.map((message: EmailMessage) => (
-              <div 
-                key={message.id} 
-                className={cn(
-                  "p-4 rounded-lg border",
-                  message.direction === 'OUT' 
-                    ? "bg-primary/5 border-primary/20" 
-                    : "bg-secondary/50 border-border"
-                )}
-              >
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center gap-2 flex-wrap">
-                    {message.direction === 'OUT' ? (
-                      <Badge variant="default" className="gap-1">
-                        <Send className="w-3 h-3" />
-                        Envoyé
-                      </Badge>
-                    ) : (
-                      <Badge variant="secondary" className="gap-1">
-                        <Mail className="w-3 h-3" />
-                        Reçu
-                      </Badge>
+    <>
+      <Card>
+        <CardHeader className="pb-3">
+          <div className="flex items-center justify-between">
+            <CardTitle className="text-base flex items-center gap-2">
+              <MessageSquare className="w-4 h-4" />
+              Historique des messages
+            </CardTitle>
+            <Button size="sm" className="gap-1" onClick={onSendEmail}>
+              <Mail className="w-4 h-4" />
+              Envoyer email
+            </Button>
+          </div>
+        </CardHeader>
+        <CardContent>
+          {messages.length === 0 ? (
+            <p className="text-sm text-muted-foreground text-center py-4">
+              Aucun message
+            </p>
+          ) : (
+            <div className="space-y-3 flex flex-col">
+              {messages.map((message: EmailMessage) => {
+                const isOut = message.direction === 'OUT';
+                return (
+                  <div
+                    key={message.id}
+                    className={cn(
+                      'flex',
+                      isOut ? 'justify-end' : 'justify-start'
                     )}
-                    <Badge variant="outline" className="text-xs">
-                      {message.source}
-                    </Badge>
-                    <span className="text-sm font-medium">{message.subject}</span>
+                  >
+                    <button
+                      type="button"
+                      onClick={() => setSelectedMessage(message)}
+                      className={cn(
+                        'max-w-[85%] sm:max-w-[75%] rounded-2xl px-4 py-3 text-left transition-colors duration-200 cursor-pointer',
+                        'hover:opacity-90 focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2',
+                        'border border-border',
+                        isOut
+                          ? 'bg-primary text-primary-foreground'
+                          : 'bg-muted text-foreground'
+                      )}
+                    >
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-xs font-medium opacity-90">
+                          {message.subject}
+                        </span>
+                        <Badge variant={isOut ? 'secondary' : 'outline'} className="text-[10px] h-4">
+                          {message.source}
+                        </Badge>
+                      </div>
+                      <p className="text-sm opacity-90 line-clamp-2 break-words">
+                        {getMessagePreview(message)}
+                      </p>
+                      <span className="text-xs opacity-75 mt-1 block">
+                        {new Date(message.receivedAt || message.createdAt).toLocaleString('fr-FR', {
+                          day: '2-digit',
+                          month: '2-digit',
+                          hour: '2-digit',
+                          minute: '2-digit',
+                        })}
+                      </span>
+                    </button>
                   </div>
-                  <span className="text-xs text-muted-foreground">
-                    {new Date(message.receivedAt || message.createdAt).toLocaleString('fr-FR', {
-                      day: '2-digit',
-                      month: '2-digit',
-                      year: 'numeric',
-                      hour: '2-digit',
-                      minute: '2-digit',
-                    })}
-                  </span>
-                </div>
-                <div className="text-xs text-muted-foreground mb-2">
-                  <span className="font-medium">De:</span> {message.from}
+                );
+              })}
+            </div>
+          )}
+        </CardContent>
+      </Card>
+
+      <Dialog open={!!selectedMessage} onOpenChange={(open) => !open && setSelectedMessage(null)}>
+        <DialogContent className="max-w-2xl max-h-[85vh] overflow-y-auto">
+          {selectedMessage && (
+            <>
+              <DialogHeader>
+                <DialogTitle className="flex items-center gap-2">
+                  {selectedMessage.direction === 'OUT' ? (
+                    <Send className="w-4 h-4" />
+                  ) : (
+                    <Mail className="w-4 h-4" />
+                  )}
+                  {selectedMessage.subject}
+                </DialogTitle>
+                <DialogDescription>
+                  De : {selectedMessage.from}
                   {(() => {
-                    const toArray = Array.isArray(message.to) ? message.to : (message.to ? [message.to] : []);
+                    const toArray = Array.isArray(selectedMessage.to) ? selectedMessage.to : (selectedMessage.to ? [selectedMessage.to] : []);
                     return toArray.length > 0 && (
-                      <>
-                        {' • '}
-                        <span className="font-medium">À:</span> {toArray.join(', ')}
-                      </>
+                      <> • À : {toArray.join(', ')}</>
                     );
                   })()}
-                </div>
-                <div className="text-sm text-foreground mt-2 whitespace-pre-wrap">
-                  {message.bodyText || message.bodyHtml?.replace(/<[^>]*>/g, '') || 'Aucun contenu'}
-                </div>
+                  {' • '}
+                  {new Date(selectedMessage.receivedAt || selectedMessage.createdAt).toLocaleString('fr-FR')}
+                </DialogDescription>
+              </DialogHeader>
+              <div className="text-sm text-foreground whitespace-pre-wrap break-words pt-2 border-t">
+                {selectedMessage.bodyText || selectedMessage.bodyHtml?.replace(/<[^>]*>/g, '') || 'Aucun contenu'}
               </div>
-            ))}
-          </div>
-        )}
-      </CardContent>
-    </Card>
+            </>
+          )}
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 
