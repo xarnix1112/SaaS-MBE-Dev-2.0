@@ -12,9 +12,8 @@ RUN apt-get update -qq && apt-get install -y --no-install-recommends \
 # Copier les fichiers de dépendances
 COPY package.json package-lock.json* ./
 
-# Cache npm entre les builds (Railway BuildKit) — format requis: id=<cache-id>
-RUN --mount=type=cache,id=npm-cache,target=/root/.npm \
-    npm ci --prefer-offline --no-audit
+# Installer les dépendances (cache mount retiré: Railway exige id=s/<service-id>-xxx)
+RUN npm ci --prefer-offline --no-audit
 
 # Installer les dépendances Python pour OCR (pdf2image)
 COPY requirements-ocr.txt ./
