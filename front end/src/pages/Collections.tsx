@@ -29,6 +29,7 @@ import {
   Mail,
   Euro,
   FileText,
+  FolderOpen,
   Building2,
   AlertCircle,
   Loader2,
@@ -58,6 +59,7 @@ export default function Collections() {
   const [isSendingCollection, setIsSendingCollection] = useState(false);
   // Modal PDF liste de collecte (évite le blocage des popups)
   const [collectionPdfUrls, setCollectionPdfUrls] = useState<string[]>([]);
+  const [collectionBordereaux, setCollectionBordereaux] = useState<Array<{ quoteId: string; reference: string; bordereauUrl: string | null }>>([]);
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
 
   // Inclure uniquement les devis en attente de collecte (pas encore collectés)
@@ -284,8 +286,23 @@ export default function Collections() {
 
     const results = await Promise.all(emailPromises);
     const pdfUrls = results.filter((r): r is { pdfUrl: string } => r?.pdfUrl && typeof r.pdfUrl === 'string').map(r => r.pdfUrl);
+
+    // Récupérer les URLs des bordereaux pour chaque devis (triés par référence)
+    const bordereauPromises = selectedQuotesData.map(async (q) => {
+      try {
+        const r = await authenticatedFetch(`/api/devis/${q.id}/bordereau-preview`);
+        const data = r.ok ? await r.json().catch(() => null) : null;
+        return { quoteId: q.id, reference: q.reference || q.id, bordereauUrl: data?.url ?? null };
+      } catch {
+        return { quoteId: q.id, reference: q.reference || q.id, bordereauUrl: null };
+      }
+    });
+    const bordereaux = await Promise.all(bordereauPromises);
+    bordereaux.sort((a, b) => (a.reference || '').localeCompare(b.reference || ''));
+
     if (pdfUrls.length > 0) {
       setCollectionPdfUrls(pdfUrls);
+      setCollectionBordereaux(bordereaux);
       setIsPdfModalOpen(true);
       toast.success('Liste PDF générée', { duration: 2000 });
     }
@@ -669,7 +686,7 @@ export default function Collections() {
         </Dialog>
 
         {/* Modal PDF liste de collecte - affichage direct (évite blocage popups) */}
-        <Dialog open={isPdfModalOpen} onOpenChange={(open) => { setIsPdfModalOpen(open); if (!open) setCollectionPdfUrls([]); }}>
+        <Dialog open={isPdfModalOpen} onOpenChange={(open) => { setIsPdfModalOpen(open); if (!open) { setCollectionPdfUrls([]); setCollectionBordereaux([]); } }}>
           <DialogContent className="max-w-4xl max-h-[90vh] flex flex-col">
             <DialogHeader>
               <DialogTitle className="flex items-center gap-2">
@@ -710,6 +727,35 @@ export default function Collections() {
                   </Button>
                 ))}
               </div>
+
+              {/* Section Bordereaux des devis */}
+              {collectionBordereaux.length > 0 && (
+                <div className="border-t pt-4 mt-2 space-y-2">
+                  <h4 className="font-medium flex items-center gap-2 text-sm">
+                    <FolderOpen className="w-4 h-4" />
+                    Bordereaux des devis
+                  </h4>
+                  <p className="text-xs text-muted-foreground">
+                    Ouvrez chaque bordereau dans un nouvel onglet pour l'imprimer
+                  </p>
+                  <div className="flex flex-col gap-1 max-h-[20vh] overflow-y-auto">
+                    {collectionBordereaux.map(({ quoteId, reference, bordereauUrl }) => (
+                      <div key={quoteId} className="flex items-center justify-between gap-2 py-1.5 px-2 rounded hover:bg-muted/50">
+                        <span className="text-sm font-mono truncate">{reference}</span>
+                        {bordereauUrl ? (
+                          <Button variant="outline" size="sm" asChild>
+                            <a href={bordereauUrl} target="_blank" rel="noopener noreferrer">
+                              Ouvrir le bordereau
+                            </a>
+                          </Button>
+                        ) : (
+                          <span className="text-xs text-muted-foreground italic">Bordereau non disponible</span>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           </DialogContent>
         </Dialog>
