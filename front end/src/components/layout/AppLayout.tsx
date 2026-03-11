@@ -7,11 +7,11 @@ import { getZoneForPath } from '@/types/team';
 export function AppLayout() {
   useDocumentTitle();
   const location = useLocation();
-  const { can } = usePermissions();
+  const { can, isLoading: permissionsLoading } = usePermissions();
 
   const zone = getZoneForPath(location.pathname);
-  if (zone && !can(zone, 'read')) {
-    return <Navigate to="/" replace />;
+  if (zone && !permissionsLoading && !can(zone, 'read')) {
+    return <Navigate to="/help" replace />;
   }
 
   return (

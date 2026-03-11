@@ -37,6 +37,8 @@ async function getDocWithRetry(
 export interface AuthState {
   user: User | null;
   saasAccount: SaasAccount | null;
+  /** ID du compte SaaS (saasAccount.id) - utilisé par usePermissions, API, etc. */
+  saasAccountId: string | null;
   userDoc: UserDoc | null;
   isLoading: boolean;
   isSetupComplete: boolean;
@@ -48,6 +50,7 @@ export interface AuthState {
 const defaultState: AuthState = {
   user: null,
   saasAccount: null,
+  saasAccountId: null,
   userDoc: null,
   isLoading: true,
   isSetupComplete: false,
@@ -67,6 +70,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAuthState({
           user: null,
           saasAccount: null,
+          saasAccountId: null,
           userDoc: null,
           isLoading: false,
           isSetupComplete: false,
@@ -85,6 +89,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
@@ -102,6 +107,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: userDocData,
             isLoading: false,
             isSetupComplete: false,
@@ -119,6 +125,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: userDocData,
             isLoading: false,
             isSetupComplete: false,
@@ -137,6 +144,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         setAuthState({
           user,
           saasAccount: { id: saasAccountSnap.id, ...saasAccountData },
+          saasAccountId: saasAccountSnap.id,
           userDoc: userDocData,
           isLoading: false,
           isSetupComplete: true,
@@ -159,6 +167,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
@@ -170,6 +179,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
@@ -181,6 +191,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
           setAuthState({
             user: null,
             saasAccount: null,
+            saasAccountId: null,
             userDoc: null,
             isLoading: false,
             isSetupComplete: false,
