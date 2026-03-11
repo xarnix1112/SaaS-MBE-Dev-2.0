@@ -6668,6 +6668,13 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
       .get();
 
     // Filtrer par saasAccountId : garder les messages du compte ou les anciens sans saasAccountId (rattachés au devis vérifié)
+    const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
+    const extractEmailFromField = (val) => {
+      if (!val) return null;
+      const s = String(val).trim();
+      const match = s.match(/<([^>]+)>/);
+      return (match ? match[1] : s).toLowerCase();
+    };
     const messagesData = messagesSnap.docs
       .filter(doc => {
         const d = doc.data();
@@ -6675,18 +6682,30 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
       })
       .map(doc => {
       const data = doc.data();
+      const toArr = Array.isArray(data.to) ? data.to : (data.to ? [data.to] : []);
       return {
         id: doc.id,
         ...data,
-        to: Array.isArray(data.to) ? data.to : (data.to ? [data.to] : []),
+        to: toArr,
         receivedAt: data.receivedAt?.toDate ? data.receivedAt.toDate() : null,
         createdAt: data.createdAt?.toDate ? data.createdAt.toDate() : null
       };
-    });
+    })
+      .filter(m => {
+        if (!quoteClientEmail) return true;
+        if (m.direction === 'IN') {
+          const fromEmail = extractEmailFromField(m.from) || (m.clientEmail || '').toLowerCase();
+          return fromEmail === quoteClientEmail;
+        }
+        if (m.direction === 'OUT') {
+          const toEmails = (m.to || []).map(t => extractEmailFromField(t) || String(t || '').toLowerCase()).filter(Boolean);
+          return toEmails.some(e => e === quoteClientEmail);
+        }
+        return true;
+      });
 
     // #region agent log
-    const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:api-messages',message:'API /devis/:devisId/messages',data:{devisId,quoteClientEmail,messageCount:messagesData.length,samples:messagesData.slice(0,5).map(m=>({dir:m.direction,from:(m.from||'').slice(0,60),to:Array.isArray(m.to)?m.to.join(','):String(m.to||'').slice(0,60),subject:(m.subject||'').slice(0,50)})),hypothesisId:'H3,H5'},timestamp:Date.now()})}).catch(()=>{});
+    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:api-messages',message:'API /devis/:devisId/messages',data:{devisId,quoteClientEmail,messageCount:messagesData.length,hypothesisId:'H3'},timestamp:Date.now()})}).catch(()=>{});
     // #endregion
 
     // Trier par date (plus récent en premier)
@@ -6745,8 +6764,10 @@ function getHeader(headers, name) {
 }
 
 // Extraire une référence de devis depuis le subject
-// Exemples supportés : DEV-GS-4, DEV-123, DV-2024-001, DV_ABC_42
+// Exemples supportés : GS-1771802981375-5, DEV-GS-4, DEV-123, DV-2024-001
 function extractQuoteRefFromSubject(subject = '') {
+  const gsMatch = subject.match(/\bGS-\d+(?:-\d+)?\b/i);
+  if (gsMatch) return gsMatch[0];
   const re = /(?:DEV|DV)[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*/gi;
   const matches = subject.match(re);
   if (!matches || matches.length === 0) return null;
@@ -6823,7 +6844,13 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
           .limit(1)
           .get();
         if (!snap.empty) {
-          devisId = snap.docs[0].id;
+          const quoteDoc = snap.docs[0];
+          const quoteData = quoteDoc.data();
+          const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
+          const fromEmailNorm = (fromEmail || '').trim().toLowerCase();
+          if (quoteClientEmail && fromEmailNorm && fromEmailNorm === quoteClientEmail) {
+            devisId = quoteDoc.id;
+          }
         }
       } catch (err) {
         console.error('[Gmail Sync] Erreur recherche devis par référence:', err);
