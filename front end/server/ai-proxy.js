@@ -73,6 +73,7 @@ import {
   sendShippedEmail,
   getBodyContentPreview,
 } from "./quote-automatic-emails.js";
+import { generateCollectionPdf } from "./collection-pdf-generator.js";
 import {
   getTemplatesForAccount,
   validateTemplate,
@@ -5310,11 +5311,12 @@ L'équipe MBE
       console.error('[emailMessages] ❌ Erreur lors de la sauvegarde de l\'email dans Firestore:', firestoreError);
     }
 
-    // Enregistrer la date d'envoi du devis (pour Bilan)
+    // Enregistrer la date d'envoi du devis et le message personnalisé (pour Bilan + PDF collecte)
     if (firestore && quote.id) {
       try {
         await firestore.collection('quotes').doc(quote.id).update({
           quoteSentAt: Timestamp.now(),
+          quoteSentCustomMessage: customMessage && String(customMessage).trim() ? String(customMessage).trim() : null,
           updatedAt: Timestamp.now(),
         });
       } catch (e) {
@@ -5861,6 +5863,33 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
 
     console.log('[AI Proxy] Email collecte envoyé avec succès:', result);
 
+    // Générer le PDF liste de collecte et l'uploader dans Firebase Storage
+    let pdfUrl = null;
+    if (quotes && quotes.length > 0 && firestore) {
+      try {
+        const saasAccountId = req.saasAccountId || quotes[0]?.saasAccountId;
+        const quoteSnaps = await Promise.all(quotes.map((q) => firestore.collection('quotes').doc(q.id).get()));
+        const quotesFull = quoteSnaps.filter((s) => s.exists).map((s) => ({ ...s.data(), id: s.id }));
+        if (quotesFull.length > 0) {
+          const pdfBuffer = await generateCollectionPdf(quotesFull, {
+            auctionHouse: auctionHouse || '',
+            plannedDate: plannedDate || null,
+            plannedTime: plannedTime || null,
+          });
+          const slug = (auctionHouse || 'collecte').replace(/[^a-z0-9-]/gi, '-').replace(/-+/g, '-').substring(0, 40);
+          const fileName = `collection-pdfs/${saasAccountId || 'default'}/${Date.now()}-${slug}.pdf`;
+          const bucket = getStorage().bucket();
+          const storageFile = bucket.file(fileName);
+          await storageFile.save(pdfBuffer, { contentType: 'application/pdf' });
+          await storageFile.makePublic();
+          pdfUrl = `https://storage.googleapis.com/${bucket.name}/${fileName}`;
+          console.log('[AI Proxy] PDF liste de collecte généré et uploadé:', pdfUrl);
+        }
+      } catch (pdfErr) {
+        console.warn('[AI Proxy] PDF liste de collecte non généré:', pdfErr?.message);
+      }
+    }
+
     // Envoyer un email automatique à chaque client pour les devis concernés
     // + Enregistrer collectionPlannedAt sur chaque devis
     const effectiveSaasId = saasAccountId || (quotes && quotes[0]?.saasAccountId);
@@ -5930,6 +5959,7 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
       to,
       auctionHouse,
       quotesCount: quotes?.length || 0,
+      pdfUrl: pdfUrl || undefined,
     });
   } catch (error) {
     console.error('[AI Proxy] Erreur envoi email collecte:', error);
@@ -6661,14 +6691,11 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Accès refusé à ce devis' });
     }
 
-    // Récupérer les messages par devisId (inclut messages avec ou sans saasAccountId pour rétrocompatibilité)
+    const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
     const messagesSnap = await firestore
       .collection('emailMessages')
       .where('devisId', '==', devisId)
       .get();
-
-    // Filtrer par saasAccountId : garder les messages du compte ou les anciens sans saasAccountId (rattachés au devis vérifié)
-    const quoteClientEmail = (quoteData.client?.email || quoteData.clientEmail || quoteData.delivery?.contact?.email || '').trim().toLowerCase();
     const extractEmailFromField = (val) => {
       if (!val) return null;
       const s = String(val).trim();
@@ -6692,7 +6719,7 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
       };
     })
       .filter(m => {
-        if (!quoteClientEmail) return true;
+        if (!quoteClientEmail) return false; // Pas d'email client → ne rien afficher
         if (m.direction === 'IN') {
           const fromEmail = extractEmailFromField(m.from) || (m.clientEmail || '').toLowerCase();
           return fromEmail === quoteClientEmail;
@@ -6701,12 +6728,8 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
           const toEmails = (m.to || []).map(t => extractEmailFromField(t) || String(t || '').toLowerCase()).filter(Boolean);
           return toEmails.some(e => e === quoteClientEmail);
         }
-        return true;
+        return false;
       });
-
-    // #region agent log
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:api-messages',message:'API /devis/:devisId/messages',data:{devisId,quoteClientEmail,messageCount:messagesData.length,hypothesisId:'H3'},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     // Trier par date (plus récent en premier)
     messagesData.sort((a, b) => {
@@ -6767,7 +6790,7 @@ function getHeader(headers, name) {
 // Exemples supportés : GS-1771802981375-5, DEV-GS-4, DEV-123, DV-2024-001
 function extractQuoteRefFromSubject(subject = '') {
   const gsMatch = subject.match(/\bGS-\d+(?:-\d+)?\b/i);
-  if (gsMatch) return gsMatch[0];
+  if (gsMatch) return gsMatch[0].toUpperCase();
   const re = /(?:DEV|DV)[-_]?[A-Z0-9]+(?:[-_][A-Z0-9]+)*/gi;
   const matches = subject.match(re);
   if (!matches || matches.length === 0) return null;
@@ -6790,20 +6813,16 @@ async function findDevisByClientEmail(emailRaw, saasAccountId) {
 
   for (const field of fieldsToTry) {
     try {
-      // Filtrer par saasAccountId ET par email
-      let query = firestore.collection('quotes')
+      const snap = await firestore.collection('quotes')
         .where('saasAccountId', '==', saasAccountId)
         .where(field, '==', email)
-        .limit(1);
+        .limit(2)
+        .get();
 
-      const snap = await query.get();
-
-      if (!snap.empty) {
-        return snap.docs[0].id;
-      }
+      if (snap.size === 1) return snap.docs[0].id;
+      if (snap.size > 1) return null; // Plusieurs devis même client: ne pas deviner
     } catch (error) {
-      // Continuer avec les autres champs; log en debug
-      console.error(`[Gmail Sync] Erreur lors de la recherche du devis avec ${field}:`, error);
+      console.error(`[Gmail Sync] Erreur recherche devis avec ${field}:`, error);
     }
   }
 
@@ -6861,10 +6880,6 @@ async function fetchAndStoreMessage(gmail, messageId, saasAccountId) {
     if (!devisId && fromEmail) {
       devisId = await findDevisByClientEmail(fromEmail, saasAccountId);
     }
-
-    // #region agent log
-    fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'1366da'},body:JSON.stringify({sessionId:'1366da',location:'ai-proxy.js:fetchAndStoreMessage',message:'Gmail sync: message association',data:{refFromSubject:refFromSubject||null,fromEmail:fromEmail||null,devisId:devisId||null,subject:(subject||'').slice(0,60),hypothesisId:'H1,H2,H4'},timestamp:Date.now()})}).catch(()=>{});
-    // #endregion
 
     // Vérifier si le message existe déjà (pour ce saasAccountId)
     const existing = await firestore
