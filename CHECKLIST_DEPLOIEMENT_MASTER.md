@@ -50,8 +50,8 @@ npm run firestore:indexes:prod
 | `STRIPE_SECRET_KEY` | `sk_live_...` | Stripe Dashboard (mode live) |
 | `STRIPE_WEBHOOK_SECRET` | `whsec_...` (live) | Stripe → Webhooks → endpoint prod |
 | `STRIPE_CONNECT_CLIENT_ID` | `ca_...` (live) | Stripe Connect → Settings |
-| `APP_URL` | `https://mbe-sdv.fr` (ou ton domaine prod) | Ton domaine |
-| `FRONTEND_URL` | Idem que APP_URL | — |
+| `APP_URL` | `https://api.mbe-sdv.fr` | URL du backend Railway |
+| `FRONTEND_URL` | `https://mbe-sdv.fr` (ou `https://www.mbe-sdv.fr`) | URL frontend (redirections Stripe/Paytweak) |
 | `GROQ_API_KEY` | `gsk_...` | groq.com (analyse OCR bordereaux) |
 | `MBE_HUB_ENV` | `prod` | Si MBE Hub utilisé en prod |
 | `FIREBASE_STORAGE_BUCKET` | `saas-mbe-sdv-production.appspot.com` ou `.firebasestorage.app` | **Obligatoire pour upload logo (Modèles d'email)**. Voir `FIREBASE_STORAGE_PRODUCTION.md` si erreur "bucket does not exist" |
@@ -80,17 +80,43 @@ npm run firestore:indexes:prod
 - Paramètres → Expédition : choisir « MBE Hub » comme méthode de calcul
 - Plans Pro/Ultra uniquement
 
-### 5. Webhook Stripe (production)
+### 5. Règles Firestore (production)
 
-- Créer un endpoint webhook Stripe pointant vers : `https://[ton-backend-railway]/api/stripe/webhook`
+Les nouvelles règles pour `insuranceSettings`, `teamMembers`, `saasAccounts` doivent être déployées :
+
+```bash
+firebase deploy --only firestore:rules --project saas-mbe-sdv-production
+```
+
+### 6. Webhook Stripe (production)
+
+- Redirect URIs : `https://api.mbe-sdv.fr/stripe/callback`
+- Créer un endpoint webhook Stripe pointant vers : `https://api.mbe-sdv.fr/api/stripe/webhook` (ou la route configurée)
 - Activer les événements : `checkout.session.completed`, `payment_intent.succeeded`, etc.
 - Copier le **Signing secret** dans `STRIPE_WEBHOOK_SECRET` sur Railway
+
+### 7. Gmail OAuth (Google Cloud Console)
+
+- Gmail Redirect URI production : `https://api.mbe-sdv.fr/auth/gmail/callback`
+- Ajouter `https://mbe-sdv.fr` dans les origines autorisées si nécessaire
+
+### 8. Paytweak (si utilisé)
+
+- Webhook URL production : `https://api.mbe-sdv.fr/api/paytweak/webhook`
+- Configurer dans le backoffice Paytweak pour le compte production
+
+### 9. Plans tarifaires (Firestore)
+
+```bash
+cd front end
+PLANS_INIT_CREDENTIALS=firebase-credentials-prod.json npm run plans:init
+```
 
 ---
 
 ## Actions optionnelles (selon ton setup)
 
-- **Firebase Storage** : Si templates email avec logo upload, activer Storage sur le projet prod + définir `FIREBASE_STORAGE_BUCKET` sur Railway (voir `FIREBASE_STORAGE_PRODUCTION.md`)
+- **Firebase Storage** : PDF collecte et templates email avec logo — activer Storage sur le projet prod + définir `FIREBASE_STORAGE_BUCKET` sur Railway (voir `FIREBASE_STORAGE_PRODUCTION.md`)
 - **Google Sheets** : Bilan (En cours / Terminés) — connecter le Sheet dans Paramètres → Intégrations
 - **Gmail OAuth** : Pour envoi d’emails depuis l’app
 
@@ -103,6 +129,9 @@ npm run firestore:indexes:prod
 git checkout master
 git merge staging
 git push origin master
+
+# Déployer les règles Firestore en prod
+firebase deploy --only firestore:rules --project saas-mbe-sdv-production
 
 # Déployer les index Firestore en prod
 firebase deploy --only firestore:indexes --project saas-mbe-sdv-production
