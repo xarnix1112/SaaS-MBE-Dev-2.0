@@ -98,6 +98,7 @@ import {
   exportAllQuotesToBilan,
   syncQuoteToBilanSheet,
 } from "./bilan-google-sheet.js";
+import { getBaseUrl } from "./lib/env.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -9138,7 +9139,7 @@ app.post('/api/devis/:id/try-auto-payment', requireAuth, async (req, res) => {
     const auctionHouse = devis.lot?.auctionHouse || devis.auctionSheet?.auctionHouse || '';
     const description = [clientName, bordereauNumber, auctionHouse].filter(Boolean).join(' | ') || `Devis ${devis.reference || devisId} - PRINCIPAL`;
 
-    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+    const baseUrl = getBaseUrl();
 
     if (usePaytweak) {
       const paytweakResult = await createPaytweakLinkForAccount(firestore, req.saasAccountId, {
@@ -11089,7 +11090,7 @@ async function calculateDevisFromOCR(devisId, ocrResult, saasAccountId) {
 
             if (usePaytweak) {
               try {
-                const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+                const baseUrl = getBaseUrl();
                 const clientName = devis.client?.name || 'Client';
                 const bordereauNumber = ocrResult.numero_bordereau || '';
                 const auctionHouse = ocrResult.salle_vente || '';
@@ -12905,7 +12906,7 @@ app.post('/api/paytweak/link', requireAuth, async (req, res) => {
     if (!amount || !reference || !customer?.email) {
       return res.status(400).json({ error: 'Champs requis: amount, reference, customer.email' });
     }
-    const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+    const baseUrl = getBaseUrl();
     const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
     return res.json({ url: result.url, id: result.id });
   } catch (error) {
@@ -12926,7 +12927,7 @@ app.post('/api/payment/link', requireAuth, async (req, res) => {
     const config = await getPaymentProviderConfig(firestore, saasAccountId);
     const usePaytweak = config?.hasCustomPaytweak && config?.paymentProvider === 'paytweak' && config?.paytweakConfigured;
     if (usePaytweak) {
-      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      const baseUrl = getBaseUrl();
       const result = await createPaytweakLinkForAccount(firestore, saasAccountId, req.body, baseUrl);
       return res.json({ url: result.url, id: result.id });
     }

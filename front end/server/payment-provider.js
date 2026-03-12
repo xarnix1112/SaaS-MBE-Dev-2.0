@@ -9,6 +9,7 @@
  */
 
 import fetch from 'node-fetch';
+import { getBaseUrl } from './lib/env.js';
 
 const CUSTOM_PAYTWEAK_ACCOUNT_IDS = ['es4IiIhl03aPttsTz5xj', 'JrCRpURxF7k6PHwueLPr'];
 const PAYTWEAK_API_BASE = process.env.VITE_PAYTWEAK_API_BASE || 'https://api.paytweak.com';
@@ -171,7 +172,7 @@ function extractNomFamille(fullName) {
  * @param {string} baseUrl - URL de base (ex: APP_URL)
  * @returns {Promise<{url: string, id?: string, order_id?: string}>}
  */
-export async function createPaytweakLinkForAccount(firestore, saasAccountId, payload, baseUrl = 'https://staging.mbe-sdv.fr') {
+export async function createPaytweakLinkForAccount(firestore, saasAccountId, payload, baseUrl = getBaseUrl()) {
   const workToken = await getPaytweakWorkToken(firestore, saasAccountId);
   let { amount, currency = 'EUR', reference, description, customer, devisId, groupId, quote } = payload;
 

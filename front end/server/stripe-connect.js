@@ -18,6 +18,7 @@ import fs from "fs";
 import { createNotification, NOTIFICATION_TYPES } from "./notifications.js";
 import { sendPaymentReceivedEmail } from "./quote-automatic-emails.js";
 import { computeInsuranceAmount as computeInsuranceFromSettings } from "./insurance-settings.js";
+import { getBaseUrl } from "./lib/env.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -569,7 +570,7 @@ export async function handleCreatePaiement(req, res, firestore) {
       if (bordereauNumber) descriptionParts.push(bordereauNumber);
       if (auctionHouse) descriptionParts.push(auctionHouse);
       const descriptionStr = descriptionParts.join(' | ') || `Devis ${devis.reference || devisId} - ${type}`;
-      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      const baseUrl = getBaseUrl();
       try {
         const paytweakResult = await createPaytweakLinkForAccount(firestore, saasAccountId, {
           amount,
@@ -1696,7 +1697,7 @@ export async function handleCreateGroupPaiement(req, res, firestore) {
     const usePaytweak = paymentConfig?.hasCustomPaytweak && paymentConfig?.paymentProvider === 'paytweak' && paymentConfig?.paytweakConfigured;
 
     if (usePaytweak) {
-      const baseUrl = process.env.APP_URL || process.env.FRONTEND_URL || 'https://staging.mbe-sdv.fr';
+      const baseUrl = getBaseUrl();
       try {
         const paytweakResult = await createPaytweakLinkForAccount(firestore, clientSaasId, {
           amount: totalWithShipping,

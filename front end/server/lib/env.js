@@ -40,3 +40,14 @@ export const isDevelopment = currentEnv === 'development';
 export const isStaging = currentEnv === 'staging';
 export const isProduction = currentEnv === 'production';
 export const isValidEnv = (e) => VALID_ENVS.includes(e);
+
+/**
+ * URL de base pour redirections (Stripe, Paytweak success/cancel, etc.)
+ * Priorité : APP_URL ou FRONTEND_URL, sinon fallback selon NODE_ENV
+ */
+export function getBaseUrl() {
+  const url = process.env.APP_URL || process.env.FRONTEND_URL;
+  if (url) return url.replace(/\/+$/, '');
+  if (process.env.NODE_ENV === 'production') return 'https://mbe-sdv.fr';
+  return 'https://staging.mbe-sdv.fr';
+}
