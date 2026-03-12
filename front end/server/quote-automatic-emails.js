@@ -174,6 +174,8 @@ async function sendAutoEmail(firestore, sendEmailFn, quote, subject, htmlContent
         clientEmail,
         direction: 'OUT',
         source: result?.source || 'RESEND',
+        from: result?.from || 'Plateforme MBE-SDV <noreply@mbe-sdv.fr>',
+        to: [clientEmail],
         subject,
         bodyText: textContent || '',
         bodyHtml: htmlContent,

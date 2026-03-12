@@ -6726,7 +6726,10 @@ app.get('/api/devis/:devisId/messages', requireAuth, async (req, res) => {
         }
         if (m.direction === 'OUT') {
           const toEmails = (m.to || []).map(t => extractEmailFromField(t) || String(t || '').toLowerCase()).filter(Boolean);
-          return toEmails.some(e => e === quoteClientEmail);
+          if (toEmails.some(e => e === quoteClientEmail)) return true;
+          // Fallback: emails auto (autoEmail) sauvegardés avec clientEmail mais sans to
+          const msgClientEmail = (m.clientEmail || '').trim().toLowerCase();
+          return msgClientEmail && msgClientEmail === quoteClientEmail;
         }
         return false;
       });
