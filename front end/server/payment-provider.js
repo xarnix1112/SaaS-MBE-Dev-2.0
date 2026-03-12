@@ -149,8 +149,20 @@ export function parsePaytweakOrderId(orderId) {
 }
 
 /**
+ * Extrait le nom de famille depuis le nom complet (Prénom Nom → Nom).
+ * Un seul mot → tout le nom ; plusieurs mots → tout sauf le prénom.
+ */
+function extractNomFamille(fullName) {
+  if (!fullName || typeof fullName !== 'string') return '';
+  const parts = fullName.trim().split(/\s+/).filter(Boolean);
+  if (parts.length <= 1) return parts[0] || '';
+  return parts.slice(1).join(' ') || parts[0];
+}
+
+/**
  * Crée un lien Paytweak pour un compte SaaS.
  * Conforme à la doc: POST /v1/links/, header Paytweak-Token, params order_id, amount, cur, etc.
+ * Description (freetext) : Nom famille client | Numéro bordereau | Nom SDV
  *
  * @param {FirebaseFirestore.Firestore} firestore
  * @param {string} saasAccountId
@@ -168,10 +180,11 @@ export async function createPaytweakLinkForAccount(firestore, saasAccountId, pay
   }
   const quoteData = quote || { reference, auctionSheet: {}, lot: {} };
   const order_id = buildPaytweakOrderId(quoteData, devisId || reference, groupId);
-  const nomFamille = (quoteData?.reference || reference || 'MBE').substring(0, 30);
+  const clientFullName = quoteData?.client?.name || customer?.name || '';
+  const nomFamille = (extractNomFamille(clientFullName) || quoteData?.reference || reference || 'MBE').substring(0, 30);
   const numero = quoteData?.auctionSheet?.bordereauNumber || quoteData?.lot?.bordereauNumber || '';
   const salle = quoteData?.auctionSheet?.auctionHouse || quoteData?.lot?.auctionHouse || '';
-  const freetext = [salle && `Salle: ${salle}`, numero && `Bordereau: ${numero}`, nomFamille && `Réf: ${nomFamille}`].filter(Boolean).join(' | ') || reference;
+  const freetext = [nomFamille, numero, salle].filter(Boolean).join(' | ') || reference;
 
   const postData = new URLSearchParams({
     order_id,
