@@ -43,14 +43,19 @@ export default function Dashboard() {
   const stats = useMemo(
     () => ({
       newQuotes: safeQuotes.filter((q) => isNewQuote(q.status)).length,
-      awaitingVerification: safeQuotes.filter((q) => q.status === "to_verify").length,
       awaitingPayment: safeQuotes.filter((q) =>
         ["payment_link_sent", "awaiting_payment"].includes(q.status)
       ).length,
       awaitingCollection: safeQuotes.filter((q) => q.status === "awaiting_collection").length,
-      inPreparation: safeQuotes.filter((q) => q.status === "preparation").length,
+      collected: safeQuotes.filter((q) => q.status === "collected").length,
+      inPreparation: safeQuotes.filter((q) =>
+        q.status === "preparation" || (q.status === "awaiting_shipment" && q.surchargePending)
+      ).length,
+      awaitingShipment: safeQuotes.filter((q) =>
+        q.status === "awaiting_shipment" && !q.surchargePending
+      ).length,
       shipped: safeQuotes.filter((q) => q.status === "shipped").length,
-      completed: safeQuotes.filter((q) => q.status === "completed").length,
+      completed: safeQuotes.filter((q) => q.status === "completed" || q.status === "sent_to_mbe_hub").length,
     }),
     [safeQuotes]
   );
@@ -169,7 +174,7 @@ export default function Dashboard() {
               </CardContent>
             </Card>
 
-            {/* Pipeline Summary */}
+            {/* Pipeline Summary - ordre chronologique aligné avec le Pipeline */}
             <Card>
               <CardHeader className="pb-3">
                 <CardTitle className="text-base">Résumé pipeline</CardTitle>
@@ -185,30 +190,51 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between py-2 border-b border-border">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-warning" />
-                    <span className="text-sm">À vérifier</span>
-                  </div>
-                  <span className="font-semibold">{stats.awaitingVerification}</span>
-                </div>
-                <div className="flex items-center justify-between py-2 border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-info" />
                     <span className="text-sm">Attente paiement</span>
                   </div>
                   <span className="font-semibold">{stats.awaitingPayment}</span>
                 </div>
                 <div className="flex items-center justify-between py-2 border-b border-border">
                   <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-success" />
-                    <span className="text-sm">En préparation</span>
+                    <div className="w-2 h-2 rounded-full bg-warning" />
+                    <span className="text-sm">Attente collecte</span>
+                  </div>
+                  <span className="font-semibold">{stats.awaitingCollection}</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-border">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-info" />
+                    <span className="text-sm">Collecté</span>
+                  </div>
+                  <span className="font-semibold">{stats.collected}</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-border">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-info" />
+                    <span className="text-sm">Préparation</span>
                   </div>
                   <span className="font-semibold">{stats.inPreparation}</span>
                 </div>
-                <div className="flex items-center justify-between py-2">
+                <div className="flex items-center justify-between py-2 border-b border-border">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-warning" />
+                    <span className="text-sm">Attente envoi</span>
+                  </div>
+                  <span className="font-semibold">{stats.awaitingShipment}</span>
+                </div>
+                <div className="flex items-center justify-between py-2 border-b border-border">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-success" />
                     <span className="text-sm">Expédiés</span>
                   </div>
                   <span className="font-semibold">{stats.shipped}</span>
+                </div>
+                <div className="flex items-center justify-between py-2">
+                  <div className="flex items-center gap-2">
+                    <div className="w-2 h-2 rounded-full bg-success" />
+                    <span className="text-sm">Terminé</span>
+                  </div>
+                  <span className="font-semibold">{stats.completed}</span>
                 </div>
                 <Link to="/pipeline">
                   <Button variant="ghost" size="sm" className="w-full mt-2 gap-1">
