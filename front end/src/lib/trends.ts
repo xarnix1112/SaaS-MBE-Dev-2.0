@@ -1,4 +1,5 @@
 import { Quote } from '@/types/quote';
+import { isNewQuote } from '@/lib/quoteFilters';
 
 /**
  * Calcule le trend (pourcentage d'évolution) pour un ensemble de devis
@@ -126,10 +127,10 @@ export function calculateTrend(
 }
 
 /**
- * Calcule le trend pour les nouveaux devis (status = 'new')
+ * Calcule le trend pour les nouveaux devis (aligné avec la page Nouveaux devis)
  */
 export function calculateNewQuotesTrend(quotes: Quote[]): TrendResult | null {
-  return calculateTrend(quotes, (q) => q.status === 'new');
+  return calculateTrend(quotes, (q) => isNewQuote(q.status));
 }
 
 /**

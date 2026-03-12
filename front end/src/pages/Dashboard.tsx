@@ -3,6 +3,7 @@ import { AppHeader } from "@/components/layout/AppHeader";
 import { StatCard } from "@/components/dashboard/StatCard";
 import { QuoteCard } from "@/components/quotes/QuoteCard";
 import { useQuotes } from "@/hooks/use-quotes";
+import { isNewQuote } from "@/lib/quoteFilters";
 import { 
   calculateNewQuotesTrend, 
   calculateAwaitingPaymentTrend, 
@@ -41,7 +42,7 @@ export default function Dashboard() {
   
   const stats = useMemo(
     () => ({
-      newQuotes: safeQuotes.filter((q) => q.status === "new").length,
+      newQuotes: safeQuotes.filter((q) => isNewQuote(q.status)).length,
       awaitingVerification: safeQuotes.filter((q) => q.status === "to_verify").length,
       awaitingPayment: safeQuotes.filter((q) =>
         ["payment_link_sent", "awaiting_payment"].includes(q.status)

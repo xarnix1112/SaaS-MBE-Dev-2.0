@@ -20,20 +20,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
-
-// Statuts des devis exclus de la page "Nouveaux devis"
-// Tout ce qui n'est pas dans cette liste = nouveau devis (visible dans cet onglet)
-const STATUS_APRES_ATTENTE_PAIEMENT = [
-  'awaiting_payment',
-  'paid',
-  'awaiting_collection',
-  'collected',
-  'preparation',
-  'awaiting_shipment',
-  'sent_to_mbe_hub',  // Envoyé vers MBE Hub → visible dans Expéditions / Expédiés
-  'shipped',
-  'completed',
-] as const;
+import { isNewQuote } from '@/lib/quoteFilters';
 
 type FilterStatus = 'all' | 'new' | 'to_verify' | 'verified' | 'payment_link_sent' | 'calculated' | 'bordereau_linked' | 'waiting_for_slip' | 'other';
 
@@ -48,8 +35,7 @@ export default function NewQuotes() {
     () =>
       quotes.filter((q) => {
         if (q.clientRefusalStatus === 'client_refused') return false;
-        const status = q.status || 'new';
-        return !STATUS_APRES_ATTENTE_PAIEMENT.includes(status as typeof STATUS_APRES_ATTENTE_PAIEMENT[number]);
+        return isNewQuote(q.status);
       }),
     [quotes]
   );
