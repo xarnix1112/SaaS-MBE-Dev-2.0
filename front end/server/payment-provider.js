@@ -118,15 +118,16 @@ async function getPaytweakWorkToken(firestore, saasAccountId) {
 }
 
 /**
- * Construit l'order_id au format: NomFamilleBordereau-NumeroBordereau-SalleDeVente-devisId
- * Pour le groupe: group-groupId
- * freetext contient la même info lisible.
+ * Construit l'order_id affiché sur la page paiement Axepta ("VOTRE COMMANDE").
+ * Format lisible: NomFamille-NumeroBordereau-SalleDeVente__devisId
+ * Le suffixe __devisId est requis pour parsePaytweakOrderId (webhook).
  */
-function buildPaytweakOrderId(quote, devisId, groupId) {
+function buildPaytweakOrderId(quote, devisId, groupId, customer) {
   if (groupId) return `group-${groupId}`;
-  const nomFamille = (quote.reference || 'MBE').replace(/[\s\/\\]/g, '_').substring(0, 30);
-  const numero = (quote.auctionSheet?.bordereauNumber || quote.lot?.bordereauNumber || '0').replace(/[\s\/\\]/g, '_');
-  const salle = (quote.auctionSheet?.auctionHouse || quote.lot?.auctionHouse || 'SDV').replace(/[\s\/\\]/g, '_').substring(0, 40);
+  const clientFullName = quote?.client?.name || customer?.name || '';
+  const nomFamille = (extractNomFamille(clientFullName) || quote?.reference || 'MBE').replace(/[\s\/\\]/g, '_').substring(0, 30);
+  const numero = (quote?.auctionSheet?.bordereauNumber || quote?.lot?.bordereauNumber || '0').replace(/[\s\/\\]/g, '_');
+  const salle = (quote?.auctionSheet?.auctionHouse || quote?.lot?.auctionHouse || 'SDV').replace(/[\s\/\\]/g, '_').substring(0, 40);
   return devisId ? `${nomFamille}-${numero}-${salle}__${devisId}` : `${nomFamille}-${numero}-${salle}`;
 }
 
@@ -179,7 +180,7 @@ export async function createPaytweakLinkForAccount(firestore, saasAccountId, pay
     if (quoteDoc.exists) quote = { id: quoteDoc.id, ...quoteDoc.data() };
   }
   const quoteData = quote || { reference, auctionSheet: {}, lot: {} };
-  const order_id = buildPaytweakOrderId(quoteData, devisId || reference, groupId);
+  const order_id = buildPaytweakOrderId(quoteData, devisId || reference, groupId, customer);
   const clientFullName = quoteData?.client?.name || customer?.name || '';
   const nomFamille = (extractNomFamille(clientFullName) || quoteData?.reference || reference || 'MBE').substring(0, 30);
   const numero = quoteData?.auctionSheet?.bordereauNumber || quoteData?.lot?.bordereauNumber || '';
