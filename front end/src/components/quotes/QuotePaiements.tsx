@@ -37,16 +37,30 @@ import {
   ExternalLink,
   Loader2,
   Ban,
+  Send,
 } from 'lucide-react';
 import { Separator } from '@/components/ui/separator';
 import { toast } from 'sonner';
 import { createPaiement, getPaiements, cancelPaiement, syncPaymentAmount } from '@/lib/stripeConnect';
 import type { Paiement, PaiementType } from '@/types/stripe';
 import { Quote } from '@/types/quote';
-import { doc, getDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, Timestamp } from 'firebase/firestore';
 import { db } from '@/lib/firebase';
+import { authenticatedFetch } from '@/lib/api';
+import { createTimelineEvent, timelineEventToFirestore } from '@/lib/quoteTimeline';
+import { useQueryClient } from '@tanstack/react-query';
 import { useInsuranceSettings } from '@/hooks/use-insurance-settings';
 import { computeInsuranceWithConfig } from '@/lib/insurance';
+
+const SURCHARGE_REASONS: { value: string; label: string }[] = [
+  { value: 'dimensions_reelles', label: 'Dimensions réelles supérieures aux estimations' },
+  { value: 'poids_reel', label: 'Poids réel supérieur aux estimations' },
+  { value: 'emballage_supplementaire', label: 'Emballage supplémentaire' },
+  { value: 'frais_douane', label: 'Frais de douane / dédouanement' },
+  { value: 'assurance_complementaire', label: 'Assurance complémentaire' },
+  { value: 'livraison_express', label: 'Livraison express' },
+  { value: 'autre', label: 'Autre' },
+];
 
 interface QuotePaiementsProps {
   devisId: string;
@@ -55,6 +69,7 @@ interface QuotePaiementsProps {
 }
 
 export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: QuotePaiementsProps) {
+  const queryClient = useQueryClient();
   const { data: insuranceConfig } = useInsuranceSettings();
   const computeInsuranceAmount = (
     lotValue: number,
@@ -72,6 +87,13 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   const [amount, setAmount] = useState('');
   const [type, setType] = useState<PaiementType>('PRINCIPAL');
   const [description, setDescription] = useState('');
+
+  // Dialog Envoyer surcoût
+  const [selectedSurchargeForDialog, setSelectedSurchargeForDialog] = useState<Paiement | null>(null);
+  const [isSurchargeDialogOpen, setIsSurchargeDialogOpen] = useState(false);
+  const [surchargeReason, setSurchargeReason] = useState('dimensions_reelles');
+  const [surchargeReasonOther, setSurchargeReasonOther] = useState('');
+  const [isSendingSurchargeEmail, setIsSendingSurchargeEmail] = useState(false);
 
   // Charger le devis depuis Firestore si pas fourni
   useEffect(() => {
@@ -272,6 +294,91 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
     setDescription('');
   };
 
+  // Envoyer l'email surcoût au client
+  const handleSendSurchargeEmail = async (surchargePaiement: Paiement, reasonDescription?: string) => {
+    if (!quote) return;
+    setIsSendingSurchargeEmail(true);
+
+    const clientEmailRaw = quote.client?.email || quote.delivery?.contact?.email;
+    if (!clientEmailRaw) {
+      toast.error('Email client manquant');
+      setIsSendingSurchargeEmail(false);
+      return;
+    }
+
+    const clientEmail = clientEmailRaw.trim();
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(clientEmail)) {
+      toast.error(`Format d'email invalide: ${clientEmail}`);
+      setIsSendingSurchargeEmail(false);
+      return;
+    }
+
+    const paymentUrl = (surchargePaiement as Record<string, unknown>).url as string || surchargePaiement.stripeCheckoutUrl || '';
+    if (!paymentUrl) {
+      toast.error('URL de paiement manquante pour ce surcoût');
+      setIsSendingSurchargeEmail(false);
+      return;
+    }
+
+    const descriptionText = (reasonDescription?.trim()) || surchargePaiement.description || 'Surcoût supplémentaire';
+
+    try {
+      const response = await authenticatedFetch('/api/send-surcharge-email', {
+        method: 'POST',
+        body: JSON.stringify({
+          quote: { ...quote, id: quote.id },
+          surchargePaiement: {
+            id: surchargePaiement.id,
+            amount: surchargePaiement.amount,
+            description: descriptionText,
+            url: paymentUrl,
+          },
+        }),
+      });
+
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        toast.error(err.error || `Erreur serveur (${response.status})`);
+        setIsSendingSurchargeEmail(false);
+        return;
+      }
+
+      const quoteDoc = await getDoc(doc(db, 'quotes', quote.id));
+      const existingData = quoteDoc.data();
+      const existingTimeline = existingData?.timeline || quote.timeline || [];
+
+      const timelineEvent = createTimelineEvent(
+        (quote.status as any) || 'awaiting_payment',
+        `Email surcoût envoyé au client (${clientEmail}) - ${surchargePaiement.amount.toFixed(2)}€`
+      );
+
+      const cleanedExistingTimeline = existingTimeline.filter((event: any) => {
+        if (!event.date) return false;
+        const date = event.date?.toDate ? event.date.toDate() : new Date(event.date);
+        return !isNaN(date.getTime());
+      });
+
+      const updatedTimeline = [...cleanedExistingTimeline, timelineEvent];
+      const timelineForFirestore = updatedTimeline.map(timelineEventToFirestore);
+
+      await setDoc(
+        doc(db, 'quotes', quote.id),
+        { timeline: timelineForFirestore, updatedAt: Timestamp.now() },
+        { merge: true }
+      );
+
+      queryClient.invalidateQueries({ queryKey: ['quotes'] });
+      await loadPaiements();
+      toast.success(`Email surcoût envoyé avec succès à ${clientEmail}`);
+    } catch (error) {
+      console.error('[QuotePaiements] Erreur envoi email surcoût:', error);
+      toast.error('Erreur lors de l\'envoi de l\'email surcoût');
+    } finally {
+      setIsSendingSurchargeEmail(false);
+    }
+  };
+
   // Badge de statut
   const StatusBadge = ({ status }: { status: Paiement['status'] }) => {
     switch (status) {
@@ -318,6 +425,12 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
   // Récupérer les surcoûts pour l'affichage (paiements SURCOUT non annulés)
   const surchargePaiements = paiements.filter(
     (p) => p.type === 'SURCOUT' && p.status !== 'CANCELLED'
+  );
+
+  // Surcoûts non payés avec lien valide (pour le bouton Envoyer surcoût)
+  const pendingSurchargePaiements = paiements.filter(
+    (p) => p.type === 'SURCOUT' && p.status === 'PENDING'
+      && !!((p as Record<string, unknown>).url || p.stripeCheckoutUrl)
   );
 
   // Calcul du total du devis
@@ -424,15 +537,34 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
       {/* Liste des paiements */}
       <Card>
         <CardHeader>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-2 flex-wrap">
             <CardTitle>Historique des paiements</CardTitle>
-            <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
-              <DialogTrigger asChild>
-                <Button className="gap-2" onClick={resetForm}>
-                  <Plus className="w-4 h-4" />
-                  Créer un paiement
+            <div className="flex items-center gap-2">
+              {pendingSurchargePaiements.length > 0 && pendingSurchargePaiements.map((surcharge) => (
+                <Button
+                  key={surcharge.id}
+                  variant="outline"
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => {
+                    setSelectedSurchargeForDialog(surcharge);
+                    setSurchargeReason('dimensions_reelles');
+                    setSurchargeReasonOther('');
+                    setIsSurchargeDialogOpen(true);
+                  }}
+                  disabled={isSendingSurchargeEmail}
+                >
+                  <Send className="w-4 h-4" />
+                  Envoyer surcoût ({surcharge.amount.toFixed(2)}€)
                 </Button>
-              </DialogTrigger>
+              ))}
+              <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+                <DialogTrigger asChild>
+                  <Button className="gap-2" onClick={resetForm}>
+                    <Plus className="w-4 h-4" />
+                    Créer un paiement
+                  </Button>
+                </DialogTrigger>
               <DialogContent>
                 <DialogHeader>
                   <DialogTitle>Créer un nouveau paiement</DialogTitle>
@@ -504,6 +636,7 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
                 </DialogFooter>
               </DialogContent>
             </Dialog>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -689,6 +822,86 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
           )}
         </CardContent>
       </Card>
+
+      {/* Dialogue envoyer surcoût - sélection de la raison */}
+      <Dialog
+        open={isSurchargeDialogOpen}
+        onOpenChange={(open) => {
+          setIsSurchargeDialogOpen(open);
+          if (!open) setSelectedSurchargeForDialog(null);
+        }}
+      >
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Envoyer le surcoût</DialogTitle>
+            <DialogDescription>
+              {selectedSurchargeForDialog
+                ? `Surcoût de ${selectedSurchargeForDialog.amount.toFixed(2)} € – Indiquez la raison du surcoût pour l'email au client.`
+                : 'Sélectionnez la raison du surcoût.'}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4 py-2">
+            <div>
+              <Label className="text-sm font-medium">Raison du surcoût</Label>
+              <Select value={surchargeReason} onValueChange={setSurchargeReason}>
+                <SelectTrigger className="mt-2">
+                  <SelectValue placeholder="Choisir une raison" />
+                </SelectTrigger>
+                <SelectContent>
+                  {SURCHARGE_REASONS.map((r) => (
+                    <SelectItem key={r.value} value={r.value}>
+                      {r.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {surchargeReason === 'autre' && (
+              <div>
+                <Label htmlFor="surcharge-reason-other" className="text-sm font-medium">
+                  Précisez la raison
+                </Label>
+                <Input
+                  id="surcharge-reason-other"
+                  placeholder="Ex. : modification d'adresse..."
+                  value={surchargeReasonOther}
+                  onChange={(e) => setSurchargeReasonOther(e.target.value)}
+                  className="mt-2"
+                />
+              </div>
+            )}
+            <div className="flex justify-end gap-2 pt-2">
+              <Button variant="outline" onClick={() => setIsSurchargeDialogOpen(false)}>
+                Annuler
+              </Button>
+              <Button
+                onClick={async () => {
+                  if (!selectedSurchargeForDialog) return;
+                  const description =
+                    surchargeReason === 'autre'
+                      ? surchargeReasonOther.trim()
+                      : SURCHARGE_REASONS.find((r) => r.value === surchargeReason)?.label ?? '';
+                  if (surchargeReason === 'autre' && !description) {
+                    toast.error('Veuillez préciser la raison du surcoût');
+                    return;
+                  }
+                  await handleSendSurchargeEmail(selectedSurchargeForDialog, description || undefined);
+                  setIsSurchargeDialogOpen(false);
+                  setSelectedSurchargeForDialog(null);
+                }}
+                disabled={isSendingSurchargeEmail}
+              >
+                {isSendingSurchargeEmail ? (
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                ) : (
+                  <Send className="w-4 h-4" />
+                )}
+                Envoyer
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
