@@ -314,7 +314,7 @@ export default function Preparation() {
     }
     setIsSendingSurchargeEmail(true);
     try {
-      await authenticatedFetch('/api/send-surcharge-email', {
+      const response = await authenticatedFetch('/api/send-surcharge-email', {
         method: 'POST',
         body: JSON.stringify({
           quote: selectedQuoteForSurcharge,
@@ -326,6 +326,12 @@ export default function Preparation() {
           },
         }),
       });
+      if (!response.ok) {
+        const err = await response.json().catch(() => ({}));
+        const msg = err.error || `Erreur serveur (${response.status})`;
+        toast.error(msg, err.hint ? { description: err.hint } : undefined);
+        return;
+      }
       const quoteDoc = await getDoc(doc(db, 'quotes', selectedQuoteForSurcharge.id));
       const existingData = quoteDoc.data() || {};
       const existingTimeline = existingData.timeline || [];

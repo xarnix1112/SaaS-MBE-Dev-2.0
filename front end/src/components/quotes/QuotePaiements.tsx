@@ -339,7 +339,8 @@ export function QuotePaiements({ devisId, quote: initialQuote, refreshKey }: Quo
 
       if (!response.ok) {
         const err = await response.json().catch(() => ({}));
-        toast.error(err.error || `Erreur serveur (${response.status})`);
+        const msg = err.error || `Erreur serveur (${response.status})`;
+        toast.error(msg, err.hint ? { description: err.hint } : undefined);
         setIsSendingSurchargeEmail(false);
         return;
       }

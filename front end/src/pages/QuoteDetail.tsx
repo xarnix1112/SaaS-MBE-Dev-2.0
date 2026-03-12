@@ -1256,12 +1256,8 @@ export default function QuoteDetail() {
           return;
         }
         
-        // Afficher le hint si disponible
-        if (error.hint) {
-          toast.error(error.hint, { duration: 8000 });
-        } else {
-          toast.error(error.error || `Erreur serveur (${response.status})`);
-        }
+        const msg = error.error || `Erreur serveur (${response.status})`;
+        toast.error(msg, error.hint ? { description: error.hint, duration: 8000 } : undefined);
         console.error('[Email] Erreur serveur:', error);
         return;
       }
@@ -1476,12 +1472,8 @@ export default function QuoteDetail() {
           return;
         }
         
-        // Afficher le hint si disponible
-        if (error.hint) {
-          toast.error(error.hint, { duration: 8000 });
-        } else {
-          toast.error(error.error || `Erreur serveur (${response.status})`);
-        }
+        const msg = error.error || `Erreur serveur (${response.status})`;
+        toast.error(msg, error.hint ? { description: error.hint, duration: 8000 } : undefined);
         console.error('[Surcharge Email] Erreur serveur:', error);
         setIsSendingSurchargeEmail(false);
         return;

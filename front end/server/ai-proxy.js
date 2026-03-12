@@ -5351,7 +5351,12 @@ L'équipe MBE
     });
     
     // clientEmail est maintenant défini avant le try, donc accessible ici
-    const errorMessage = error.message || 'Erreur lors de l\'envoi de l\'email';
+    let errorMessage = error.message || 'Erreur lors de l\'envoi de l\'email';
+    
+    // Détection session Gmail expirée (token OAuth révoqué ou expiré)
+    const gmailMsg = errorMessage.toLowerCase();
+    const gmailCauseMsg = (error?.cause?.message || '').toLowerCase();
+    const isGmailSessionExpired = gmailMsg.includes('invalid_grant') || gmailMsg.includes('token has been expired') || gmailMsg.includes('revoked') || gmailCauseMsg.includes('invalid_grant');
     
     // Extraire les métadonnées Resend de l'erreur (peuvent être dans resendError ou directement dans error)
     // L'erreur peut avoir été propagée depuis sendEmail avec resendError, resendType, resendStatusCode
@@ -5390,8 +5395,13 @@ L'équipe MBE
       resendError: resendError
     });
     
-    // Mapper les erreurs Resend pour une meilleure UX
-    if (errorMessage.includes('non configuré') || errorMessage.includes('Resend non configuré')) {
+    // Mapper les erreurs pour une meilleure UX
+    if (isGmailSessionExpired) {
+      statusCode = 400;
+      errorCode = 'GMAIL_SESSION_EXPIRED';
+      errorMessage = 'Votre session mail a expiré.';
+      hint = 'Connectez à nouveau votre compte email dans Paramètres > Compte Email pour continuer à envoyer des emails.';
+    } else if (errorMessage.includes('non configuré') || errorMessage.includes('Resend non configuré')) {
       statusCode = 502;
       errorCode = 'RESEND_NOT_CONFIGURED';
       hint = `⚠️ Resend non configuré. Ajoutez RESEND_API_KEY et EMAIL_FROM dans front end/.env.local`;
@@ -5610,7 +5620,12 @@ L'équipe MBE
       stack: error.stack?.split('\n').slice(0, 3).join('\n')
     });
     
-    const errorMessage = error.message || 'Erreur lors de l\'envoi de l\'email surcoût';
+    let errorMessage = error.message || 'Erreur lors de l\'envoi de l\'email surcoût';
+    
+    // Détection session Gmail expirée (token OAuth révoqué ou expiré)
+    const msg = errorMessage.toLowerCase();
+    const causeMsg = (error?.cause?.message || '').toLowerCase();
+    const isGmailSessionExpired = msg.includes('invalid_grant') || msg.includes('token has been expired') || msg.includes('revoked') || causeMsg.includes('invalid_grant');
     
     // Extraire les métadonnées Resend de l'erreur
     const resendErrorObj = error.resendError || (error.name === 'Error' && error.resendError ? error.resendError : null) || error;
@@ -5630,8 +5645,13 @@ L'équipe MBE
       (errorMsgLower.includes('the domain') && errorMsgLower.includes('is not verified'))
     );
     
-    // Mapper les erreurs Resend pour une meilleure UX
-    if (errorMessage.includes('non configuré') || errorMessage.includes('Resend non configuré')) {
+    // Mapper les erreurs pour une meilleure UX
+    if (isGmailSessionExpired) {
+      statusCode = 400;
+      errorCode = 'GMAIL_SESSION_EXPIRED';
+      errorMessage = 'Votre session mail a expiré.';
+      hint = 'Connectez à nouveau votre compte email dans Paramètres > Compte Email pour continuer à envoyer des emails.';
+    } else if (errorMessage.includes('non configuré') || errorMessage.includes('Resend non configuré')) {
       statusCode = 502;
       errorCode = 'RESEND_NOT_CONFIGURED';
       hint = `⚠️ Resend non configuré. Ajoutez RESEND_API_KEY et EMAIL_FROM dans front end/.env.local`;
