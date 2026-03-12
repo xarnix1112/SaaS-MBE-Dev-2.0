@@ -51,11 +51,6 @@ export default function Dashboard() {
       inPreparation: safeQuotes.filter((q) =>
         q.status === "preparation" || (q.status === "awaiting_shipment" && q.surchargePending)
       ).length,
-      awaitingShipment: safeQuotes.filter((q) =>
-        q.status === "awaiting_shipment" && !q.surchargePending
-      ).length,
-      shipped: safeQuotes.filter((q) => q.status === "shipped").length,
-      completed: safeQuotes.filter((q) => q.status === "completed" || q.status === "sent_to_mbe_hub").length,
     }),
     [safeQuotes]
   );
@@ -208,33 +203,12 @@ export default function Dashboard() {
                   </div>
                   <span className="font-semibold">{stats.collected}</span>
                 </div>
-                <div className="flex items-center justify-between py-2 border-b border-border">
+                <div className="flex items-center justify-between py-2">
                   <div className="flex items-center gap-2">
                     <div className="w-2 h-2 rounded-full bg-info" />
                     <span className="text-sm">Préparation</span>
                   </div>
                   <span className="font-semibold">{stats.inPreparation}</span>
-                </div>
-                <div className="flex items-center justify-between py-2 border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-warning" />
-                    <span className="text-sm">Attente envoi</span>
-                  </div>
-                  <span className="font-semibold">{stats.awaitingShipment}</span>
-                </div>
-                <div className="flex items-center justify-between py-2 border-b border-border">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-success" />
-                    <span className="text-sm">Expédiés</span>
-                  </div>
-                  <span className="font-semibold">{stats.shipped}</span>
-                </div>
-                <div className="flex items-center justify-between py-2">
-                  <div className="flex items-center gap-2">
-                    <div className="w-2 h-2 rounded-full bg-success" />
-                    <span className="text-sm">Terminé</span>
-                  </div>
-                  <span className="font-semibold">{stats.completed}</span>
                 </div>
                 <Link to="/pipeline">
                   <Button variant="ghost" size="sm" className="w-full mt-2 gap-1">
