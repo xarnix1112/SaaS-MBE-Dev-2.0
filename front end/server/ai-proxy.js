@@ -9299,12 +9299,12 @@ const DEFAULT_COLUMN_MAPPING = {
   receiverPhone: 19,
   receiverEmail: 20,
   upsAccessPoint: 21,
-  bordereau: 26,
-  usefulInfo: 24,
-  wantsInsurance: 25,
-  submittedAt: 27,
-  token: 28,
-  wantsProfessionalInvoice: 29
+  bordereau: 25,
+  usefulInfo: 23,
+  wantsInsurance: 24,
+  submittedAt: 26,
+  token: 27,
+  wantsProfessionalInvoice: 28
 };
 
 // Fonction: Synchroniser un Google Sheet pour un compte SaaS
@@ -9523,7 +9523,7 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       
       // Extraire le nom du fichier et l'ID Drive depuis le lien
       if (bordereauLink) {
-        console.log(`[Google Sheets Sync] 🔗 Bordereau link trouvé (col Z, index 26): ${bordereauLink}`);
+        console.log(`[Google Sheets Sync] 🔗 Bordereau link trouvé (col Z, index 25): ${bordereauLink}`);
         
         // Format Typeform: https://api.typeform.com/responses/files/{hash}/{filename}
         // Format Google Drive: https://drive.google.com/file/d/{fileId}/view
@@ -9546,15 +9546,13 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
           driveFileIdFromLink = match ? match[1] : null;
         }
       } else {
-        console.log(`[Google Sheets Sync] ⚠️  Aucun lien bordereau trouvé pour ligne ${i + 2} (col Z, index 26)`);
+        console.log(`[Google Sheets Sync] ⚠️  Aucun lien bordereau trouvé pour ligne ${i + 2} (col Z, index 25)`);
       }
       
       const usefulInfo = getMappedValue('usefulInfo');
       // #region agent log
       try {
-        const col23 = row[23] != null ? (typeof row[23] === 'object' ? row[23]?.text : String(row[23])) : '';
-        const col24 = row[24] != null ? (typeof row[24] === 'object' ? row[24]?.text : String(row[24])) : '';
-        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:usefulInfo',message:'usefulInfo parsed',data:{rowIndex:i+2,usefulInfoColIndex:columnMapping.usefulInfo,hasUsefulInfo:!!(usefulInfo&&String(usefulInfo).trim()),len:usefulInfo?String(usefulInfo).length:0,col23Preview:col23?String(col23).substring(0,30):null,col24Preview:col24?String(col24).substring(0,30):null},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:usefulInfo',message:'usefulInfo parsed',data:{rowIndex:i+2,hasUsefulInfo:!!(usefulInfo&&String(usefulInfo).trim()),len:usefulInfo?String(usefulInfo).length:0},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
       } catch (_) {}
       // #endregion
       const insuranceAnswer = getMappedValue('wantsInsurance');
