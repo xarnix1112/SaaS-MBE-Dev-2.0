@@ -3882,6 +3882,7 @@ export default function QuoteDetail() {
           {quote && (
             <EditQuoteForm
               quote={quote}
+              computeInsuranceAmount={computeInsuranceAmount}
               isPrincipalPaid={isPrincipalPaidForEdit}
               useMbehubForShipping={useMbehubForShipping}
               onPaymentLinkCreated={() => {
@@ -4346,9 +4347,10 @@ interface EditQuoteFormProps {
   onPaymentLinkCreated?: () => void;
   isPrincipalPaid?: boolean;
   useMbehubForShipping?: boolean; // Si true, ne pas recalculer l'expédition via la grille
+  computeInsuranceAmount: (lotValue: number, insuranceEnabled?: boolean, explicitAmount?: number | null) => number;
 }
 
-function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false, useMbehubForShipping = false }: EditQuoteFormProps) {
+function EditQuoteForm({ quote, onSave, onCancel, isSaving, onPaymentLinkCreated, isPrincipalPaid = false, useMbehubForShipping = false, computeInsuranceAmount }: EditQuoteFormProps) {
   // Sécuriser les propriétés pour éviter les erreurs
   const safeQuote = {
     ...quote,
