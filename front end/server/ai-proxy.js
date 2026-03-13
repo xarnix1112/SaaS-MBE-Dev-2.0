@@ -9509,13 +9509,7 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       let bordereauLink = null;
       let driveFileIdFromLink = null;
       let bordereauFileName = null;
-
-      // #region agent log
-      const idxBordereau = columnMapping.bordereau;
-      const safeCell = (c) => c == null ? 'null' : typeof c === 'object' ? JSON.stringify({ hasHyperlink: !!c.hyperlink, textPreview: (c.text || '').substring(0, 40) }) : String(c).substring(0, 40);
-      console.log(`[DEBUG bordereau] ligne=${i + 2} rowLen=${row.length} idxBordereau=${idxBordereau} col25=${safeCell(row[25])} col26=${safeCell(row[26])} bordereauCell=${safeCell(bordereauCell)}`);
-      // #endregion
-
+      
       if (typeof bordereauCell === 'object' && bordereauCell !== null) {
         bordereauInfo = bordereauCell.text?.trim() || '';
         bordereauLink = bordereauCell.hyperlink || null;
@@ -9526,18 +9520,10 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
           bordereauLink = bordereauInfo;
         }
       }
-
-      // #region agent log
-      if (!bordereauLink && row[25] != null) {
-        const c25 = row[25];
-        const link25 = typeof c25 === 'object' && c25?.hyperlink ? c25.hyperlink : (typeof c25 === 'string' && c25.startsWith('http') ? c25 : null);
-        console.log(`[DEBUG bordereau] H1: col25 a un lien? link25=${!!link25} ${link25 ? link25.substring(0, 60) + '...' : ''}`);
-      }
-      // #endregion
-
+      
       // Extraire le nom du fichier et l'ID Drive depuis le lien
       if (bordereauLink) {
-        console.log(`[Google Sheets Sync] 🔗 Bordereau link trouvé (index ${idxBordereau}): ${bordereauLink}`);
+        console.log(`[Google Sheets Sync] 🔗 Bordereau link trouvé (col Z, index 26): ${bordereauLink}`);
         
         // Format Typeform: https://api.typeform.com/responses/files/{hash}/{filename}
         // Format Google Drive: https://drive.google.com/file/d/{fileId}/view
@@ -9560,7 +9546,7 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
           driveFileIdFromLink = match ? match[1] : null;
         }
       } else {
-        console.log(`[Google Sheets Sync] ⚠️  Aucun lien bordereau trouvé pour ligne ${i + 2} (index bordereau=${idxBordereau}, col Z=25/AA=26)`);
+        console.log(`[Google Sheets Sync] ⚠️  Aucun lien bordereau trouvé pour ligne ${i + 2} (col Z, index 26)`);
       }
       
       const usefulInfo = getMappedValue('usefulInfo');
