@@ -9551,7 +9551,20 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       
       const usefulInfo = getMappedValue('usefulInfo');
       const insuranceAnswer = getMappedValue('wantsInsurance');
-      const wantsInsurance = insuranceAnswer.toLowerCase() === 'oui' || insuranceAnswer.toLowerCase() === 'yes';
+      // #region agent log
+      try {
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '86a80e' }, body: JSON.stringify({ sessionId: '86a80e', location: 'ai-proxy.js:insurance-parse', message: 'Assurance raw + parse', data: { rowIndex: i + 2, insuranceAnswerRaw: insuranceAnswer, insuranceColumnIndex: columnMapping.wantsInsurance }, timestamp: Date.now(), hypothesisId: 'H1' }) }).catch(() => {});
+      } catch (_) {}
+      // #endregion
+      const wantsInsurance = insuranceAnswer
+        ? (insuranceAnswer.trim() === 'TRUE' || insuranceAnswer.trim() === 'true' ||
+           insuranceAnswer.toLowerCase() === 'oui' || insuranceAnswer.toLowerCase() === 'yes')
+        : false;
+      // #region agent log
+      try {
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237', { method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Debug-Session-Id': '86a80e' }, body: JSON.stringify({ sessionId: '86a80e', location: 'ai-proxy.js:insurance-result', message: 'Assurance parsed', data: { rowIndex: i + 2, wantsInsurance }, timestamp: Date.now(), hypothesisId: 'H1', runId: 'post-fix' }) }).catch(() => {});
+      } catch (_) {}
+      // #endregion
       const submittedAt = getMappedValue('submittedAt');
       const token = getMappedValue('token');
       
