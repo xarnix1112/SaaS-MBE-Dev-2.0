@@ -2514,6 +2514,15 @@ export default function QuoteDetail() {
                         </Badge>
                       </div>
                     )}
+                    {safeQuote.delivery?.note && String(safeQuote.delivery.note).trim() && (
+                      <div className="flex items-start gap-2 col-span-2 p-3 rounded-lg bg-muted/50 border border-border">
+                        <MessageSquare className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
+                        <div className="min-w-0 flex-1">
+                          <p className="text-xs text-muted-foreground mb-1">Informations utiles pour l&apos;expédition</p>
+                          <p className="text-sm whitespace-pre-wrap break-words">{safeQuote.delivery.note}</p>
+                        </div>
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
 

@@ -9550,6 +9550,11 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       }
       
       const usefulInfo = getMappedValue('usefulInfo');
+      // #region agent log
+      try {
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:usefulInfo',message:'usefulInfo parsed',data:{rowIndex:i+2,hasUsefulInfo:!!(usefulInfo&&String(usefulInfo).trim()),len:usefulInfo?String(usefulInfo).length:0},timestamp:Date.now(),hypothesisId:'H2'})}).catch(()=>{});
+      } catch (_) {}
+      // #endregion
       const insuranceAnswer = getMappedValue('wantsInsurance');
       // #region agent log
       try {
