@@ -2514,6 +2514,9 @@ export default function QuoteDetail() {
                         </Badge>
                       </div>
                     )}
+                    {/* #region agent log */}
+                    {typeof fetch === 'function' && (() => { try { fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'QuoteDetail.tsx:delivery-note',message:'Informations client render',data:{quoteId:safeQuote.id,hasDeliveryNote:!!(safeQuote.delivery?.note),deliveryNoteLen:safeQuote.delivery?.note?String(safeQuote.delivery.note).length:0,willShow:!!(safeQuote.delivery?.note&&String(safeQuote.delivery.note).trim())},timestamp:Date.now(),hypothesisId:'H3'})}); } catch (_) {} return null; })()}
+                    {/* #endregion */}
                     {safeQuote.delivery?.note && String(safeQuote.delivery.note).trim() && (
                       <div className="flex items-start gap-2 col-span-2 p-3 rounded-lg bg-muted/50 border border-border">
                         <MessageSquare className="w-4 h-4 text-muted-foreground mt-0.5 flex-shrink-0" />
