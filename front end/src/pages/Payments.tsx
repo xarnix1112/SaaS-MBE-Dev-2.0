@@ -33,6 +33,7 @@ import {
   CreditCard,
   Clock,
   CheckCircle2,
+  FileText,
   AlertTriangle,
   Send,
   Link as LinkIcon,
@@ -315,6 +316,12 @@ export default function Payments() {
                         {quote.surchargePending && (
                           <Badge variant="outline" className="text-[10px] w-fit bg-warning/10 text-warning border-warning/30">
                             Surcoût envoyé – en attente
+                          </Badge>
+                        )}
+                        {quote.wantsProfessionalInvoice === true && (
+                          <Badge variant="info" className="text-[10px] w-fit gap-1">
+                            <FileText className="w-3 h-3" />
+                            Facture
                           </Badge>
                         )}
                       </div>

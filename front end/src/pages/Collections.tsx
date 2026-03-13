@@ -815,7 +815,15 @@ export default function Collections() {
                             </div>
                             <p className="text-sm text-muted-foreground">{quote.reference}</p>
                           </div>
-                          <StatusBadge status={quote.status === 'awaiting_collection' || (quote.paymentStatus === 'paid' && quote.status !== 'collected') ? 'awaiting_collection' : quote.status} />
+                          <div className="flex flex-col items-end gap-1">
+                            <StatusBadge status={quote.status === 'awaiting_collection' || (quote.paymentStatus === 'paid' && quote.status !== 'collected') ? 'awaiting_collection' : quote.status} />
+                            {quote.wantsProfessionalInvoice === true && (
+                              <Badge variant="info" className="text-[10px] gap-1">
+                                <FileText className="w-3 h-3" />
+                                Facture
+                              </Badge>
+                            )}
+                          </div>
                         </div>
                       </CardHeader>
                       <CardContent className="space-y-3">

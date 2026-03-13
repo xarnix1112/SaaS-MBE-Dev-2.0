@@ -2508,9 +2508,9 @@ export default function QuoteDetail() {
                     </div>
                     {safeQuote.wantsProfessionalInvoice === true && (
                       <div className="flex items-center gap-2 col-span-2">
-                        <FileText className="w-4 h-4 text-muted-foreground" />
-                        <Badge variant="secondary" className="font-normal">
-                          Facture professionnelle demandée
+                        <Badge variant="info" className="gap-1 font-normal">
+                          <FileText className="w-3 h-3" />
+                          Facture
                         </Badge>
                       </div>
                     )}

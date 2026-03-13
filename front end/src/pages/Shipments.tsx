@@ -454,6 +454,12 @@ export default function Shipments() {
                               Surcoût envoyé – en attente
                             </Badge>
                           )}
+                          {quote.wantsProfessionalInvoice === true && (
+                            <Badge variant="info" className="text-[10px] w-fit gap-1">
+                              <FileText className="w-3 h-3" />
+                              Facture
+                            </Badge>
+                          )}
                         </div>
                       </TableCell>
                       <TableCell>

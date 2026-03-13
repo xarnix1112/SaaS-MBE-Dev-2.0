@@ -30,6 +30,7 @@ import {
   Trash2,
   Globe2,
   Mail,
+  FileText,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -443,25 +444,33 @@ export default function AuctionHouses() {
                                 <p className="text-sm max-w-xs truncate">{safeQuote.lot.description || 'Aucune description'}</p>
                               </TableCell>
                               <TableCell>
-                                <div className="flex items-center gap-2">
-                                  <span className={cn(
-                                    'font-medium',
-                                    safeQuote.paymentStatus === 'paid' ? 'text-success' : 'text-warning'
-                                  )}>
-                                    {(() => {
-                                      // Calculer le total comme dans QuoteDetail et Payments
-                                      const total = (
-                                        (safeQuote.options.packagingPrice || 0) +
-                                        (safeQuote.options.shippingPrice || 0) +
-                                        (safeQuote.options.insuranceAmount || 0)
-                                      );
-                                      
-                                      // Si le total calculé est > 0, l'utiliser, sinon utiliser totalAmount
-                                      const displayAmount = total > 0 ? total : safeQuote.totalAmount;
-                                      return `${displayAmount.toFixed(2)}€`;
-                                    })()}
-                                  </span>
-                                  <StatusBadge status={safeQuote.paymentStatus} type="payment" />
+                                <div className="flex flex-col gap-1">
+                                  <div className="flex items-center gap-2">
+                                    <span className={cn(
+                                      'font-medium',
+                                      safeQuote.paymentStatus === 'paid' ? 'text-success' : 'text-warning'
+                                    )}>
+                                      {(() => {
+                                        // Calculer le total comme dans QuoteDetail et Payments
+                                        const total = (
+                                          (safeQuote.options.packagingPrice || 0) +
+                                          (safeQuote.options.shippingPrice || 0) +
+                                          (safeQuote.options.insuranceAmount || 0)
+                                        );
+                                        
+                                        // Si le total calculé est > 0, l'utiliser, sinon utiliser totalAmount
+                                        const displayAmount = total > 0 ? total : safeQuote.totalAmount;
+                                        return `${displayAmount.toFixed(2)}€`;
+                                      })()}
+                                    </span>
+                                    <StatusBadge status={safeQuote.paymentStatus} type="payment" />
+                                  </div>
+                                  {quote.wantsProfessionalInvoice === true && (
+                                    <Badge variant="info" className="text-[10px] w-fit gap-1">
+                                      <FileText className="w-3 h-3" />
+                                      Facture
+                                    </Badge>
+                                  )}
                                 </div>
                               </TableCell>
                               <TableCell>

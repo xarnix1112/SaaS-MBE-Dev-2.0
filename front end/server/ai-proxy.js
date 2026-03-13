@@ -9568,14 +9568,24 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
       const submittedAt = getMappedValue('submittedAt');
       const token = getMappedValue('token');
       
-      // Facture professionnelle (Oui/Yes → true)
+      // Facture professionnelle (Oui/Yes/TRUE checkbox Typeform → true)
       let wantsProfessionalInvoiceVal = null;
       const factureProRaw = getMappedValue('wantsProfessionalInvoice');
-      if (factureProRaw && (factureProRaw.toLowerCase() === 'oui' || factureProRaw.toLowerCase() === 'yes')) {
+      // #region agent log
+      try {
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:facture-parse',message:'Facture pro parsed',data:{rowIndex:i+2,factureProRaw:factureProRaw?String(factureProRaw).substring(0,20):null},timestamp:Date.now(),hypothesisId:'H1'})}).catch(()=>{});
+      } catch (_) {}
+      // #endregion
+      if (factureProRaw && (factureProRaw.trim() === 'TRUE' || factureProRaw.trim() === 'true' || factureProRaw.toLowerCase() === 'oui' || factureProRaw.toLowerCase() === 'yes')) {
         wantsProfessionalInvoiceVal = true;
-      } else if (factureProRaw && (factureProRaw.toLowerCase() === 'non' || factureProRaw.toLowerCase() === 'no')) {
+      } else if (factureProRaw && (factureProRaw.trim() === 'FALSE' || factureProRaw.trim() === 'false' || factureProRaw.toLowerCase() === 'non' || factureProRaw.toLowerCase() === 'no')) {
         wantsProfessionalInvoiceVal = false;
       }
+      // #region agent log
+      try {
+        fetch('http://127.0.0.1:7614/ingest/0bfbd811-2706-4d7c-9d97-3770fc92a237',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'86a80e'},body:JSON.stringify({sessionId:'86a80e',location:'ai-proxy.js:facture-result',message:'Facture pro result',data:{rowIndex:i+2,wantsProfessionalInvoiceVal},timestamp:Date.now(),hypothesisId:'H1',runId:'post-fix'})}).catch(()=>{});
+      } catch (_) {}
+      // #endregion
       
       // Si pas de token, utiliser Submitted At comme fallback
       const externalId = token || submittedAt || `row-${i + 2}`; // Fallback sur numéro de ligne si rien

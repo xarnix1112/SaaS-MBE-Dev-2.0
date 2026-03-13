@@ -14,6 +14,7 @@ import {
   AlertTriangle,
   ChevronRight,
   Image,
+  FileText,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -65,6 +66,12 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
                 {quote.surchargePending && (
                   <Badge variant="outline" className="text-[10px] bg-warning/10 text-warning border-warning/30">
                     Surcoût envoyé – en attente
+                  </Badge>
+                )}
+                {safeQuote.wantsProfessionalInvoice === true && (
+                  <Badge variant="info" className="gap-1 text-[10px]">
+                    <FileText className="w-3 h-3" />
+                    Facture
                   </Badge>
                 )}
                 {safeQuote.shipmentGroupId && (
@@ -190,6 +197,12 @@ export function QuoteCard({ quote, compact = false }: QuoteCardProps) {
           )}
           {safeQuote.options.express && (
             <Badge variant="secondary">Express</Badge>
+          )}
+          {safeQuote.wantsProfessionalInvoice === true && (
+            <Badge variant="info" className="gap-1">
+              <FileText className="w-3 h-3" />
+              Facture
+            </Badge>
           )}
         </div>
 

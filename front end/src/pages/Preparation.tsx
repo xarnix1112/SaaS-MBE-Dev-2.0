@@ -33,6 +33,7 @@ import {
   Plus,
   Send,
   Truck,
+  FileText,
 } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { cn } from '@/lib/utils';
@@ -454,7 +455,15 @@ export default function Preparation() {
                           {quote.reference} • {quote.client.name}
                         </p>
                       </div>
-                      <StatusBadge status={quote.status} />
+                      <div className="flex flex-col items-end gap-1">
+                        <StatusBadge status={quote.status} />
+                        {quote.wantsProfessionalInvoice === true && (
+                          <Badge variant="info" className="text-[10px] gap-1">
+                            <FileText className="w-3 h-3" />
+                            Facture
+                          </Badge>
+                        )}
+                      </div>
                     </div>
                   </CardHeader>
                   <CardContent>
@@ -536,7 +545,15 @@ export default function Preparation() {
                         {quote.reference} • {quote.client.name}
                       </p>
                     </div>
-                    <StatusBadge status={quote.status} />
+                    <div className="flex flex-col items-end gap-1">
+                      <StatusBadge status={quote.status} />
+                      {quote.wantsProfessionalInvoice === true && (
+                        <Badge variant="info" className="text-[10px] gap-1">
+                          <FileText className="w-3 h-3" />
+                          Facture
+                        </Badge>
+                      )}
+                    </div>
                   </div>
                 </CardHeader>
 
