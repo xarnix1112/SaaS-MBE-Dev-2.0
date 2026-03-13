@@ -210,7 +210,9 @@ export default function Payments() {
                   <CreditCard className="w-5 h-5 text-primary" />
                 </div>
                 <div>
-                  <p className="text-2xl font-bold">{stats.paidAmount}€</p>
+                  <p className="text-2xl font-bold">
+                    {(Math.ceil((stats.paidAmount || 0) * 100) / 100).toFixed(2)}€
+                  </p>
                   <p className="text-sm text-muted-foreground">Encaissé</p>
                 </div>
               </div>
