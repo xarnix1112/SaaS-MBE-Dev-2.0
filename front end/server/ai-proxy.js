@@ -74,6 +74,7 @@ import {
   getBodyContentPreview,
 } from "./quote-automatic-emails.js";
 import { generateCollectionPdf } from "./collection-pdf-generator.js";
+import { extractObjectTypeFromDescription } from "./lib/object-type-extractor.js";
 import {
   getTemplatesForAccount,
   validateTemplate,
@@ -5674,171 +5675,6 @@ L'équipe MBE
 });
 
 /**
- * Extrait un type d'objet depuis une description de lot (règles par mots-clés).
- * Retourne null si aucun match satisfaisant.
- */
-function extractObjectTypeFromKeywords(description) {
-  if (!description || typeof description !== 'string') return null;
-  const d = description.trim();
-  if (!d) return null;
-  const lower = d.toLowerCase();
-
-  // Assiettes / vaisselle avec quantité
-  const assietteMatch = lower.match(/\b(\d+)\s*assiettes?\b|lot\s+de\s+(\d+)\s*assiettes?|ensemble\s+de\s+(\d+)\s*assiettes?/i);
-  if (assietteMatch) {
-    const n = parseInt(assietteMatch[1] || assietteMatch[2] || assietteMatch[3] || '1', 10);
-    return `Assiettes (${n})`;
-  }
-  if (/\bassiettes?\b/i.test(lower)) return 'Assiettes';
-
-  // Tableaux
-  if (/\b(tableau|tableaux)\b.*\b(huile|toile)\b/i.test(lower)) return 'Tableau huile sur toile';
-  if (/\b(tableau|tableaux)\b.*\baquarelle/i.test(lower)) return 'Tableau aquarelle';
-  if (/\b(tableau|tableaux)\b.*\bpastel/i.test(lower)) return 'Tableau pastel';
-  if (/\btableau(x)?\b/i.test(lower)) return 'Tableau';
-
-  // Vases avec matériau
-  if (/\bvase(s)?\b.*\b(céramique|ceramique)\b/i.test(lower)) return 'Vase en céramique';
-  if (/\bvase(s)?\b.*\bporcelaine/i.test(lower)) return 'Vase en porcelaine';
-  if (/\bvase(s)?\b.*\bverre/i.test(lower)) return 'Vase en verre';
-  if (/\bvase(s)?\b/i.test(lower)) return 'Vase';
-
-  // Meubles, bijoux, livres, etc.
-  const keywords = [
-    { re: /\bmeuble(s)?\b/i, out: 'Meuble' },
-    { re: /\bbijou(x)?\b|\bbague\b|\bcollier\b|\bbracelet\b/i, out: 'Bijoux' },
-    { re: /\blivre(s)?\b/i, out: 'Livre(s)' },
-    { re: /\bverre(s)?\b|\bverrerie\b/i, out: 'Verres' },
-    { re: /\bcadre(s)?\b/i, out: 'Cadre' },
-    { re: /\bmiroir(s)?\b/i, out: 'Miroir' },
-    { re: /\bluminaire(s)?\b|\blampe(s)?\b/i, out: 'Luminaire' },
-    { re: /\btapisserie\b|\btapis\b/i, out: 'Tapisserie' },
-    { re: /\bsculpture(s)?\b/i, out: 'Sculpture' },
-    { re: /\bpendule(s)?\b|\bhorloge(s)?\b/i, out: 'Pendule' },
-    { re: /\bargenterie\b|\bcuillère\b|\bfourchette\b/i, out: 'Argenterie' },
-    { re: /\bcommode\b|\bbureau\b|\barmoire\b/i, out: 'Meuble' },
-  ];
-  for (const { re, out } of keywords) {
-    if (re.test(lower)) return out;
-  }
-  return null;
-}
-
-/**
- * Extrait le type d'objet via IA (Groq ou OpenAI). Retourne null en cas d'erreur.
- */
-async function extractObjectTypeWithAI(description) {
-  if (!description || typeof description !== 'string' || description.trim().length < 5) return null;
-  const truncated = description.trim().substring(0, 800);
-  const prompt = `À partir de cette description de lot de vente aux enchères : "${truncated}"
-
-Donne UNIQUEMENT un libellé court décrivant le type d'objet (ex: "Assiettes (12)", "Tableau huile sur toile", "Vase en céramique", "Meuble", "Bijoux"). 
-Une seule ligne, pas d'explication. Maximum 50 caractères.`;
-
-  // Priorité Groq
-  if (process.env.GROQ_API_KEY) {
-    try {
-      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [
-            { role: 'system', content: "Tu extrais le type d'objet d'une description de vente aux enchères. Réponds uniquement par le libellé court demandé." },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.1,
-          max_tokens: 80,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const content = (data.choices?.[0]?.message?.content || '').trim();
-        if (content && content.length <= 80) return content;
-      }
-    } catch (e) {
-      console.warn('[extractObjectType] Groq erreur:', e.message);
-    }
-  }
-
-  // Fallback OpenAI
-  if (process.env.OPENAI_API_KEY) {
-    try {
-      const response = await fetch('https://api.openai.com/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: 'gpt-4o-mini',
-          messages: [
-            { role: 'system', content: "Tu extrais le type d'objet d'une description de vente aux enchères. Réponds uniquement par le libellé court demandé." },
-            { role: 'user', content: prompt },
-          ],
-          temperature: 0.1,
-          max_tokens: 80,
-        }),
-      });
-      if (response.ok) {
-        const data = await response.json();
-        const content = (data.choices?.[0]?.message?.content || '').trim();
-        if (content && content.length <= 80) return content;
-      }
-    } catch (e) {
-      console.warn('[extractObjectType] OpenAI erreur:', e.message);
-    }
-  }
-  return null;
-}
-
-/**
- * Extrait la partie de la description qui décrit l'objet (pas la première ligne).
- * Fallback quand les règles et l'IA ne donnent rien.
- */
-function extractRelevantObjectDescription(description) {
-  if (!description || typeof description !== 'string') return 'Description non disponible';
-  const d = description.trim();
-  if (!d) return 'Description non disponible';
-
-  const lines = d.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
-  if (lines.length === 0) return d.substring(0, 80);
-
-  // Ignorer les lignes ressemblant à des en-têtes (numéro de lot, codes courts)
-  const objectKeywords = /tableau|vase|assiette|meuble|bijou|livre|cadre|miroir|sculpture|verre|armoire|commode|bureau|pendule|luminaire|tapis|argenterie|porcelaine|céramique|huile|toile|aquarelle/i;
-  let best = lines[0];
-  let bestScore = 0;
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (line.length < 10) continue; // trop court
-    if (/^[\d\-\.\s]+$/.test(line)) continue; // que des chiffres
-    const score = (objectKeywords.test(line) ? 2 : 0) + line.length;
-    if (score > bestScore) {
-      bestScore = score;
-      best = line;
-    }
-  }
-  const out = best.length > 80 ? best.substring(0, 77).trim() + '...' : best;
-  return out || d.substring(0, 80);
-}
-
-/**
- * Orchestrateur : extrait le type d'objet (règles → IA → fallback description ciblée).
- */
-async function extractObjectTypeFromDescription(description) {
-  const fromKeywords = extractObjectTypeFromKeywords(description);
-  if (fromKeywords) return fromKeywords;
-
-  const fromAI = await extractObjectTypeWithAI(description);
-  if (fromAI) return fromAI;
-
-  return extractRelevantObjectDescription(description);
-}
-
-/**
  * Route: Envoyer un email à la salle des ventes pour planifier une collecte
  * POST /api/send-collection-email
  * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }
@@ -7156,12 +6992,13 @@ async function syncGmailAccount(saasAccountId, gmailIntegration) {
     }
   } catch (error) {
     console.error('[Gmail Sync] Erreur lors de la synchronisation pour saasAccountId:', saasAccountId, error);
-    // Si le token a expiré, déconnecter Gmail
-    if (error.code === 401) {
+    const isInvalidGrant = (error?.message || error?.cause?.message || "").includes("invalid_grant") ||
+      (error?.response?.data?.error === "invalid_grant");
+    if (error.code === 401 || isInvalidGrant) {
       await firestore.collection('saasAccounts').doc(saasAccountId).update({
         'integrations.gmail.connected': false
       });
-      console.log('[Gmail Sync] ⚠️  Gmail déconnecté (token expiré) pour saasAccountId:', saasAccountId);
+      console.log('[Gmail Sync] ⚠️  Gmail déconnecté (token expiré/invalid_grant) pour saasAccountId:', saasAccountId);
       
       // Créer une notification pour informer l'utilisateur
       try {
@@ -7512,26 +7349,39 @@ function getValueFromSubmission(submission, key) {
   return String(raw || "").trim();
 }
 
-async function processJotformSubmission(formId, submissionId) {
-  if (!firestore) return;
+async function processJotformSubmission(formId, submissionId, opts = {}) {
+  const { isHistoricalSync = false } = opts;
+  if (!firestore) return false;
   const indexDoc = await firestore.collection("jotformFormIndex").doc(formId).get();
   if (!indexDoc.exists) {
     console.warn("[Jotform] Aucun compte lié au formId:", formId);
-    return;
+    return false;
   }
   const saasAccountId = indexDoc.data()?.saasAccountId;
-  if (!saasAccountId) return;
+  if (!saasAccountId) return false;
 
   const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
-  if (!saasDoc.exists) return;
+  if (!saasDoc.exists) return false;
   const jf = saasDoc.data()?.integrations?.jotform;
-  if (!jf?.connected || jf.formId !== formId) return;
+  if (!jf?.connected || jf.formId !== formId) return false;
   const apiKey = jf.apiKeyEncrypted ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext) : jf.apiKeyPlaintext;
-  if (!apiKey) return;
+  if (!apiKey) return false;
 
-  if (submissionId === jf.lastSubmissionId) {
+  if (!isHistoricalSync && submissionId === jf.lastSubmissionId) {
     console.log("[Jotform] Soumission déjà traitée:", submissionId);
-    return;
+    return false;
+  }
+  if (isHistoricalSync) {
+    const existing = await firestore.collection("quotes")
+      .where("saasAccountId", "==", saasAccountId)
+      .where("externalId", "==", String(submissionId))
+      .where("source", "==", "jotform")
+      .limit(1)
+      .get();
+    if (!existing.empty) {
+      console.log("[Jotform] Devis déjà importé (historical):", submissionId);
+      return false;
+    }
   }
 
   let submissionData;
@@ -7540,7 +7390,7 @@ async function processJotformSubmission(formId, submissionId) {
     submissionData = data.content || data;
   } catch (e) {
     console.error("[Jotform] Erreur récupération submission:", e);
-    return;
+    return false;
   }
   let answers = submissionData.answers || submissionData;
   if (answers && typeof answers === "object" && !answers.q3 && !answers.clientEmail) {
@@ -7616,9 +7466,11 @@ async function processJotformSubmission(formId, submissionId) {
   const devisRef = await firestore.collection("quotes").add(quoteData);
   const devisId = devisRef.id;
 
-  await firestore.collection("saasAccounts").doc(saasAccountId).update({
-    "integrations.jotform.lastSubmissionId": submissionId
-  });
+  if (!isHistoricalSync) {
+    await firestore.collection("saasAccounts").doc(saasAccountId).update({
+      "integrations.jotform.lastSubmissionId": submissionId
+    });
+  }
 
   try {
     await firestore.collection("saasAccounts").doc(saasAccountId).update({
@@ -7626,12 +7478,12 @@ async function processJotformSubmission(formId, submissionId) {
     });
   } catch (_) {}
 
-  await createNotification(firestore, saasAccountId, {
+  await createNotification(firestore, {
+    clientSaasId: saasAccountId,
+    devisId: devisId,
     type: NOTIFICATION_TYPES.NEW_QUOTE,
     title: "Nouveau devis",
-    body: `Devis créé depuis Jotform : ${clientName || clientEmail}`,
-    link: `/quotes/${devisId}`,
-    quoteId: devisId
+    message: `Devis créé depuis Jotform : ${clientName || clientEmail}`
   });
 
   if (bordereauUrl && firestore) {
@@ -7675,6 +7527,61 @@ async function processJotformSubmission(formId, submissionId) {
   }
 
   console.log("[Jotform] Devis créé:", devisId, clientName || clientEmail);
+  return true;
+}
+
+/**
+ * Import des réponses Jotform existantes (comme Google Sheets).
+ * Appelé dès que le formulaire est sélectionné.
+ */
+async function syncJotformHistoricalSubmissions(saasAccountId, formId, apiKey, fieldMapping) {
+  if (!firestore) return;
+  let offset = 0;
+  const limit = 100;
+  let maxSubmissionId = null;
+  let totalCreated = 0;
+
+  try {
+    console.log("[Jotform] Import historique des réponses pour formId:", formId);
+    while (true) {
+      const data = await jotformApi(apiKey, `/form/${formId}/submissions?limit=${limit}&offset=${offset}&orderby=created_at`);
+      const content = data.content;
+      let items = [];
+      if (Array.isArray(content)) items = content;
+      else if (content && typeof content === "object") items = Object.values(content).filter(Boolean);
+      if (!items || items.length === 0) break;
+
+      for (const sub of items) {
+        const id = sub.id || sub.submissionID;
+        if (!id) continue;
+        const status = (sub.status || "").toUpperCase();
+        if (status === "INCOMPLETE" || status === "PENDING") {
+          console.log("[Jotform] Soumission ignorée (incomplète):", id, "status:", status);
+          continue;
+        }
+        maxSubmissionId = maxSubmissionId ? Math.max(maxSubmissionId, parseInt(id, 10) || 0) : (parseInt(id, 10) || 0);
+        try {
+          const created = await processJotformSubmission(formId, String(id), { isHistoricalSync: true });
+          if (created) totalCreated++;
+        } catch (err) {
+          console.warn("[Jotform] Erreur traitement soumission", id, ":", err.message);
+        }
+      }
+      if (items.length < limit) break;
+      offset += limit;
+      await new Promise((r) => setTimeout(r, 500));
+    }
+
+    if (maxSubmissionId != null) {
+      await firestore.collection("saasAccounts").doc(saasAccountId).update({
+        "integrations.jotform.lastSubmissionId": String(maxSubmissionId)
+      });
+    }
+    console.log("[Jotform] Import historique terminé:", totalCreated, "devis créé(s)");
+  } catch (err) {
+    console.error("[Jotform] Erreur import historique:", err);
+    throw err;
+  }
 }
 
 // POST /api/jotform/connect - Valider API Key, chiffrer, stocker, déconnecter Google Sheets
@@ -7796,6 +7703,12 @@ app.post("/api/jotform/select-form", requireAuth, async (req, res) => {
 
     await firestore.collection("jotformFormIndex").doc(formId).set({ saasAccountId: req.saasAccountId });
     console.log("[Jotform] ✅ Formulaire sélectionné:", formId, "pour saasAccountId:", req.saasAccountId);
+
+    // Import des réponses complètes existantes en arrière-plan (comme Google Sheets)
+    syncJotformHistoricalSubmissions(req.saasAccountId, formId, apiKey, mapping).catch((err) => {
+      console.error("[Jotform] Erreur import historique:", err);
+    });
+
     res.json({ success: true, message: "Formulaire Jotform sélectionné", fieldMapping: mapping });
   } catch (e) {
     console.error("[Jotform] Erreur select-form:", e);
@@ -10478,8 +10391,10 @@ async function syncSheetForAccount(saasAccountId, googleSheetsIntegration) {
   } catch (error) {
     console.error('[Google Sheets Sync] Erreur lors de la synchronisation pour saasAccountId:', saasAccountId, error);
     
-    // Si le token a expiré, déconnecter Google Sheets
-    if (error.code === 401) {
+    const isInvalidGrant = (error?.message || error?.cause?.message || "").includes("invalid_grant") ||
+      (error?.response?.data?.error === "invalid_grant");
+
+    if (error.code === 401 || isInvalidGrant) {
       await firestore.collection('saasAccounts').doc(saasAccountId).update({
         'integrations.googleSheets.connected': false
       });
@@ -10530,10 +10445,34 @@ async function syncAllGoogleSheets() {
           await syncSheetForAccount(doc.id, googleSheetsIntegration);
           syncCount++;
         } catch (accountError) {
-          // invalid_grant = token expiré/révoqué → l'utilisateur doit reconnecter Google Sheets
           const msg = accountError?.message || String(accountError);
-          if (msg.includes('invalid_grant') || msg.includes('Token has been expired')) {
-            console.warn(`[Google Sheets Sync] ⚠️  Token expiré pour ${doc.id} - Reconnectez Google Sheets dans Paramètres`);
+          const causeMsg = accountError?.cause?.message || "";
+          const isInvalidGrant = msg.includes("invalid_grant") || causeMsg.includes("invalid_grant");
+          if (isInvalidGrant) {
+            console.warn(`[Google Sheets Sync] ⚠️  Token invalid_grant pour ${doc.id} - déconnexion et notification`);
+            try {
+              await firestore.collection("saasAccounts").doc(doc.id).update({
+                "integrations.googleSheets.connected": false,
+                "integrations.googleSheets.accessToken": FieldValue.delete(),
+                "integrations.googleSheets.refreshToken": FieldValue.delete(),
+                "integrations.googleSheets.expiresAt": FieldValue.delete(),
+                "integrations.googleSheets.spreadsheetId": FieldValue.delete(),
+                "integrations.googleSheets.spreadsheetName": FieldValue.delete(),
+                "integrations.googleSheets.lastRowImported": FieldValue.delete(),
+                "integrations.googleSheets.lastSyncAt": FieldValue.delete()
+              });
+              await createNotification(firestore, {
+                clientSaasId: doc.id,
+                devisId: null,
+                type: NOTIFICATION_TYPES.SYSTEM,
+                title: "⚠️ Connexion Google Sheets expirée",
+                message: "Votre connexion Google Sheets a expiré ou été révoquée.\n\n" +
+                  "📋 Pour reconnecter : Paramètres > Intégrations > Google Sheets.\n" +
+                  "✅ Une fois reconnecté, la synchronisation reprendra."
+              });
+            } catch (cleanupErr) {
+              console.error("[Google Sheets Sync] Erreur nettoyage après invalid_grant:", cleanupErr);
+            }
           } else {
             console.error(`[Google Sheets Sync] Erreur sync compte ${doc.id}:`, accountError);
           }
