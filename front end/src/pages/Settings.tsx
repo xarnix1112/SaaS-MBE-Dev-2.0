@@ -90,6 +90,25 @@ export default function Settings() {
   }
   const [typeformStatus, setTypeformStatus] = useState<TypeformStatus | null>(null);
   const [isLoadingTypeform, setIsLoadingTypeform] = useState(false);
+
+  // État Jotform
+  interface JotformStatus {
+    connected: boolean;
+    formId: string | null;
+    formTitle: string | null;
+    connectedAt: string | null;
+  }
+  interface JotformForm {
+    id: string;
+    title: string;
+  }
+  const [jotformStatus, setJotformStatus] = useState<JotformStatus | null>(null);
+  const [isLoadingJotform, setIsLoadingJotform] = useState(false);
+  const [jotformApiKeyInput, setJotformApiKeyInput] = useState('');
+  const [jotformForms, setJotformForms] = useState<JotformForm[]>([]);
+  const [isLoadingJotformForms, setIsLoadingJotformForms] = useState(false);
+  const [showJotformFormSelector, setShowJotformFormSelector] = useState(false);
+
   const [settingsTab, setSettingsTab] = useState('emails');
   const { data: featuresData } = useFeatures();
   const canCustomizeAutoEmails = featuresData?.features?.customizeAutoEmails === true;
@@ -112,6 +131,7 @@ export default function Settings() {
       icon: Globe,
       tabs: [
         { id: 'google-sheets', label: 'Google Sheets', icon: FileSpreadsheet },
+        { id: 'jotform', label: 'Jotform', icon: KeyRound },
         { id: 'google-drive', label: 'Google Drive', icon: Folder },
         { id: 'typeform', label: 'Typeform', icon: FormInput },
         { id: 'paiements', label: 'Paiements', icon: CreditCard },
@@ -586,6 +606,29 @@ export default function Settings() {
     }
   };
 
+  const loadJotformStatus = async () => {
+    try {
+      setIsLoadingJotform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/jotform/status');
+      if (!res.ok) {
+        setJotformStatus({ connected: false, formId: null, formTitle: null, connectedAt: null });
+        return;
+      }
+      const data = await res.json();
+      setJotformStatus({
+        connected: data.connected ?? false,
+        formId: data.formId ?? null,
+        formTitle: data.formTitle ?? null,
+        connectedAt: data.connectedAt ?? null
+      });
+    } catch {
+      setJotformStatus({ connected: false, formId: null, formTitle: null, connectedAt: null });
+    } finally {
+      setIsLoadingJotform(false);
+    }
+  };
+
   // Charger les comptes email, le statut Stripe et Google Sheets au montage
   useEffect(() => {
     loadEmailAccounts();
@@ -593,6 +636,7 @@ export default function Settings() {
     loadGoogleSheetsStatus();
     loadGoogleDriveStatus();
     loadTypeformStatus();
+    loadJotformStatus();
   }, []);
 
   const handleConnectGmail = async () => {
@@ -718,6 +762,85 @@ export default function Settings() {
       toast.error(error instanceof Error ? error.message : 'Erreur lors de la déconnexion');
     } finally {
       setIsLoadingGoogleSheets(false);
+    }
+  };
+
+  const handleConnectJotform = async () => {
+    if (!jotformApiKeyInput.trim()) {
+      toast.error('Saisissez votre API Key Jotform');
+      return;
+    }
+    try {
+      setIsLoadingJotform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/jotform/connect', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apiKey: jotformApiKeyInput.trim() })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la connexion');
+      }
+      toast.success('Jotform connecté. Sélectionnez un formulaire.');
+      setJotformApiKeyInput('');
+      await loadJotformStatus();
+      setShowJotformFormSelector(true);
+      setIsLoadingJotformForms(true);
+      const formsRes = await authenticatedFetch('/api/jotform/forms');
+      if (formsRes.ok) {
+        const { forms } = await formsRes.json();
+        setJotformForms(forms || []);
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur lors de la connexion Jotform');
+    } finally {
+      setIsLoadingJotform(false);
+      setIsLoadingJotformForms(false);
+    }
+  };
+
+  const handleSelectJotformForm = async (formId: string, formTitle: string) => {
+    try {
+      setIsLoadingJotform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/jotform/select-form', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ formId, formTitle })
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la sélection');
+      }
+      toast.success('Formulaire Jotform sélectionné. Les nouvelles soumissions créent automatiquement des devis.');
+      setShowJotformFormSelector(false);
+      await loadJotformStatus();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur lors de la sélection');
+    } finally {
+      setIsLoadingJotform(false);
+    }
+  };
+
+  const handleDisconnectJotform = async () => {
+    try {
+      setIsLoadingJotform(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const res = await authenticatedFetch('/api/jotform/disconnect', { method: 'DELETE' });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || 'Erreur lors de la déconnexion');
+      }
+      toast.success('Jotform déconnecté');
+      setJotformForms([]);
+      setShowJotformFormSelector(false);
+      await loadJotformStatus();
+      await loadGoogleSheetsStatus();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : 'Erreur lors de la déconnexion');
+    } finally {
+      setIsLoadingJotform(false);
     }
   };
 
@@ -1123,11 +1246,18 @@ export default function Settings() {
                   Connexion Google Sheets
                 </CardTitle>
                 <CardDescription>
-                  Connectez votre Google Sheet pour importer automatiquement les nouveaux devis depuis Typeform
+                  Connectez votre Google Sheet pour importer automatiquement les nouveaux devis depuis Typeform. Choisissez Google Sheets ou Jotform, pas les deux.
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {isLoadingGoogleSheets ? (
+                {jotformStatus?.connected ? (
+                  <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Jotform est connecté</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Déconnectez Jotform dans l&apos;onglet &quot;Jotform&quot; pour utiliser Google Sheets à la place.
+                    </p>
+                  </div>
+                ) : isLoadingGoogleSheets ? (
                   <div className="text-center py-8 text-muted-foreground">
                     <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
                     Chargement...
@@ -1450,6 +1580,107 @@ export default function Settings() {
                         )}
                       </CardContent>
                     </Card>
+                  </>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
+
+          <TabsContent value="jotform" className="space-y-6">
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <KeyRound className="w-5 h-5" />
+                  Connexion Jotform
+                </CardTitle>
+                <CardDescription>
+                  Connectez Jotform pour créer des devis automatiquement à chaque nouvelle soumission. Choisissez Jotform ou Google Sheets, pas les deux.
+                </CardDescription>
+              </CardHeader>
+              <CardContent className="space-y-4">
+                {googleSheetsStatus?.connected || googleSheetsStatus?.oauthAuthorized ? (
+                  <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Google Sheets est connecté</p>
+                    <p className="text-sm text-muted-foreground mt-1">
+                      Déconnectez Google Sheets dans l&apos;onglet &quot;Google Sheets&quot; pour utiliser Jotform à la place.
+                    </p>
+                  </div>
+                ) : isLoadingJotform ? (
+                  <div className="text-center py-8 text-muted-foreground">
+                    <Loader2 className="w-6 h-6 mx-auto mb-2 animate-spin" />
+                    Chargement...
+                  </div>
+                ) : !jotformStatus?.connected ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label htmlFor="jotform-api-key">API Key Jotform</Label>
+                      <Input
+                        id="jotform-api-key"
+                        type="password"
+                        placeholder="Votre API Key (My Account → API)"
+                        value={jotformApiKeyInput}
+                        onChange={(e) => setJotformApiKeyInput(e.target.value)}
+                        className="font-mono"
+                      />
+                      <p className="text-xs text-muted-foreground">
+                        Obtenez votre API Key sur <a href="https://www.jotform.com/myaccount/api" target="_blank" rel="noreferrer" className="underline">jotform.com/myaccount/api</a>
+                      </p>
+                    </div>
+                    <Button onClick={handleConnectJotform} className="gap-2" disabled={!jotformApiKeyInput.trim() || isLoadingJotform}>
+                      <KeyRound className="w-4 h-4" />
+                      Connecter Jotform
+                    </Button>
+                    <p className="text-sm text-amber-600 dark:text-amber-400">
+                      Connecter Jotform remplace la connexion Google Sheets.
+                    </p>
+                    {showJotformFormSelector && (
+                      <Card className="p-4 mt-4">
+                        <p className="text-sm font-medium mb-2">Sélectionnez le formulaire de demande de devis</p>
+                        {isLoadingJotformForms ? (
+                          <div className="py-4 text-center">
+                            <Loader2 className="w-5 h-5 mx-auto animate-spin" />
+                          </div>
+                        ) : jotformForms.length === 0 ? (
+                          <p className="text-sm text-muted-foreground">Aucun formulaire trouvé</p>
+                        ) : (
+                          <div className="space-y-2 max-h-64 overflow-y-auto">
+                            {jotformForms.map((f) => (
+                              <div
+                                key={f.id}
+                                className="flex items-center justify-between p-3 border rounded-lg hover:bg-accent cursor-pointer"
+                                onClick={() => handleSelectJotformForm(f.id, f.title)}
+                              >
+                                <span className="font-medium truncate">{f.title}</span>
+                                <Button size="sm" onClick={(e) => { e.stopPropagation(); handleSelectJotformForm(f.id, f.title); }} disabled={isLoadingJotform}>
+                                  Sélectionner
+                                </Button>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                      </Card>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <div className="flex items-center gap-2">
+                          <span className="font-medium">{jotformStatus?.formTitle || 'Formulaire'}</span>
+                          <Badge variant="default" className="gap-1">
+                            <CheckCircle2 className="w-3 h-3" />
+                            Connecté
+                          </Badge>
+                        </div>
+                        <p className="text-sm text-muted-foreground mt-1">
+                          Les nouvelles soumissions créent automatiquement des devis.
+                        </p>
+                      </div>
+                      <Button variant="outline" size="sm" onClick={handleDisconnectJotform} className="gap-2 text-destructive hover:text-destructive" disabled={isLoadingJotform}>
+                        <LogOut className="w-4 h-4" />
+                        Déconnecter
+                      </Button>
+                    </div>
                   </>
                 )}
               </CardContent>

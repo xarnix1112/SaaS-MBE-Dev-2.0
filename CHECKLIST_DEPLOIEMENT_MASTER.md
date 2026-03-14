@@ -50,11 +50,12 @@ npm run firestore:indexes:prod
 | `STRIPE_SECRET_KEY` | `sk_live_...` | Stripe Dashboard (mode live) |
 | `STRIPE_WEBHOOK_SECRET` | `whsec_...` (live) | Stripe → Webhooks → endpoint prod |
 | `STRIPE_CONNECT_CLIENT_ID` | `ca_...` (live) | Stripe Connect → Settings |
-| `APP_URL` | `https://mbe-sdv.fr` (ou ton domaine prod) | Ton domaine |
-| `FRONTEND_URL` | Idem que APP_URL | — |
+| `APP_URL` | `https://api.mbe-sdv.fr` ou URL Railway du backend | **URL du backend** (callbacks OAuth Stripe, webhooks Jotform). Jamais le frontend |
+| `FRONTEND_URL` | `https://mbe-sdv.fr` ou `https://www.mbe-sdv.fr` | URL du frontend (redirections après OAuth) |
 | `GROQ_API_KEY` | `gsk_...` | groq.com (analyse OCR bordereaux) |
 | `MBE_HUB_ENV` | `prod` | Si MBE Hub utilisé en prod |
 | `FIREBASE_STORAGE_BUCKET` | `saas-mbe-sdv-production.appspot.com` ou `.firebasestorage.app` | **Obligatoire pour upload logo (Modèles d'email)**. Voir `FIREBASE_STORAGE_PRODUCTION.md` si erreur "bucket does not exist" |
+| `JOTFORM_ENCRYPTION_KEY` | 64 caractères hex | **Obligatoire si Jotform utilisé.** Clé pour chiffrer les API keys. `API_PUBLIC_URL` optionnel (repli sur `APP_URL`) |
 
 **Fichier credentials Firebase :** Le backend lit `firebase-credentials-prod.json` quand `NODE_ENV=production`. Place ce fichier dans `front end/` (ou là où Railway build).
 
@@ -91,6 +92,7 @@ npm run firestore:indexes:prod
 ## Actions optionnelles (selon ton setup)
 
 - **Firebase Storage** : Si templates email avec logo upload, activer Storage sur le projet prod + définir `FIREBASE_STORAGE_BUCKET` sur Railway (voir `FIREBASE_STORAGE_PRODUCTION.md`)
+- **Jotform** : Création de devis à partir des soumissions de formulaires — ajouter `JOTFORM_ENCRYPTION_KEY` (64 car. hex) sur Railway. `APP_URL` doit pointer vers le backend ; `API_PUBLIC_URL` est optionnel (repli automatique sur `APP_URL`)
 - **Google Sheets** : Bilan (En cours / Terminés) — connecter le Sheet dans Paramètres → Intégrations
 - **Gmail OAuth** : Pour envoi d’emails depuis l’app
 

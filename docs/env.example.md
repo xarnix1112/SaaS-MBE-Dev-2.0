@@ -90,7 +90,9 @@ Ce fichier est ignoré par Git : tu peux y mettre des clés sans risquer de les 
 | `STRIPE_WEBHOOK_SECRET` | Secret pour valider les webhooks Stripe | `whsec_...` (test) | `whsec_...` (test) | `whsec_...` (live) |
 | `STRIPE_CONNECT_CLIENT_ID` | ID Stripe Connect | `ca_...` (test) | `ca_...` (test) | `ca_...` (live) |
 | `STAGING_PASSWORD` | Mot de passe pour accéder au staging | — | ton mot de passe | — |
-| `APP_URL` | URL de base de l'app | `http://localhost:8080` | `https://staging.mondomaine.com` | `https://mondomaine.com` |
+| `APP_URL` | URL du **backend** (callbacks OAuth Stripe/Gmail/Sheets, base pour webhooks Jotform) | `http://localhost:5174` | `https://api-staging.mondomaine.com` | `https://api.mondomaine.com` |
+| `API_PUBLIC_URL` | URL publique du backend pour webhooks Jotform. **Optionnel** : repli automatique sur `APP_URL` si non défini | `http://localhost:5174` | `https://api-staging.mondomaine.com` | `https://api.mondomaine.com` |
+| `JOTFORM_ENCRYPTION_KEY` | Clé 32 octets (hex) pour chiffrer les API Keys Jotform | (optionnel en dev) | 64 caractères hex | 64 caractères hex |
 
 ---
 
@@ -159,7 +161,8 @@ STRIPE_WEBHOOK_SECRET=whsec_...
 STRIPE_CONNECT_CLIENT_ID=ca_...
 
 # === APP ===
-APP_URL=http://localhost:8080
+# APP_URL = URL du backend (port du serveur Express/Vite en local)
+APP_URL=http://localhost:5174
 NODE_ENV=development
 ```
 

@@ -99,6 +99,7 @@ import {
   syncQuoteToBilanSheet,
 } from "./bilan-google-sheet.js";
 import { getBaseUrl } from "./lib/env.js";
+import { encryptApiKey, decryptApiKey } from "./lib/jotform-crypto.js";
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -698,6 +699,8 @@ const STRIPE_SECRET_KEY =
   process.env.STRIPE_KEY ||
   process.env.STRIPE_SECRET;
 const FRONTEND_URL = process.env.FRONTEND_URL || "http://localhost:8080";
+const JOTFORM_API_BASE = "https://eu-api.jotform.com";
+const API_PUBLIC_URL = process.env.API_PUBLIC_URL || process.env.APP_URL || "http://localhost:5174";
 const STRIPE_SUCCESS_URL =
   process.env.STRIPE_SUCCESS_URL || `${FRONTEND_URL}/payment/success`;
 const STRIPE_CANCEL_URL =
@@ -5671,6 +5674,171 @@ L'équipe MBE
 });
 
 /**
+ * Extrait un type d'objet depuis une description de lot (règles par mots-clés).
+ * Retourne null si aucun match satisfaisant.
+ */
+function extractObjectTypeFromKeywords(description) {
+  if (!description || typeof description !== 'string') return null;
+  const d = description.trim();
+  if (!d) return null;
+  const lower = d.toLowerCase();
+
+  // Assiettes / vaisselle avec quantité
+  const assietteMatch = lower.match(/\b(\d+)\s*assiettes?\b|lot\s+de\s+(\d+)\s*assiettes?|ensemble\s+de\s+(\d+)\s*assiettes?/i);
+  if (assietteMatch) {
+    const n = parseInt(assietteMatch[1] || assietteMatch[2] || assietteMatch[3] || '1', 10);
+    return `Assiettes (${n})`;
+  }
+  if (/\bassiettes?\b/i.test(lower)) return 'Assiettes';
+
+  // Tableaux
+  if (/\b(tableau|tableaux)\b.*\b(huile|toile)\b/i.test(lower)) return 'Tableau huile sur toile';
+  if (/\b(tableau|tableaux)\b.*\baquarelle/i.test(lower)) return 'Tableau aquarelle';
+  if (/\b(tableau|tableaux)\b.*\bpastel/i.test(lower)) return 'Tableau pastel';
+  if (/\btableau(x)?\b/i.test(lower)) return 'Tableau';
+
+  // Vases avec matériau
+  if (/\bvase(s)?\b.*\b(céramique|ceramique)\b/i.test(lower)) return 'Vase en céramique';
+  if (/\bvase(s)?\b.*\bporcelaine/i.test(lower)) return 'Vase en porcelaine';
+  if (/\bvase(s)?\b.*\bverre/i.test(lower)) return 'Vase en verre';
+  if (/\bvase(s)?\b/i.test(lower)) return 'Vase';
+
+  // Meubles, bijoux, livres, etc.
+  const keywords = [
+    { re: /\bmeuble(s)?\b/i, out: 'Meuble' },
+    { re: /\bbijou(x)?\b|\bbague\b|\bcollier\b|\bbracelet\b/i, out: 'Bijoux' },
+    { re: /\blivre(s)?\b/i, out: 'Livre(s)' },
+    { re: /\bverre(s)?\b|\bverrerie\b/i, out: 'Verres' },
+    { re: /\bcadre(s)?\b/i, out: 'Cadre' },
+    { re: /\bmiroir(s)?\b/i, out: 'Miroir' },
+    { re: /\bluminaire(s)?\b|\blampe(s)?\b/i, out: 'Luminaire' },
+    { re: /\btapisserie\b|\btapis\b/i, out: 'Tapisserie' },
+    { re: /\bsculpture(s)?\b/i, out: 'Sculpture' },
+    { re: /\bpendule(s)?\b|\bhorloge(s)?\b/i, out: 'Pendule' },
+    { re: /\bargenterie\b|\bcuillère\b|\bfourchette\b/i, out: 'Argenterie' },
+    { re: /\bcommode\b|\bbureau\b|\barmoire\b/i, out: 'Meuble' },
+  ];
+  for (const { re, out } of keywords) {
+    if (re.test(lower)) return out;
+  }
+  return null;
+}
+
+/**
+ * Extrait le type d'objet via IA (Groq ou OpenAI). Retourne null en cas d'erreur.
+ */
+async function extractObjectTypeWithAI(description) {
+  if (!description || typeof description !== 'string' || description.trim().length < 5) return null;
+  const truncated = description.trim().substring(0, 800);
+  const prompt = `À partir de cette description de lot de vente aux enchères : "${truncated}"
+
+Donne UNIQUEMENT un libellé court décrivant le type d'objet (ex: "Assiettes (12)", "Tableau huile sur toile", "Vase en céramique", "Meuble", "Bijoux"). 
+Une seule ligne, pas d'explication. Maximum 50 caractères.`;
+
+  // Priorité Groq
+  if (process.env.GROQ_API_KEY) {
+    try {
+      const response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'llama-3.3-70b-versatile',
+          messages: [
+            { role: 'system', content: "Tu extrais le type d'objet d'une description de vente aux enchères. Réponds uniquement par le libellé court demandé." },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.1,
+          max_tokens: 80,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const content = (data.choices?.[0]?.message?.content || '').trim();
+        if (content && content.length <= 80) return content;
+      }
+    } catch (e) {
+      console.warn('[extractObjectType] Groq erreur:', e.message);
+    }
+  }
+
+  // Fallback OpenAI
+  if (process.env.OPENAI_API_KEY) {
+    try {
+      const response = await fetch('https://api.openai.com/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${process.env.OPENAI_API_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: "Tu extrais le type d'objet d'une description de vente aux enchères. Réponds uniquement par le libellé court demandé." },
+            { role: 'user', content: prompt },
+          ],
+          temperature: 0.1,
+          max_tokens: 80,
+        }),
+      });
+      if (response.ok) {
+        const data = await response.json();
+        const content = (data.choices?.[0]?.message?.content || '').trim();
+        if (content && content.length <= 80) return content;
+      }
+    } catch (e) {
+      console.warn('[extractObjectType] OpenAI erreur:', e.message);
+    }
+  }
+  return null;
+}
+
+/**
+ * Extrait la partie de la description qui décrit l'objet (pas la première ligne).
+ * Fallback quand les règles et l'IA ne donnent rien.
+ */
+function extractRelevantObjectDescription(description) {
+  if (!description || typeof description !== 'string') return 'Description non disponible';
+  const d = description.trim();
+  if (!d) return 'Description non disponible';
+
+  const lines = d.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  if (lines.length === 0) return d.substring(0, 80);
+
+  // Ignorer les lignes ressemblant à des en-têtes (numéro de lot, codes courts)
+  const objectKeywords = /tableau|vase|assiette|meuble|bijou|livre|cadre|miroir|sculpture|verre|armoire|commode|bureau|pendule|luminaire|tapis|argenterie|porcelaine|céramique|huile|toile|aquarelle/i;
+  let best = lines[0];
+  let bestScore = 0;
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.length < 10) continue; // trop court
+    if (/^[\d\-\.\s]+$/.test(line)) continue; // que des chiffres
+    const score = (objectKeywords.test(line) ? 2 : 0) + line.length;
+    if (score > bestScore) {
+      bestScore = score;
+      best = line;
+    }
+  }
+  const out = best.length > 80 ? best.substring(0, 77).trim() + '...' : best;
+  return out || d.substring(0, 80);
+}
+
+/**
+ * Orchestrateur : extrait le type d'objet (règles → IA → fallback description ciblée).
+ */
+async function extractObjectTypeFromDescription(description) {
+  const fromKeywords = extractObjectTypeFromKeywords(description);
+  if (fromKeywords) return fromKeywords;
+
+  const fromAI = await extractObjectTypeWithAI(description);
+  if (fromAI) return fromAI;
+
+  return extractRelevantObjectDescription(description);
+}
+
+/**
  * Route: Envoyer un email à la salle des ventes pour planifier une collecte
  * POST /api/send-collection-email
  * Body: { to, subject, text, auctionHouse, quotes, plannedDate, plannedTime, note }
@@ -5735,50 +5903,28 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
       }
     }
 
-    // Générer un tableau HTML pour les lots
+    // Générer un tableau HTML pour les lots (type d'objet extrait par règles + IA)
     let lotsTableHtml = '';
     if (quotes && quotes.length > 0) {
-      const lotsRows = quotes.map((quote, index) => {
+      const lotsRows = [];
+      for (let index = 0; index < quotes.length; index++) {
+        const quote = quotes[index];
         const lotNumber = quote.lotNumber || quote.lotId || 'Non spécifié';
         const bordereauNum = (quote.bordereauNumber && String(quote.bordereauNumber).trim()) ? quote.bordereauNumber.trim() : '—';
-        
-        // Tronquer la description à environ 80 caractères (2 lignes de ~40 caractères)
-        let description = quote.description || 'Description non disponible';
-        const maxLength = 80;
-        if (description.length > maxLength) {
-          description = description.substring(0, maxLength).trim() + '...';
-        }
-        
-        const value = quote.value ? `${quote.value.toFixed(2)}€` : 'Non renseignée';
-        const dimensions = quote.dimensions 
-          ? `${quote.dimensions.length}×${quote.dimensions.width}×${quote.dimensions.height} cm` 
-          : 'Non renseignées';
-        const weight = quote.dimensions?.weight ? `${quote.dimensions.weight} kg` : 'Non renseigné';
-        const reference = quote.reference || 'N/A';
         const clientName = quote.clientName || 'Client non renseigné';
+
+        const rawDescription = quote.description || 'Description non disponible';
+        const description = await extractObjectTypeFromDescription(rawDescription);
         
-        // Log pour débug
-        console.log(`[send-collection-email] Quote ${index + 1}:`, {
-          lotNumber: quote.lotNumber,
-          lotId: quote.lotId,
-          clientName: quote.clientName,
-          reference: quote.reference,
-          descriptionLength: description.length
-        });
-        
-        return `
+        lotsRows.push(`
           <tr style="border-bottom: 1px solid #e5e7eb;">
             <td style="padding: 12px 8px; text-align: center; font-weight: 600;">${bordereauNum}</td>
             <td style="padding: 12px 8px; text-align: center; font-weight: 600;">${lotNumber}</td>
             <td style="padding: 12px 8px;">${clientName}</td>
-            <td style="padding: 12px 8px; max-width: 300px;">${description}</td>
-            <td style="padding: 12px 8px; text-align: right;">${value}</td>
-            <td style="padding: 12px 8px; text-align: center;">${dimensions}</td>
-            <td style="padding: 12px 8px; text-align: center;">${weight}</td>
-            <td style="padding: 12px 8px; text-align: center; font-size: 0.875rem; color: #6b7280;">${reference}</td>
+            <td style="padding: 12px 8px; max-width: 300px;">${description.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</td>
           </tr>
-        `;
-      }).join('');
+        `);
+      }
 
       lotsTableHtml = `
         <table style="width: 100%; border-collapse: collapse; margin: 20px 0; background: white; border: 1px solid #e5e7eb; border-radius: 8px; overflow: hidden;">
@@ -5788,14 +5934,10 @@ app.post('/api/send-collection-email', requireAuth, async (req, res) => {
               <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">N° Lot</th>
               <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Client</th>
               <th style="padding: 12px 8px; text-align: left; font-weight: 600; color: #374151;">Description</th>
-              <th style="padding: 12px 8px; text-align: right; font-weight: 600; color: #374151;">Valeur</th>
-              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Dimensions</th>
-              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Poids</th>
-              <th style="padding: 12px 8px; text-align: center; font-weight: 600; color: #374151;">Référence</th>
             </tr>
           </thead>
           <tbody>
-            ${lotsRows}
+            ${lotsRows.join('')}
           </tbody>
         </table>
       `;
@@ -7155,8 +7297,14 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=google-sheets`);
     }
 
+    const existingJf = saasAccountDoc.data()?.integrations?.jotform;
+    const existingFormId = existingJf?.formId;
+    if (existingFormId) {
+      await firestore.collection("jotformFormIndex").doc(existingFormId).delete();
+    }
+
     // Stocker uniquement les tokens OAuth (sans sélectionner de sheet pour l'instant)
-    // L'utilisateur devra choisir le sheet dans l'interface
+    // L'utilisateur devra choisir le sheet dans l'interface (exclusivité: déconnecter Jotform)
     await saasAccountRef.update({
       'integrations.googleSheets': {
         connected: false, // Pas encore de sheet sélectionné
@@ -7166,7 +7314,8 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
           expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null
         },
         connectedAt: Timestamp.now()
-      }
+      },
+      'integrations.jotform': FieldValue.delete()
     });
 
     console.log('[Google Sheets OAuth] ✅ OAuth Google Sheets autorisé pour saasAccountId:', saasAccountId);
@@ -7288,6 +7437,450 @@ app.delete('/api/typeform/disconnect', requireAuth, async (req, res) => {
     console.error('[Typeform] Erreur déconnexion:', e);
     res.status(500).json({ error: e.message });
   }
+});
+
+// ============================================================================
+// JOTFORM INTEGRATION (webhook, exclusivité avec Google Sheets)
+// ============================================================================
+
+async function jotformApi(apiKey, pathname, method = "GET", body = null) {
+  const sep = pathname.includes("?") ? "&" : "?";
+  const url = `${JOTFORM_API_BASE}${pathname}${sep}apiKey=${encodeURIComponent(apiKey)}`;
+  const opts = { method, headers: {} };
+  if (body && method === "POST") {
+    opts.headers["Content-Type"] = "application/x-www-form-urlencoded";
+    opts.body = typeof body === "string" ? body : new URLSearchParams(body).toString();
+  }
+  const res = await fetch(url, opts);
+  const data = await res.json().catch(() => ({}));
+  if (data.responseCode !== undefined && data.responseCode !== 200) {
+    throw new Error(data.message || `Jotform API error ${data.responseCode}`);
+  }
+  return data;
+}
+
+function buildJotformFieldMapping(questions) {
+  const mapping = {};
+  const content = questions?.content || questions;
+  if (typeof content !== "object") return mapping;
+
+  const byType = (type) => {
+    for (const [qid, q] of Object.entries(content)) {
+      if (q.type === type) return { qid, q };
+    }
+    return null;
+  };
+  const byLabel = (keywords) => {
+    const kw = keywords.map((k) => k.toLowerCase());
+    for (const [qid, q] of Object.entries(content)) {
+      const text = (q.text || "").toLowerCase();
+      if (kw.some((k) => text.includes(k))) return { qid, q };
+    }
+    return null;
+  };
+
+  const fullname = byType("control_fullname") || byLabel(["prénom", "nom", "fullname"]);
+  if (fullname) {
+    mapping.clientFirstName = `${fullname.qid}_first`;
+    mapping.clientLastName = `${fullname.qid}_last`;
+  }
+
+  const email = byType("control_email") || byLabel(["email", "courriel", "mail"]);
+  if (email) mapping.clientEmail = email.qid;
+
+  const phone = byType("control_phone") || byLabel(["téléphone", "telephone", "phone"]);
+  if (phone) mapping.clientPhone = phone.qid;
+
+  const address = byType("control_address") || byLabel(["adresse", "address"]);
+  if (address) mapping.clientAddress = address.qid;
+
+  const fileupload = byType("control_fileupload") || byLabel(["bordereau", "fichier", "upload"]);
+  if (fileupload) mapping.bordereau = fileupload.qid;
+
+  const textarea = byLabel(["informations utiles", "notes", "message"]);
+  if (textarea) mapping.usefulInfo = textarea.qid;
+
+  const insurance = byLabel(["assurance", "assurer"]);
+  if (insurance) mapping.wantsInsurance = insurance.qid;
+
+  const receiver = byLabel(["destinataire", "receiver"]);
+  if (receiver) mapping.receiverAnswer = receiver.qid;
+
+  return mapping;
+}
+
+function getValueFromSubmission(submission, key) {
+  if (!key || !submission) return "";
+  const raw = submission[key];
+  if (raw == null) return "";
+  if (typeof raw === "object" && raw.text) return String(raw.text || "").trim();
+  if (typeof raw === "object" && raw.first !== undefined) return String(raw.first || "").trim();
+  if (typeof raw === "object" && raw.last !== undefined) return String(raw.last || "").trim();
+  return String(raw || "").trim();
+}
+
+async function processJotformSubmission(formId, submissionId) {
+  if (!firestore) return;
+  const indexDoc = await firestore.collection("jotformFormIndex").doc(formId).get();
+  if (!indexDoc.exists) {
+    console.warn("[Jotform] Aucun compte lié au formId:", formId);
+    return;
+  }
+  const saasAccountId = indexDoc.data()?.saasAccountId;
+  if (!saasAccountId) return;
+
+  const saasDoc = await firestore.collection("saasAccounts").doc(saasAccountId).get();
+  if (!saasDoc.exists) return;
+  const jf = saasDoc.data()?.integrations?.jotform;
+  if (!jf?.connected || jf.formId !== formId) return;
+  const apiKey = jf.apiKeyEncrypted ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext) : jf.apiKeyPlaintext;
+  if (!apiKey) return;
+
+  if (submissionId === jf.lastSubmissionId) {
+    console.log("[Jotform] Soumission déjà traitée:", submissionId);
+    return;
+  }
+
+  let submissionData;
+  try {
+    const data = await jotformApi(apiKey, `/submission/${submissionId}`);
+    submissionData = data.content || data;
+  } catch (e) {
+    console.error("[Jotform] Erreur récupération submission:", e);
+    return;
+  }
+  let answers = submissionData.answers || submissionData;
+  if (answers && typeof answers === "object" && !answers.q3 && !answers.clientEmail) {
+    const flat = {};
+    for (const v of Object.values(answers)) {
+      if (v && typeof v === "object" && v.name) flat[v.name] = v.text ?? v.answer ?? v;
+    }
+    answers = flat;
+  }
+  const mapping = jf.fieldMapping || {};
+
+  const getVal = (k) => getValueFromSubmission(answers, mapping[k] || k);
+  const clientFirstName = getVal("clientFirstName") || getVal("clientLastName");
+  const clientLastName = mapping.clientLastName ? getVal("clientLastName") : "";
+  const clientName = `${clientFirstName || ""} ${clientLastName || ""}`.trim() || getVal("clientEmail");
+  const clientEmail = getVal("clientEmail");
+  const clientPhone = getVal("clientPhone");
+  const clientAddress = getVal("clientAddress");
+  const receiverAnswer = getVal("receiverAnswer") || "";
+  const isClientReceiver = /oui|yes|o/i.test(receiverAnswer);
+  const usefulInfo = getVal("usefulInfo");
+  const wantsInsuranceRaw = getVal("wantsInsurance");
+  const wantsInsurance = /oui|yes|true|1/i.test(wantsInsuranceRaw || "");
+  const submittedAt = submissionData.created_at || new Date().toISOString();
+
+  let bordereauUrl = null;
+  const bordereauQid = mapping.bordereau;
+  if (bordereauQid) {
+    const fileAnswer = answers[bordereauQid] || answers[`${bordereauQid}_url`];
+    if (fileAnswer) {
+      let url = "";
+      if (typeof fileAnswer === "object") {
+        url = fileAnswer.url || fileAnswer.text || "";
+      } else {
+        url = String(fileAnswer || "");
+      }
+      if (url.startsWith("http")) bordereauUrl = url;
+    }
+  }
+
+  const quoteData = {
+    saasAccountId,
+    source: "jotform",
+    externalId: submissionId,
+    client: { name: clientName, email: clientEmail, phone: clientPhone, address: clientAddress || "" },
+    delivery: {
+      mode: isClientReceiver ? "client" : "receiver",
+      contact: { name: clientName, email: clientEmail, phone: clientPhone },
+      address: { line1: clientAddress || "", line2: null, city: null, state: null, zip: null, country: null },
+      note: usefulInfo || null
+    },
+    auctionSheet: { fileName: null, totalLots: 0, totalObjects: 0 },
+    options: { insurance: wantsInsurance, express: false, insuranceAmount: null, expressAmount: null, packagingPrice: null, shippingPrice: null },
+    status: "new",
+    paymentStatus: "pending",
+    paymentLinks: [],
+    messages: [],
+    verificationIssues: [],
+    timeline: [{ id: `tl-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`, date: Timestamp.now(), status: "new", description: "Devis créé depuis Jotform" }],
+    internalNotes: [],
+    auctionHouseComments: [],
+    jotformSubmissionId: submissionId,
+    jotformSubmittedAt: submittedAt,
+    createdAt: Timestamp.now(),
+    updatedAt: Timestamp.now(),
+    clientName,
+    clientEmail,
+    recipientAddress: clientAddress || "",
+    reference: `JF-${Date.now()}-${submissionId}`
+  };
+  if (bordereauUrl) quoteData.bordereauLink = bordereauUrl;
+
+  const devisRef = await firestore.collection("quotes").add(quoteData);
+  const devisId = devisRef.id;
+
+  await firestore.collection("saasAccounts").doc(saasAccountId).update({
+    "integrations.jotform.lastSubmissionId": submissionId
+  });
+
+  try {
+    await firestore.collection("saasAccounts").doc(saasAccountId).update({
+      "usage.quotesUsedThisYear": FieldValue.increment(1)
+    });
+  } catch (_) {}
+
+  await createNotification(firestore, saasAccountId, {
+    type: NOTIFICATION_TYPES.NEW_QUOTE,
+    title: "Nouveau devis",
+    body: `Devis créé depuis Jotform : ${clientName || clientEmail}`,
+    link: `/quotes/${devisId}`,
+    quoteId: devisId
+  });
+
+  if (bordereauUrl && firestore) {
+    try {
+      let fetchUrl = bordereauUrl;
+      if (bordereauUrl.includes("jotform.com") && apiKey) {
+        fetchUrl += (bordereauUrl.includes("?") ? "&" : "?") + `apiKey=${encodeURIComponent(apiKey)}`;
+      }
+      const downloadRes = await fetch(fetchUrl);
+      if (downloadRes.ok) {
+        const buffer = Buffer.from(await downloadRes.arrayBuffer());
+        const bucket = getStorage().bucket();
+        const storagePath = `bordereaux/${saasAccountId}/${devisId}/${decodeURIComponent((bordereauUrl.split("/").pop() || "bordereau.pdf").split("?")[0])}`;
+        const file = bucket.file(storagePath);
+        await file.save(buffer, { contentType: "application/pdf" });
+        const [signedUrl] = await file.getSignedUrl({ action: "read", expires: "03-01-2500" });
+        const bordereauRef = await firestore.collection("bordereaux").add({
+          saasAccountId,
+          devisId,
+          driveFileId: null,
+          driveFileName: storagePath.split("/").pop(),
+          sourceType: "url",
+          sourceUrl: signedUrl,
+          linkedAt: Timestamp.now(),
+          linkedBy: "jotform",
+          linkMethod: "jotform",
+          ocrStatus: "pending",
+          createdAt: Timestamp.now(),
+          updatedAt: Timestamp.now()
+        });
+        await firestore.collection("quotes").doc(devisId).update({
+          bordereauId: bordereauRef.id,
+          status: "bordereau_linked",
+          updatedAt: Timestamp.now()
+        });
+        triggerOCRForBordereau(bordereauRef.id, saasAccountId).catch((e) => console.error("[Jotform] OCR erreur:", e));
+      }
+    } catch (fileErr) {
+      console.warn("[Jotform] Bordereau non traité:", fileErr.message);
+    }
+  }
+
+  console.log("[Jotform] Devis créé:", devisId, clientName || clientEmail);
+}
+
+// POST /api/jotform/connect - Valider API Key, chiffrer, stocker, déconnecter Google Sheets
+app.post("/api/jotform/connect", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  const { apiKey } = req.body || {};
+  if (!apiKey || typeof apiKey !== "string" || !apiKey.trim()) {
+    return res.status(400).json({ error: "API Key Jotform requise" });
+  }
+  const trimmed = apiKey.trim();
+  try {
+    const userData = await jotformApi(trimmed, "/user");
+    if (!userData.content) throw new Error("Réponse Jotform invalide");
+
+    const encrypted = encryptApiKey(trimmed);
+    const saasAccountRef = firestore.collection("saasAccounts").doc(req.saasAccountId);
+    const update = {
+      "integrations.jotform": {
+        connected: false,
+        apiKeyEncrypted: encrypted.encrypted || null,
+        apiKeyPlaintext: encrypted.plaintext || null,
+        connectedAt: Timestamp.now()
+      },
+      "integrations.googleSheets": FieldValue.delete()
+    };
+    await saasAccountRef.update(update);
+    console.log("[Jotform] ✅ Connexion réussie pour saasAccountId:", req.saasAccountId);
+    res.json({ success: true, message: "Jotform connecté. Sélectionnez un formulaire." });
+  } catch (e) {
+    console.error("[Jotform] Erreur connect:", e);
+    res.status(400).json({ error: e.message || "API Key Jotform invalide" });
+  }
+});
+
+// GET /api/jotform/forms - Lister les formulaires
+app.get("/api/jotform/forms", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  try {
+    const doc = await firestore.collection("saasAccounts").doc(req.saasAccountId).get();
+    if (!doc.exists) return res.status(404).json({ error: "Compte non trouvé" });
+    const jf = doc.data().integrations?.jotform;
+    const apiKey = jf?.apiKeyEncrypted
+      ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext)
+      : jf?.apiKeyPlaintext;
+    if (!apiKey) return res.status(400).json({ error: "Jotform non connecté" });
+
+    const data = await jotformApi(apiKey, "/user/forms");
+    const content = data.content;
+    const forms = Array.isArray(content)
+      ? content.map((f) => ({ id: f.id, title: f.title }))
+      : content && typeof content === "object"
+        ? Object.entries(content).map(([, f]) => ({ id: f.id, title: f.title }))
+        : [];
+    res.json({ forms });
+  } catch (e) {
+    console.error("[Jotform] Erreur forms:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/jotform/form/:formId/questions - Questions pour auto-mapping
+app.get("/api/jotform/form/:formId/questions", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  const { formId } = req.params;
+  if (!formId) return res.status(400).json({ error: "formId requis" });
+  try {
+    const doc = await firestore.collection("saasAccounts").doc(req.saasAccountId).get();
+    if (!doc.exists) return res.status(404).json({ error: "Compte non trouvé" });
+    const jf = doc.data().integrations?.jotform;
+    const apiKey = jf?.apiKeyEncrypted
+      ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext)
+      : jf?.apiKeyPlaintext;
+    if (!apiKey) return res.status(400).json({ error: "Jotform non connecté" });
+
+    const data = await jotformApi(apiKey, `/form/${formId}/questions`);
+    const fieldMapping = buildJotformFieldMapping(data);
+    res.json({ questions: data.content || data, fieldMapping });
+  } catch (e) {
+    console.error("[Jotform] Erreur questions:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/jotform/select-form - Sélection formId, fieldMapping, enregistrer webhook
+app.post("/api/jotform/select-form", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  const { formId, formTitle, fieldMapping } = req.body || {};
+  if (!formId || !formTitle) return res.status(400).json({ error: "formId et formTitle requis" });
+  try {
+    const doc = await firestore.collection("saasAccounts").doc(req.saasAccountId).get();
+    if (!doc.exists) return res.status(404).json({ error: "Compte non trouvé" });
+    const jf = doc.data().integrations?.jotform;
+    const apiKey = jf?.apiKeyEncrypted
+      ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext)
+      : jf?.apiKeyPlaintext;
+    if (!apiKey) return res.status(400).json({ error: "Jotform non connecté" });
+
+    const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
+    await jotformApi(apiKey, `/form/${formId}/webhooks`, "POST", { webhookURL: webhookUrl });
+
+    const mapping = fieldMapping && typeof fieldMapping === "object" ? fieldMapping : buildJotformFieldMapping((await jotformApi(apiKey, `/form/${formId}/questions`)).content);
+
+    await firestore.collection("saasAccounts").doc(req.saasAccountId).update({
+      "integrations.jotform.connected": true,
+      "integrations.jotform.formId": formId,
+      "integrations.jotform.formTitle": formTitle,
+      "integrations.jotform.fieldMapping": mapping,
+      "integrations.jotform.selectedAt": Timestamp.now()
+    });
+
+    await firestore.collection("jotformFormIndex").doc(formId).set({ saasAccountId: req.saasAccountId });
+    console.log("[Jotform] ✅ Formulaire sélectionné:", formId, "pour saasAccountId:", req.saasAccountId);
+    res.json({ success: true, message: "Formulaire Jotform sélectionné", fieldMapping: mapping });
+  } catch (e) {
+    console.error("[Jotform] Erreur select-form:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// GET /api/jotform/status
+app.get("/api/jotform/status", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  try {
+    const doc = await firestore.collection("saasAccounts").doc(req.saasAccountId).get();
+    if (!doc.exists) return res.json({ connected: false });
+    const jf = doc.data().integrations?.jotform;
+    res.json({
+      connected: !!(jf?.connected && (jf?.apiKeyEncrypted || jf?.apiKeyPlaintext)),
+      formId: jf?.formId || null,
+      formTitle: jf?.formTitle || null,
+      connectedAt: jf?.connectedAt?.toDate?.()?.toISOString?.() || null
+    });
+  } catch (e) {
+    console.error("[Jotform] Erreur status:", e);
+    res.status(500).json({ connected: false });
+  }
+});
+
+// DELETE /api/jotform/disconnect
+app.delete("/api/jotform/disconnect", requireAuth, async (req, res) => {
+  if (!firestore) return res.status(500).json({ error: "Firestore non configuré" });
+  if (!req.saasAccountId) return res.status(400).json({ error: "Compte SaaS non configuré" });
+  try {
+    const doc = await firestore.collection("saasAccounts").doc(req.saasAccountId).get();
+    const jf = doc.exists ? doc.data().integrations?.jotform : null;
+    const formId = jf?.formId;
+    const apiKey = jf?.apiKeyEncrypted ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext) : jf?.apiKeyPlaintext;
+    if (formId && apiKey) {
+      try {
+        const wh = await jotformApi(apiKey, `/form/${formId}/webhooks`);
+        const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
+        const list = wh.content || [];
+        for (const w of list) {
+          if (w.url === webhookUrl) {
+            await jotformApi(apiKey, `/form/${formId}/webhooks`, "POST", { webhookURL: webhookUrl, delete: "yes" });
+            break;
+          }
+        }
+      } catch (delErr) {
+        console.warn("[Jotform] Impossibilité de supprimer le webhook:", delErr.message);
+      }
+      await firestore.collection("jotformFormIndex").doc(formId).delete();
+    }
+    await firestore.collection("saasAccounts").doc(req.saasAccountId).update({
+      "integrations.jotform": FieldValue.delete()
+    });
+    console.log("[Jotform] Déconnecté pour saasAccountId:", req.saasAccountId);
+    res.json({ success: true });
+  } catch (e) {
+    console.error("[Jotform] Erreur disconnect:", e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/webhooks/jotform - Webhook Jotform (multipart/form-data, pas d'auth)
+app.post("/api/webhooks/jotform", upload.none(), async (req, res) => {
+  res.status(200).json({ received: true });
+  let submissionId = req.body?.submissionID || req.body?.submissionId;
+  let formId = req.body?.formID || req.body?.formId;
+  const rawRequest = req.body?.rawRequest;
+  if (rawRequest && typeof rawRequest === "string") {
+    try {
+      const parsed = JSON.parse(rawRequest);
+      submissionId = submissionId || parsed?.submissionID || parsed?.submissionId;
+      formId = formId || parsed?.formID || parsed?.formId;
+    } catch (_) {}
+  }
+  if (!submissionId || !formId) {
+    console.warn("[Jotform Webhook] submissionID ou formID manquant:", { submissionId, formId });
+    return;
+  }
+  processJotformSubmission(formId, submissionId).catch((err) => {
+    console.error("[Jotform Webhook] Erreur traitement:", err);
+  });
 });
 
 // Route: Lister les Google Sheets disponibles
