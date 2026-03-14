@@ -7689,7 +7689,15 @@ app.post("/api/jotform/select-form", requireAuth, async (req, res) => {
     if (!apiKey) return res.status(400).json({ error: "Jotform non connecté" });
 
     const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
-    await jotformApi(apiKey, `/form/${formId}/webhooks`, "POST", { webhookURL: webhookUrl });
+    try {
+      await jotformApi(apiKey, `/form/${formId}/webhooks`, "POST", { webhookURL: webhookUrl });
+    } catch (whErr) {
+      if (whErr.message && String(whErr.message).includes("already in WebHooks List")) {
+        // Webhook déjà enregistré (ex. après déconnexion/reconnexion sans suppression côté Jotform) — on continue
+      } else {
+        throw whErr;
+      }
+    }
 
     const mapping = fieldMapping && typeof fieldMapping === "object" ? fieldMapping : buildJotformFieldMapping((await jotformApi(apiKey, `/form/${formId}/questions`)).content);
 
@@ -7749,9 +7757,10 @@ app.delete("/api/jotform/disconnect", requireAuth, async (req, res) => {
       try {
         const wh = await jotformApi(apiKey, `/form/${formId}/webhooks`);
         const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
-        const list = wh.content || [];
+        const raw = wh.content || [];
+        const list = Array.isArray(raw) ? raw : Object.values(typeof raw === "object" ? raw : {});
         for (const w of list) {
-          if (w.url === webhookUrl) {
+          if (w && (w.url === webhookUrl || w.webhookURL === webhookUrl)) {
             await jotformApi(apiKey, `/form/${formId}/webhooks`, "POST", { webhookURL: webhookUrl, delete: "yes" });
             break;
           }
@@ -7920,9 +7929,10 @@ app.post('/api/google-sheets/select', requireAuth, async (req, res) => {
         try {
           const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
           const wh = await jotformApi(apiKey, `/form/${jf.formId}/webhooks`);
-          const list = wh.content || [];
+          const raw = wh.content || [];
+          const list = Array.isArray(raw) ? raw : Object.values(typeof raw === "object" ? raw : {});
           for (const w of list) {
-            if (w.url === webhookUrl) {
+            if (w && (w.url === webhookUrl || w.webhookURL === webhookUrl)) {
               await jotformApi(apiKey, `/form/${jf.formId}/webhooks`, "POST", { webhookURL: webhookUrl, delete: "yes" });
               break;
             }
