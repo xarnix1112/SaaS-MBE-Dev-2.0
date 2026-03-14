@@ -402,6 +402,7 @@ export default function Settings() {
       toast.success(`Google Sheet "${sheetName}" sélectionné avec succès`);
       setShowSheetSelector(false);
       await loadGoogleSheetsStatus();
+      await loadJotformStatus(); // Jotform peut avoir été déconnecté (exclusivité)
     } catch (error) {
       console.error('[Settings] Erreur lors de la sélection du Google Sheet:', error);
       toast.error(error instanceof Error ? error.message : 'Erreur lors de la sélection');
@@ -738,6 +739,28 @@ export default function Settings() {
     } catch (error) {
       console.error('[Settings] Erreur lors de la connexion Google Sheets:', error);
       toast.error(error instanceof Error ? error.message : 'Erreur lors de la connexion Google Sheets');
+      setIsLoadingGoogleSheets(false);
+    }
+  };
+
+  const handleDeselectGoogleSheet = async () => {
+    try {
+      setIsLoadingGoogleSheets(true);
+      const { authenticatedFetch } = await import('@/lib/api');
+      const response = await authenticatedFetch('/api/google-sheets/deselect', {
+        method: 'POST'
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({ error: 'Erreur inconnue' }));
+        throw new Error(error.error || 'Erreur lors de la désélection');
+      }
+      toast.success('Sheet désélectionné. Le Bilan reste disponible.');
+      await loadGoogleSheetsStatus();
+      await loadJotformStatus();
+    } catch (error) {
+      console.error('[Settings] Erreur lors de la désélection du sheet:', error);
+      toast.error(error instanceof Error ? error.message : 'Erreur lors de la désélection');
+    } finally {
       setIsLoadingGoogleSheets(false);
     }
   };
@@ -1446,12 +1469,22 @@ export default function Settings() {
                           <Button
                             variant="outline"
                             size="sm"
+                            onClick={handleDeselectGoogleSheet}
+                            className="gap-2"
+                            disabled={isLoadingGoogleSheets}
+                            title="Conserve l'OAuth pour le Bilan, permet d'utiliser Jotform"
+                          >
+                            Désélectionner le sheet
+                          </Button>
+                          <Button
+                            variant="outline"
+                            size="sm"
                             onClick={handleDisconnectGoogleSheets}
                             className="gap-2 text-destructive hover:text-destructive"
                             disabled={isLoadingGoogleSheets}
                           >
                             <LogOut className="w-4 h-4" />
-                            Déconnecter
+                            Déconnecter complètement
                           </Button>
                         </div>
                       </div>
@@ -1594,15 +1627,15 @@ export default function Settings() {
                   Connexion Jotform
                 </CardTitle>
                 <CardDescription>
-                  Connectez Jotform pour créer des devis automatiquement à chaque nouvelle soumission. Choisissez Jotform ou Google Sheets, pas les deux.
+                  Connectez Jotform pour créer des devis automatiquement à chaque nouvelle soumission. Le Bilan devis MBE peut rester connecté ; en revanche, un seul &quot;sheet d&apos;import&quot; de devis est autorisé (Jotform ou Google Sheets).
                 </CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                {googleSheetsStatus?.connected || googleSheetsStatus?.oauthAuthorized ? (
+                {googleSheetsStatus?.connected ? (
                   <div className="p-4 rounded-lg bg-amber-500/10 border border-amber-500/30">
-                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Google Sheets est connecté</p>
+                    <p className="text-sm font-medium text-amber-800 dark:text-amber-200">Un sheet d&apos;import Google Sheets est sélectionné</p>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Déconnectez Google Sheets dans l&apos;onglet &quot;Google Sheets&quot; pour utiliser Jotform à la place.
+                      Désélectionnez le sheet d&apos;import dans l&apos;onglet &quot;Google Sheets&quot; pour utiliser Jotform à la place. Le Bilan devis MBE reste inchangé.
                     </p>
                   </div>
                 ) : isLoadingJotform ? (
@@ -1630,8 +1663,8 @@ export default function Settings() {
                       <KeyRound className="w-4 h-4" />
                       Connecter Jotform
                     </Button>
-                    <p className="text-sm text-amber-600 dark:text-amber-400">
-                      Connecter Jotform remplace la connexion Google Sheets.
+                    <p className="text-sm text-muted-foreground">
+                      Le Bilan devis MBE et Jotform peuvent coexister. Si un sheet d&apos;import est sélectionné, il sera désactivé.
                     </p>
                     {showJotformFormSelector && (
                       <Card className="p-4 mt-4">

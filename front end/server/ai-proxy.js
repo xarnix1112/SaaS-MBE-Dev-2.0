@@ -7297,14 +7297,8 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
       return res.redirect(`${FRONTEND_URL}/settings?error=saas_account_not_found&source=google-sheets`);
     }
 
-    const existingJf = saasAccountDoc.data()?.integrations?.jotform;
-    const existingFormId = existingJf?.formId;
-    if (existingFormId) {
-      await firestore.collection("jotformFormIndex").doc(existingFormId).delete();
-    }
-
     // Stocker uniquement les tokens OAuth (sans sélectionner de sheet pour l'instant)
-    // L'utilisateur devra choisir le sheet dans l'interface (exclusivité: déconnecter Jotform)
+    // Ne pas supprimer Jotform : OAuth Google (Bilan) et Jotform peuvent coexister
     await saasAccountRef.update({
       'integrations.googleSheets': {
         connected: false, // Pas encore de sheet sélectionné
@@ -7314,8 +7308,7 @@ app.get('/auth/google-sheets/callback', async (req, res) => {
           expiresAt: tokens.expiry_date ? new Date(tokens.expiry_date) : null
         },
         connectedAt: Timestamp.now()
-      },
-      'integrations.jotform': FieldValue.delete()
+      }
     });
 
     console.log('[Google Sheets OAuth] ✅ OAuth Google Sheets autorisé pour saasAccountId:', saasAccountId);
@@ -7706,7 +7699,12 @@ app.post("/api/jotform/connect", requireAuth, async (req, res) => {
         apiKeyPlaintext: encrypted.plaintext || null,
         connectedAt: Timestamp.now()
       },
-      "integrations.googleSheets": FieldValue.delete()
+      // Désactiver le sheet d'import mais préserver l'OAuth (Bilan)
+      "integrations.googleSheets.connected": false,
+      "integrations.googleSheets.spreadsheetId": FieldValue.delete(),
+      "integrations.googleSheets.spreadsheetName": FieldValue.delete(),
+      "integrations.googleSheets.lastRowImported": FieldValue.delete(),
+      "integrations.googleSheets.lastSyncAt": FieldValue.delete()
     };
     await saasAccountRef.update(update);
     console.log("[Jotform] ✅ Connexion réussie pour saasAccountId:", req.saasAccountId);
@@ -7989,10 +7987,40 @@ app.post('/api/google-sheets/select', requireAuth, async (req, res) => {
 
     const saasAccountData = saasAccountDoc.data();
     const googleSheetsIntegration = saasAccountData.integrations?.googleSheets;
-    const oauthTokens = googleSheetsIntegration?.oauthTokens;
+    const oauthTokens = googleSheetsIntegration?.oauthTokens || (googleSheetsIntegration?.accessToken ? {
+      accessToken: googleSheetsIntegration.accessToken,
+      refreshToken: googleSheetsIntegration.refreshToken,
+      expiresAt: googleSheetsIntegration.expiresAt
+    } : null);
 
-    if (!oauthTokens) {
+    if (!oauthTokens?.accessToken) {
       return res.status(400).json({ error: 'OAuth Google Sheets non autorisé' });
+    }
+
+    // Exclusivité : sélectionner un sheet d'import déconnecte Jotform (une seule source de nouveaux devis)
+    const jf = saasAccountData.integrations?.jotform;
+    if (jf?.connected && jf?.formId) {
+      const apiKey = jf?.apiKeyEncrypted
+        ? decryptApiKey(jf.apiKeyEncrypted, jf.apiKeyPlaintext)
+        : jf?.apiKeyPlaintext;
+      if (apiKey) {
+        try {
+          const webhookUrl = `${API_PUBLIC_URL.replace(/\/+$/, "")}/api/webhooks/jotform`;
+          const wh = await jotformApi(apiKey, `/form/${jf.formId}/webhooks`);
+          const list = wh.content || [];
+          for (const w of list) {
+            if (w.url === webhookUrl) {
+              await jotformApi(apiKey, `/form/${jf.formId}/webhooks`, "POST", { webhookURL: webhookUrl, delete: "yes" });
+              break;
+            }
+          }
+        } catch (delErr) {
+          console.warn("[Google Sheets Select] Impossible de supprimer le webhook Jotform:", delErr.message);
+        }
+        await firestore.collection("jotformFormIndex").doc(jf.formId).delete();
+      }
+      await saasAccountRef.update({ "integrations.jotform": FieldValue.delete() });
+      console.log("[API] Jotform déconnecté (exclusivité sheet d'import) pour saasAccountId:", req.saasAccountId);
     }
 
     // Mettre à jour avec le sheet sélectionné (préserver columnMapping si existant)
@@ -8078,6 +8106,48 @@ app.get('/api/google-sheets/status', requireAuth, async (req, res) => {
     });
   } catch (error) {
     console.error('[API] Erreur lors de la récupération du statut Google Sheets:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Route: Désélectionner le sheet d'import (conserve OAuth pour Bilan)
+app.post('/api/google-sheets/deselect', requireAuth, async (req, res) => {
+  if (!firestore) {
+    return res.status(500).json({ error: 'Firestore non configuré' });
+  }
+  if (!req.saasAccountId) {
+    return res.status(400).json({ error: 'Compte SaaS non configuré' });
+  }
+  try {
+    const saasAccountRef = firestore.collection('saasAccounts').doc(req.saasAccountId);
+    const saasAccountDoc = await saasAccountRef.get();
+    if (!saasAccountDoc.exists) {
+      return res.status(404).json({ error: 'Compte SaaS non trouvé' });
+    }
+    const gs = saasAccountDoc.data().integrations?.googleSheets;
+    if (!gs?.connected && !gs?.spreadsheetId) {
+      return res.json({ success: true, message: 'Aucun sheet sélectionné' });
+    }
+    // Préserver oauthTokens ou accessToken/refreshToken pour Bilan
+    const tokens = gs.oauthTokens || (gs.accessToken ? {
+      accessToken: gs.accessToken,
+      refreshToken: gs.refreshToken,
+      expiresAt: gs.expiresAt
+    } : null);
+    if (!tokens) {
+      return res.status(400).json({ error: 'Impossible de préserver l\'OAuth' });
+    }
+    await saasAccountRef.update({
+      'integrations.googleSheets': {
+        connected: false,
+        oauthTokens: tokens,
+        connectedAt: gs.connectedAt || Timestamp.now()
+      }
+    });
+    console.log('[API] ✅ Sheet d\'import désélectionné pour saasAccountId:', req.saasAccountId);
+    res.json({ success: true, message: 'Sheet désélectionné. Le Bilan reste disponible.' });
+  } catch (error) {
+    console.error('[API] Erreur désélection sheet:', error);
     res.status(500).json({ error: error.message });
   }
 });
